@@ -5,11 +5,11 @@ import sqlalchemy as sa
 from sqlalchemy.orm import relationship
 from sqlalchemy.dialects.postgresql import JSONB
 
-from models.base import Base
+from models.base import engine, Base
 
 
 class CodeVersion(Base):
-    __table_name__ = 'code_versions'
+    __tablename__ = 'code_versions'
 
     version = sa.Column(
         sa.String,
@@ -21,6 +21,7 @@ class CodeVersion(Base):
 
     commit_hashes = sa.Column(
         sa.ARRAY(sa.String),
+        default=[],
         nullable=False,
         doc='List of commit hashes that are included in this version of the code. '
     )
@@ -28,13 +29,15 @@ class CodeVersion(Base):
     def update(self):
         repo = git.Repo(search_parent_directories=True)
         git_hash = repo.head.object.hexsha
-        if git_hash not in self.commit_hashes:
+        if self.commit_hashes is None:
+            self.commit_hashes = [git_hash]
+        elif git_hash not in self.commit_hashes:
             new_hashes = self.commit_hashes + [git_hash]
             self.commit_hashes = new_hashes
 
 
 class Provenance(Base):
-    __table_name__ = "provenances"
+    __tablename__ = "provenances"
 
     code_version_id = sa.Column(
         sa.ForeignKey("code_versions.id", ondelete="CASCADE"),
@@ -92,6 +95,9 @@ CodeVersion.provenances = relationship(
     passive_deletes=True,
 )
 
+
+CodeVersion.metadata.create_all(engine)
+Provenance.metadata.create_all(engine)
 
 if __name__ == "__main__":
     pass

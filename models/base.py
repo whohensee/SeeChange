@@ -19,9 +19,11 @@ if DATA_ROOT is None:  # TODO: should also check if folder exists?
 
 DATA_TEMP = os.path.join(CODE_ROOT, "DATA_TEMP")
 
+# to drop the database use: sudo -u postgres psql -c "DROP DATABASE seechange with(forced)"
+
 # TODO: check with Rob if he has a preferred way of doing this
 # create database here:
-url = "postgresql://postgres:postgres@localhost:5432/astroretriever"
+url = "postgresql://postgres:postgres@localhost:5432/seechange"
 engine = sa.create_engine(url, future=True)
 if not database_exists(engine.url):
     create_database(engine.url)
