@@ -31,7 +31,8 @@ engine = sa.create_engine(url, future=True)
 if not database_exists(engine.url):
     create_database(engine.url)
 
-Session = sessionmaker(bind=engine)
+# TODO: we need to decide if we want to make expire_on_commit=False the default
+Session = sessionmaker(bind=engine, expire_on_commit=True)
 
 
 @contextmanager

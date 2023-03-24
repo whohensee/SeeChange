@@ -22,10 +22,10 @@ def code_version():
 @pytest.fixture
 def provenance_base(code_version):
     p = Provenance(
+        process="test_base_process",
         code_version=code_version,
         parameters={"test_key": uuid.uuid4().hex},
-        process="test_base_process",
-        upstream_ids=[],
+        upstreams=[],
     )
 
     with Session() as session:
@@ -43,10 +43,10 @@ def provenance_base(code_version):
 @pytest.fixture
 def provenance_extra(code_version, provenance_base):
     p = Provenance(
+        process="test_base_process",
         code_version=code_version,
         parameters={"test_key": uuid.uuid4().hex},
-        process="test_base_process",
-        upstream_ids=[provenance_base.id],
+        upstreams=[provenance_base],
     )
 
     with Session() as session:
