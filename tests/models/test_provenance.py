@@ -3,30 +3,65 @@ import pytest
 import sqlalchemy as sa
 
 from models.base import Session
-from models.provenance import CodeVersion, Provenance
+from models.provenance import CodeHash, CodeVersion, Provenance
 
 
 def test_code_versions():
     cv = CodeVersion(version="test_v0.0.1")
     cv.update()
 
-    assert cv.commit_hashes is not None
-    assert len(cv.commit_hashes) == 1
-    assert cv.commit_hashes[0] is not None
-    assert isinstance(cv.commit_hashes[0], str)
-    assert len(cv.commit_hashes[0]) == 40
+    assert cv.code_hashes is not None
+    assert len(cv.code_hashes) == 1
+    assert cv.code_hashes[0] is not None
+    assert isinstance(cv.code_hashes[0].hash, str)
+    assert len(cv.code_hashes[0].hash) == 40
 
     try:
         with Session() as session:
             session.add(cv)
             session.commit()
             cv_id = cv.id
+            git_hash = cv.code_hashes[0].hash
             assert cv_id is not None
 
         with Session() as session:
+            ch = session.scalars(sa.select(CodeHash).where(CodeHash.hash == git_hash)).first()
             cv = session.scalars(sa.select(CodeVersion).where(CodeVersion.version == 'test_v0.0.1')).first()
             assert cv is not None
             assert cv.id == cv_id
+            assert cv.code_hashes[0].id == ch.id
+
+        # add old hash
+        old_hash = '696093387df591b9253973253756447079cea61d'
+        ch2 = session.scalars(sa.select(CodeHash).where(CodeHash.hash == old_hash)).first()
+        if ch2 is None:
+            ch2 = CodeHash(old_hash)
+        cv.code_hashes.append(ch2)
+
+        with Session() as session:
+            session.add(cv)
+            session.commit()
+
+            assert len(cv.code_hashes) == 2
+            assert cv.code_hashes[0].hash == git_hash
+            assert cv.code_hashes[1].hash == old_hash
+            assert cv.code_hashes[0].code_version_id == cv.id
+            assert cv.code_hashes[1].code_version_id == cv.id
+
+        # check that we can remove commits and have that cascaded
+        with Session() as session:
+            session.add(cv)  # add it back into the new session
+            session.delete(ch2)
+            session.commit()
+            len(cv.code_hashes) == 1
+            assert cv.code_hashes[0].hash == git_hash
+
+            # now check the delete orphan
+            cv.code_hashes = []
+            session.commit()
+            assert len(cv.code_hashes) == 0
+            orphan_hash = session.scalars(sa.select(CodeHash).where(CodeHash.hash == git_hash)).first()
+            assert orphan_hash is None
 
     finally:
         with Session() as session:

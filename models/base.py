@@ -1,4 +1,7 @@
 import os
+
+from contextlib import contextmanager
+
 import sqlalchemy as sa
 from sqlalchemy import func
 
@@ -19,7 +22,7 @@ if DATA_ROOT is None:  # TODO: should also check if folder exists?
 
 DATA_TEMP = os.path.join(CODE_ROOT, "DATA_TEMP")
 
-# to drop the database use: sudo -u postgres psql -c "DROP DATABASE seechange with(forced)"
+# to drop the database use: sudo -u postgres psql -c "DROP DATABASE seechange WITH(force)"
 
 # TODO: check with Rob if he has a preferred way of doing this
 # create database here:
@@ -29,6 +32,32 @@ if not database_exists(engine.url):
     create_database(engine.url)
 
 Session = sessionmaker(bind=engine)
+
+
+@contextmanager
+def SmartSession(input_session=None):
+    """
+    Retrun a Session() instance that may or may not
+    be inside a context manager.
+
+    If the input is already a session, just return that.
+    If the input is None, create a session that would
+    close at the end of the life of the calling scope.
+    """
+    # open a new session and close it when outer scope is done
+    if input_session is None:
+        with Session() as session:
+            yield session
+
+    # return the input session with the same scope as given
+    elif isinstance(input_session, sa.orm.session.Session):
+        yield input_session
+
+    # wrong input type
+    else:
+        raise TypeError(
+            "input_session must be a sqlalchemy session or None"
+        )
 
 
 def safe_mkdir(path):

@@ -6,7 +6,20 @@ from sqlalchemy import event
 from sqlalchemy.orm import relationship
 from sqlalchemy.dialects.postgresql import JSONB
 
-from models.base import engine, Base
+from models.base import engine, Base, SmartSession
+
+
+class CodeHash(Base):
+    __tablename__ = "code_hashes"
+
+    def __init__(self, git_hash):
+        self.hash = git_hash
+
+    hash = sa.Column(sa.String, index=True, unique=True)
+
+    code_version_id = sa.Column(sa.Integer, sa.ForeignKey("code_versions.id", ondelete="CASCADE"))
+
+    code_version = relationship("CodeVersion", back_populates="code_hashes")
 
 
 class CodeVersion(Base):
@@ -20,21 +33,24 @@ class CodeVersion(Base):
         doc='Version of the code. Can use semantic versioning or date/time, etc. '
     )
 
-    commit_hashes = sa.Column(
-        sa.ARRAY(sa.String),
-        default=[],
-        nullable=False,
-        doc='List of commit hashes that are included in this version of the code. '
+    code_hashes = sa.orm.relationship(
+        CodeHash,
+        backref='code_versions',
+        cascade='all, delete-orphan',
+        passive_deletes=True,
+        doc='List of commit hashes for this version of the code',
     )
 
-    def update(self):
+    def update(self, session=None):
         repo = git.Repo(search_parent_directories=True)
         git_hash = repo.head.object.hexsha
-        if self.commit_hashes is None:
-            self.commit_hashes = [git_hash]
-        elif git_hash not in self.commit_hashes:
-            new_hashes = self.commit_hashes + [git_hash]
-            self.commit_hashes = new_hashes
+
+        with SmartSession(session) as session:
+            hash_obj = session.scalars(sa.select(CodeHash).where(CodeHash.hash == git_hash)).first()
+            if hash_obj is None:
+                hash_obj = CodeHash(git_hash)
+
+            self.code_hashes.append(hash_obj)
 
 
 class Provenance(Base):
@@ -109,6 +125,7 @@ CodeVersion.provenances = relationship(
 )
 
 
+CodeHash.metadata.create_all(engine)
 CodeVersion.metadata.create_all(engine)
 Provenance.metadata.create_all(engine)
 
