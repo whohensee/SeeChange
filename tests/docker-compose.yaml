@@ -1,0 +1,25 @@
+version: "3.3"
+services:
+  seechange_postgres:
+    image: gchr.io/${GITHUB_REPOSITORY_OWNER}/seechange-postgres
+    build: ../docker/postgres
+    environment:
+      POSTGRES_DATA_DIR: /var/lib/postgresql/data
+    healthcheck:
+      test: netcat -w 1 localhost 5432 || exit 1
+      interval: 5s
+      timeout: 10s
+      retries: 5
+
+  runtests:
+    image: gchr.io/${GITHUB_REPOSITORY_OWNER}/seechange
+    build: ../docker/application
+    depends_on:
+      seechange_postgres:
+         condition: service_healthy
+    volumes:
+      - type: bind
+        source: ..
+        target: /seechange
+    working_dir: /seechange
+    entrypoint: [ "pytest", "-v", "/seechange/tests/", ]
