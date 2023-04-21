@@ -1,2 +1,5 @@
 preloads:
   - ../default_config.yaml
+
+db:
+  host: seechange_postgres

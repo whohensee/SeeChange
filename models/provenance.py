@@ -1,13 +1,13 @@
 import json
-import git
 import hashlib
 import sqlalchemy as sa
 from sqlalchemy import event
 from sqlalchemy.orm import relationship
 from sqlalchemy.dialects.postgresql import JSONB
 
-from models.base import Base, SmartSession
+from pipeline.utils import get_git_hash
 
+from models.base import Base, SmartSession
 
 class CodeHash(Base):
     __tablename__ = "code_hashes"
@@ -19,7 +19,7 @@ class CodeHash(Base):
 
     code_version_id = sa.Column(sa.Integer, sa.ForeignKey("code_versions.id", ondelete="CASCADE"))
 
-    code_version = relationship("CodeVersion", back_populates="code_hashes")
+    code_version = relationship("CodeVersion", back_populates="code_hashes", lazy='selectin')
 
 
 class CodeVersion(Base):
@@ -35,15 +35,14 @@ class CodeVersion(Base):
 
     code_hashes = sa.orm.relationship(
         CodeHash,
-        backref='code_versions',
+        back_populates='code_version',
         cascade='all, delete-orphan',
         passive_deletes=True,
         doc='List of commit hashes for this version of the code',
     )
 
     def update(self, session=None):
-        repo = git.Repo(search_parent_directories=True)
-        git_hash = repo.head.object.hexsha
+        git_hash = get_git_hash()
 
         with SmartSession(session) as session:
             hash_obj = session.scalars(sa.select(CodeHash).where(CodeHash.hash == git_hash)).first()

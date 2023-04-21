@@ -5,11 +5,8 @@ import sqlalchemy as sa
 
 from models.base import SmartSession
 from models.provenance import CodeVersion, Provenance
+from models.exposure import Exposure
 
-# @pytest.fixture(scope="session", autouse=True)
-# def init_database():
-#     with SmartSession() as session:
-#         pass
 
 @pytest.fixture(scope="session", autouse=True)
 def code_version():
@@ -64,3 +61,15 @@ def provenance_extra(code_version, provenance_base):
         session.execute(sa.delete(Provenance).where(Provenance.id == pid))
         session.commit()
 
+
+@pytest.fixture
+def exposure():
+
+    e = Exposure('Demo_exposure.fits')
+
+    yield e
+
+    if e.id is not None:
+        with SmartSession() as session:
+            session.execute(sa.delete(Exposure).where(Exposure.id == e.id))
+            session.commit()

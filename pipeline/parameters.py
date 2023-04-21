@@ -1,5 +1,11 @@
 import copy
 
+import sqlalchemy as sa
+
+from pipeline.utils import get_git_hash, get_latest_provenance
+
+from models.base import SmartSession
+from models.provenance import CodeHash, CodeVersion, Provenance
 
 # parameters that are propagated from one Parameters object
 # to the next when adding embedded objects.
@@ -109,6 +115,13 @@ class Parameters:
         self.__docstrings__ = {}
         self.__critical__ = {}
         self.__aliases__ = {}
+
+        self.code_version = self.add_par(
+            "code_version",
+            'v0.0.0',
+            str,
+            "Version of the code used to produce the output products.",
+        )
 
         self.verbose = self.add_par(
             "verbose", 0, int, "Level of verbosity (0=quiet).", critical=False
@@ -610,6 +623,87 @@ class Parameters:
         s = f"= {value} % {desc}{extra}"
 
         return s
+
+    def get_process_name(self):
+        """
+        Get the name of the process (pipeline phase) that
+        is relevant for this Parameter object.
+        Should be implemented in each subclass.
+        """
+        raise NotImplementedError("Must be implemented in subclass.")
+
+    def get_provenance(self, prov_cache=None, session=None):
+        """
+        Get a Provenance object based on the parameters
+        and code version.
+
+        Parameters
+        ----------
+        prov_cache: dict
+            A dictionary of Provenance objects, from which the relevant
+            upstream ids can be retrieved. If not given, will be filled
+            automatically using the most up-to-date provenances.
+        session: sqlalchemy.orm.session.Session or SmartSession
+            The database session to use to retrieve the provenances.
+            If not given, will open a new session and close it at
+            the end of the function.
+        """
+        if prov_cache is None:
+            prov_cache = {}
+
+        with SmartSession(session) as session:
+            # first check if we can find the upstream provenances
+            upstreams = []
+            for name in self.get_upstream_process_names():  # only works in subclasses!
+                if name not in prov_cache:
+                    # this will also modify the prov_cache that was passed in!
+                    prov_cache[name] = get_latest_provenance(name, session=session)
+
+                upstream_prov = prov_cache[name]
+
+                if upstream_prov is None:
+                    raise ValueError(f'Cannot find provenance for process "{name}"!')
+
+                upstreams.append(upstream_prov)
+
+            process = self.get_process_name()  # only works in subclasses!
+            cv = session.scalars(sa.select(CodeVersion).where(CodeVersion.name == self.code_version)).first()
+            if cv is not None:
+                cv.update()  # update the current commit hash
+
+            # try to find the CodeHash and through that find the CodeVersion
+            if cv is None:
+                ch = session.scalars(sa.select(CodeHash).where(CodeHash.hash == get_git_hash())).first()
+                if ch is not None:
+                    cv = ch.code_version
+
+            if cv is None:
+                # TODO: should this generate a new code version? Should that be done manually?
+                raise ValueError(f'Cannot find code version "{self.code_version}" for process "{process}"')
+
+            # now that we have a code version object we can make a provenance
+            prov = Provenance(
+                process=process,
+                code_version=cv,
+                parameters=self.get_critical_pars(),
+                upstreams=upstreams
+            )
+            prov.update_hash()  # need a new object to calculate the hash, then check if it exists on the DB:
+            existing_p = session.scalars(
+                sa.select(Provenance).where(
+                    Provenance.unique_hash == prov.unique_hash
+                )
+            ).first()
+
+            if existing_p is not None:
+                prov = existing_p
+                session.add(prov)
+                session.commit()  # make sure to add the new provenance
+
+        return prov
+
+
+
 
 
 class ParsDemoSubclass(Parameters):

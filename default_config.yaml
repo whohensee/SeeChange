@@ -6,6 +6,6 @@ db:
   engine: postgresql
   user: postgres
   password: fragile
-  host: seechange_postgres
+  host: localhost
   port: 5432
   database: seechange
