@@ -7,6 +7,7 @@ import copy
 import yaml
 import traceback
 
+
 class Config:
     """Interface for yaml config file.
 
@@ -234,7 +235,6 @@ class Config:
         """
         origconfig = Config.get( configfile, reread=reread, logger=logger, dirmap=dirmap )
         return Config( configfile, clone=origconfig, dirmap=dirmap )
-
 
     def __init__( self, configfile, clone=None, logger=logging.getLogger("main"), dirmap={} ):
         """Don't call this, call static method Config.get() or Config.clone()

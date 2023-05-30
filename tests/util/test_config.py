@@ -13,6 +13,7 @@ from util import config
 # from one test to the next even if the call wasn't in a fixture with
 # class scope.  (The tests below are ordered with this in mind.)
 
+
 class TestConfig:
     # Nominally, this tests should pass even if SEECHANGE_CONFIG is not None.  However, because there
     # are autouse fixtures in ../conftest.py, one of the side effects is that the config default
@@ -85,7 +86,6 @@ class TestConfig:
         assert isleaf
         fields, isleaf, curfield, ifield = cfg._fieldsep( 'mainscalar1' )
         assert isleaf
-
 
     def test_nest(self, cfg):
         assert cfg.value( 'nest' ) ==  { 'nest1': [ { 'nest1a': { 'val': 'foo' } }, 42 ],

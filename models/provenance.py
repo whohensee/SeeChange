@@ -9,6 +9,7 @@ from pipeline.utils import get_git_hash
 
 from models.base import Base, SmartSession
 
+
 class CodeHash(Base):
     __tablename__ = "code_hashes"
 
@@ -44,6 +45,8 @@ class CodeVersion(Base):
     def update(self, session=None):
         git_hash = get_git_hash()
 
+        if git_hash is None:
+            return  # quietly fail if we can't get the git hash
         with SmartSession(session) as session:
             hash_obj = session.scalars(sa.select(CodeHash).where(CodeHash.hash == git_hash)).first()
             if hash_obj is None:

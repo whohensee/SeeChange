@@ -1,11 +1,18 @@
+import os
 import pytest
 import uuid
+
+import numpy as np
 
 import sqlalchemy as sa
 
 from models.base import SmartSession
 from models.provenance import CodeVersion, Provenance
 from models.exposure import Exposure
+
+
+def rnd_str(n):
+    return ''.join(np.random.choice(list('abcdefghijklmnopqrstuvwxyz'), n))
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -64,12 +71,32 @@ def provenance_extra(code_version, provenance_base):
 
 @pytest.fixture
 def exposure():
+    e = Exposure(
+        f"Demo_test_{rnd_str(5)}.fits",
+        section_id=0,
+        exp_time=30,
+        mjd=58392.0,
+        filter="g",
+        ra=123,
+        dec=-23,
+        project='foo',
+        target='bar',
+        nofile=True,
+    )
+    fullname = None
+    try:  # make sure to remove file at the end
+        fullname = e.get_fullpath()
+        open(fullname, 'a').close()
+        e.nofile = False
 
-    e = Exposure('Demo_exposure.fits')
+        yield e
 
-    yield e
-
-    if e.id is not None:
+    finally:
         with SmartSession() as session:
-            session.execute(sa.delete(Exposure).where(Exposure.id == e.id))
-            session.commit()
+            e = session.merge(e)
+            if e.id is not None:
+                session.execute(sa.delete(Exposure).where(Exposure.id == e.id))
+                session.commit()
+
+        if fullname is not None and os.path.isfile(fullname):
+            os.remove(fullname)

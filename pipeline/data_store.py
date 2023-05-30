@@ -1,6 +1,6 @@
 import sqlalchemy as sa
 
-from pipeline.utils import get_git_hash, get_latest_provenance
+from pipeline.utils import get_git_hash, get_latest_provenance, parse_session
 
 from models.base import SmartSession
 from models.provenance import CodeHash, CodeVersion, Provenance
@@ -123,8 +123,6 @@ class DataStore:
             the function that received the session as one of the arguments.
             If no session is given, will return None.
         """
-        output_session = None
-
         if len(args) == 0:
             raise ValueError('Must provide at least one argument to DataStore constructor.')
 
@@ -133,11 +131,7 @@ class DataStore:
             self.__dict__ = args[0].__dict__.copy()
             return
 
-        # catch any sessions given to the args list
-        sessions = [arg for arg in args if isinstance(arg, (sa.orm.session.Session, SmartSession))]
-        if len(sessions) > 0:
-            output_session = sessions[-1]
-        args = [arg for arg in args if not isinstance(arg, (sa.orm.session.Session, SmartSession))]
+        output_session = parse_session(*args, **kwargs)
 
         # remove any provenances from the args list
         for arg in args:
@@ -178,12 +172,6 @@ class DataStore:
                     if not isinstance(prov, Provenance):
                         raise ValueError(f'Provenance must be a Provenance object, got {type(prov)}')
                     self.upstream_provs.append(prov)
-
-            # check for sessions
-            if key in ['session']:
-                if not isinstance(val, (sa.orm.session.Session, SmartSession)):
-                    raise ValueError(f'Session must be a SQLAlchemy session or SmartSession, got {type(val)}')
-                output_session = val
 
         return output_session
 
