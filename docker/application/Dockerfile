@@ -179,6 +179,7 @@ RUN pip install \
       sqlalchemy==2.0.7 \
       sqlalchemy-utils==0.40.0 \
       urllib3==1.26.15 \
+      wget==3.2 \
    && rm -rf /home/seechange/.cache/pip
 
 # Other pip packages I removed from above that were

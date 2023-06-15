@@ -5,7 +5,10 @@ import pathlib
 import types
 import copy
 import yaml
-import traceback
+
+
+class NoValue:
+    pass
 
 
 class Config:
@@ -342,7 +345,7 @@ class Config:
         override = Config( overridepath, logger=self.logger, dirmap=dirmap )._data
         self._data = Config._merge_trees( self._data, override )
 
-    def value( self, field, struct=None ):
+    def value( self, field, default=NoValue(), struct=None ):
         """Get a value from the config structure.
 
         Parameters
@@ -401,21 +404,28 @@ class Config:
                 return struct[ifield]
             else:
                 try:
-                    return self.value( ".".join(fields[1:]), struct[ifield] )
+                    return self.value( ".".join(fields[1:]), default, struct[ifield] )
                 except Exception as e:
-                    traceback.print_exc()
-                    raise ValueError( f'Error getting list element {ifield}' )
+                    if isinstance(default, NoValue):
+                        raise ValueError( f'Error getting list element {ifield}' ) from e
+                    else:
+                        return default
         elif isinstance( struct, dict ):
             if curfield not in struct:
-                raise ValueError( f'Field {curfield} doesn\'t exist' )
+                if isinstance(default, NoValue):
+                    raise ValueError( f'Field {curfield} doesn\'t exist' )
+                else:
+                    return default
             if isleaf:
                 return struct[curfield]
             else:
                 try:
-                    return self.value( ".".join(fields[1:]), struct[curfield] )
+                    return self.value( ".".join(fields[1:]), default, struct[curfield] )
                 except Exception as e:
-                    traceback.print_exc()
-                    raise ValueError( f'Error getting field {curfield}' )
+                    if isinstance(default, NoValue):
+                        raise ValueError( f'Error getting field {curfield}' ) from e
+                    else:
+                        return default
         else:
             if not isleaf:
                 raise ValueError( f'Tried to get field {curfield} of scalar!' )

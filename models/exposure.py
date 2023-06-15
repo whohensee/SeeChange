@@ -1,12 +1,12 @@
-import re
 from collections import defaultdict
 
 import sqlalchemy as sa
+from sqlalchemy.types import Enum
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.schema import CheckConstraint
 from sqlalchemy.orm.session import object_session
 
-from astropy.coordinates import SkyCoord
+from pipeline.utils import read_fits_image, parse_ra_hms_to_deg, parse_dec_dms_to_deg
 
 from models.base import Base, SeeChangeBase, FileOnDiskMixin, SpatiallyIndexed, SmartSession
 from models.instrument import Instrument, guess_instrument, get_instrument_instance
@@ -71,11 +71,61 @@ class SectionData:
         self._data = defaultdict(lambda: None)
 
 
-# TODO: add a SectionHeader class to read headers for individual sections
+class SectionHeaders:
+    """
+    A helper class that lazy loads the section header from the database.
+    When requesting one of the section IDs it will fetch the header
+    for that section, load it from disk and store it in memory.
+    To clear the memory cache, call the clear_cache() method.
+    """
+    def __init__(self, filepath, instrument):
+        """
+        Must initialize this object with a filepath
+        (or list of filepaths) and an instrument object.
+        These two things will control how data is loaded
+        from the disk.
+
+        Parameters
+        ----------
+        filepath: str or list of str
+            The filepath of the exposure to load.
+            If each section is in a different file, then
+            this should be a list of filepaths.
+        instrument: Instrument
+            The instrument object that describes the
+            sections and how to load them from disk.
+
+        """
+        self.filepath = filepath
+        self.instrument = instrument
+        self._header = defaultdict(lambda: None)
+
+    def __getitem__(self, section_id):
+        if self._header[section_id] is None:
+            self._header[section_id] = self.instrument.read_header(self.filepath, section_id)
+        return self._header[section_id]
+
+    def __setitem__(self, section_id, value):
+        self.header[section_id] = value
+
+    def clear_cache(self):
+        self._header = defaultdict(lambda: None)
+
+
+im_type_enum = Enum("science", "reference", "difference", "bias", "dark", "flat", name='image_type')
+
 
 class Exposure(Base, FileOnDiskMixin, SpatiallyIndexed):
 
     __tablename__ = "exposures"
+
+    type = sa.Column(
+        im_type_enum,
+        nullable=False,
+        default="science",
+        index=True,
+        doc="Type of image (science, reference, difference, etc)."
+    )
 
     header = sa.Column(
         JSONB,
@@ -94,12 +144,12 @@ class Exposure(Base, FileOnDiskMixin, SpatiallyIndexed):
         sa.Double,
         nullable=False,
         index=True,
-        doc="Modified Julian date of the exposure (MJD=JD-2400000.5)."
+        doc="Modified Julian date of the start of the exposure (MJD=JD-2400000.5)."
     )
 
-    exp_time = sa.Column(sa.Float, nullable=False, index=True, doc="Exposure time in seconds")
+    exp_time = sa.Column(sa.Float, nullable=False, index=True, doc="Exposure time in seconds. ")
 
-    filter = sa.Column(sa.Text, nullable=True, index=True, doc="Filter name")
+    filter = sa.Column(sa.Text, nullable=True, index=True, doc="Name of the filter used to make this exposure. ")
 
     filter_array = sa.Column(
         sa.ARRAY(sa.Text),
@@ -122,13 +172,6 @@ class Exposure(Base, FileOnDiskMixin, SpatiallyIndexed):
         doc='Name of the instrument used to take the exposure. '
     )
 
-    section_id = sa.Column(
-        sa.Text,
-        nullable=False,
-        index=True,
-        doc='Section ID of the exposure. '
-    )
-
     telescope = sa.Column(
         sa.Text,
         nullable=False,
@@ -140,7 +183,7 @@ class Exposure(Base, FileOnDiskMixin, SpatiallyIndexed):
         sa.Text,
         nullable=False,
         index=True,
-        doc='Name of the project, (could also be a proposal ID). '
+        doc='Name of the project (could also be a proposal ID). '
     )
 
     target = sa.Column(
@@ -149,14 +192,6 @@ class Exposure(Base, FileOnDiskMixin, SpatiallyIndexed):
         index=True,
         doc='Name of the target object or field id. '
     )
-
-    gallat = sa.Column(sa.Double, index=True, doc="Galactic latitude of the target. ")
-
-    gallon = sa.Column(sa.Double, index=False, doc="Galactic longitude of the target. ")
-
-    ecllat = sa.Column(sa.Double, index=True, doc="Ecliptic latitude of the target. ")
-
-    ecllon = sa.Column(sa.Double, index=False, doc="Ecliptic longitude of the target. ")
 
     def __init__(self, *args, **kwargs):
         """
@@ -174,7 +209,9 @@ class Exposure(Base, FileOnDiskMixin, SpatiallyIndexed):
         FileOnDiskMixin.__init__(self, *args, **kwargs)
         SeeChangeBase.__init__(self)  # don't pass kwargs as they could contain non-column key-values
 
-        self._data = None
+        self._data = None  # the underlying image data for each section
+        self._section_headers = None  # the headers for individual sections, directly from the FITS file
+        self._raw_header = None  # the global (exposure level) header, directly from the FITS file
 
         if self.filepath is None and not self.nofile:
             raise ValueError("Must give a filepath to initialize an Exposure object. ")
@@ -195,6 +232,26 @@ class Exposure(Base, FileOnDiskMixin, SpatiallyIndexed):
 
         if self.ra is not None and self.dec is not None:
             self.calculate_coordinates()  # galactic and ecliptic coordinates
+
+    @sa.orm.reconstructor
+    def init_on_load(self):
+        Base.init_on_load(self)
+        FileOnDiskMixin.init_on_load(self)
+        self._data = None
+        self._section_headers = None
+        self._raw_header = None
+        self._instrument_object = None
+        session = object_session(self)
+        if session is not None:
+            self.update_instrument(session=session)
+
+    def __setattr__(self, key, value):
+        if key == 'ra' and isinstance(value, str):
+            value = parse_ra_hms_to_deg(value)
+        if key == 'dec' and isinstance(value, str):
+            value = parse_dec_dms_to_deg(value)
+
+        super().__setattr__(key, value)
 
     def use_instrument_to_read_header_data(self):
         """
@@ -267,14 +324,24 @@ class Exposure(Base, FileOnDiskMixin, SpatiallyIndexed):
     def instrument_object(self, value):
         self._instrument_object = value
 
-    @sa.orm.reconstructor
-    def init_on_load(self):
-        Base.init_on_load(self)
-        self._data = None
-        self._instrument_object = None
-        session = object_session(self)
-        if session is not None:
-            self.update_instrument(session=session)
+    @property
+    def start_mjd(self):
+        """Time of the beginning of the exposure (equal to mjd). """
+        return self.mjd
+
+    @property
+    def mid_mjd(self):
+        """Time of the middle of the exposure. """
+        if self.mjd is None or self.exp_time is None:
+            return None
+        return (self.start_mjd + self.end_mjd) / 2.0
+
+    @property
+    def end_mjd(self):
+        """The time when the exposure ended. """
+        if self.mjd is None or self.exp_time is None:
+            return None
+        return self.mjd + self.exp_time / 86400.0
 
     def __repr__(self):
 
@@ -327,9 +394,29 @@ class Exposure(Base, FileOnDiskMixin, SpatiallyIndexed):
             raise ValueError(f"data must be a SectionData object. Got {type(value)} instead. ")
         self._data = value
 
+    @property
+    def section_headers(self):
+        if self._section_headers is None:
+            if self.instrument is None:
+                raise ValueError("Cannot load headers without an instrument! ")
+            self._section_headers = SectionHeaders(self.get_fullpath(), self.instrument_object)
+        return self._section_headers
+
+    @section_headers.setter
+    def section_headers(self, value):
+        if not isinstance(value, SectionHeaders):
+            raise ValueError(f"data must be a SectionHeaders object. Got {type(value)} instead. ")
+        self._section_headers = value
+
+    @property
+    def raw_header(self):
+        if self._raw_header is None:
+            self._raw_header = read_fits_image(self.get_fullpath(), ext=0, output='header')
+        return self._raw_header
+
     def update_instrument(self, session=None):
         """
-        Make sure the instrument object is up to date with the current database session.
+        Make sure the instrument object is up-to-date with the current database session.
 
         This will call the instrument's fetch_sections() method,
         using the given session and the exposure's MJD as dateobs.
@@ -352,28 +439,21 @@ class Exposure(Base, FileOnDiskMixin, SpatiallyIndexed):
         with SmartSession(session) as session:
             self.instrument_object.fetch_sections(session=session, dateobs=self.mjd)
 
-    def calculate_coordinates(self):
-        if self.ra is None or self.dec is None:
-            raise ValueError("Exposure must have RA and Dec set before calculating coordinates! ")
-
-        coords = SkyCoord(self.ra, self.dec, unit="deg", frame="icrs")
-        self.gallat = coords.galactic.b.deg
-        self.gallon = coords.galactic.l.deg
-        self.ecllat = coords.barycentrictrueecliptic.lat.deg
-        self.ecllon = coords.barycentrictrueecliptic.lon.deg
+    @staticmethod
+    def _do_not_require_file_to_exist():
+        """
+        By default, new Exposure objects are generated
+        with nofile=False, which means the file must exist
+        at the time the Exposure object is created.
+        This is the opposite default from the base class
+        FileOnDiskMixin behavior.
+        """
+        return False
 
 
 if __name__ == '__main__':
-
-    from models.base import Session
-    import models.instrument
-
-    import numpy as np
-    rnd_str = lambda n: ''.join(np.random.choice(list('abcdefghijklmnopqrstuvwxyz'), n))
-
-    e = Exposure(f"Demo_test_{rnd_str(5)}.fits", exp_time=30, mjd=58392.0, filter="F160W", ra=123, dec=-23, project='foo', target='bar')
-
-    session = Session()
-
-    session.add(e)
-    session.commit()
+    import os
+    ROOT_FOLDER = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    filename = os.path.join(ROOT_FOLDER, 'data/DECam_examples/c4d_221104_074232_ori.fits.fz')
+    e = Exposure(filename)
+    print(e)

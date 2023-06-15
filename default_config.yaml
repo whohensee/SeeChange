@@ -10,3 +10,22 @@ db:
   host: localhost
   port: 5432
   database: seechange
+
+storage:
+  images:
+    # can choose hdf5 as well, but this is not yet implemented
+    format: fits
+    # should Image object save the weights/flags/etc in a single file with the image data?
+    single_file: false
+    # The convention for building filenames for images
+    # Use any of the following: short_name, date, time, section_id, filter, ra, dec, prov_id
+    # Can also use ra_int and ra_frac to get the integer number before/after the decimal point
+    # (the same can be done for dec). Also use ra_int_h to get the number in hours.
+    # to get the declination with "p" or "m" replacing the sign, use dec_int_pm.
+    # The string given here is fed into the python format() function
+    # so you can use e.g., {ra_int:03d} to get a 3 digit zero padded right ascension.
+    # The name convention can also include subfolders (e.g., using {ra_int}/...).
+    # The minimal set of fields to make the filenames unique include:
+    # short_name (instrument name), date, time, section_id, prov_id (the unique provenance ID)
+    name_convention: "{ra_int:03d}/{short_name}_{date}_{time}_{section_id:02d}_{filter}_{prov_id:03d}"
+

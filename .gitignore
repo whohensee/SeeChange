@@ -1,3 +1,6 @@
+# some specific files we don't want in the repo
+data/DECam_examples/c4d_221104_074232_ori.fits.fz
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

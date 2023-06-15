@@ -46,4 +46,5 @@ tables==3.8.0
 tomli==2.0.1
 typing-extensions==4.5.0
 urllib3==1.26.15
+wget==3.2
 zipp==3.15.0

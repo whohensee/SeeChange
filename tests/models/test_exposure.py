@@ -1,7 +1,7 @@
+import os
 import pytest
 import re
 
-import sqlalchemy as sa
 import numpy as np
 from datetime import datetime
 
@@ -35,7 +35,6 @@ def test_exposure_no_null_values():
         'instrument': 'DemoInstrument',
         'project': 'foo',
         'target': 'bar',
-        'section_id': 0,
     }
 
     added = {}
@@ -107,22 +106,22 @@ def test_exposure_guess_decam_instrument():
 
     t = datetime.now()
     mjd = Time(t).mjd
-    time_str = t.strftime("%Y%m%d_%H%M%S")
-    e = Exposure(f"c4d_{time_str}_ori.fits", exp_time=30, mjd=mjd, filter="r", ra=123, dec=-23,
+
+    e = Exposure(f"DECam_examples/c4d_20221002_040239_r_v1.24.fits", exp_time=30, mjd=mjd, filter="r", ra=123, dec=-23,
                  project='foo', target='bar', nofile=True)
 
     assert e.instrument == 'DECam'
     assert isinstance(e.instrument_object, DECam)
 
 
-def test_coordinates():
+def test_exposure_coordinates():
     e = Exposure('foo.fits', ra=None, dec=None, nofile=True)
     assert e.ecllat is None
     assert e.ecllon is None
     assert e.gallat is None
     assert e.gallon is None
 
-    with pytest.raises(ValueError, match='Exposure must have RA and Dec set'):
+    with pytest.raises(ValueError, match='Object must have RA and Dec set'):
         e.calculate_coordinates()
 
     e = Exposure('foo.fits', ra=123.4, dec=None, nofile=True)
@@ -181,7 +180,67 @@ def test_exposure_comes_loaded_with_instrument_from_db(exposure):
         assert e2.instrument_object.sections is not None
 
 
-# TODO: here's a list of tests that need to be added when more functionality is added:
-#  - test loading data from a FITS file (e.g., using the DECam instrument)
-#  - test reading a header from FITS (e.g., using the DECam instrument)
-#  - test that header keys with different formatting (e.g., 'EXPTIME' vs 'exptime') are recognized
+def test_exposure_spatial_indexing(exposure):
+    pass  # TODO: complete this test
+
+
+def test_decam_exposure(decam_example_file):
+    assert os.path.isfile(decam_example_file)
+    e = Exposure(decam_example_file)
+
+    assert e.instrument == 'DECam'
+    assert isinstance(e.instrument_object, DECam)
+    assert e.telescope == 'CTIO 4.0-m telescope'
+    assert e.mjd == 59887.32121458
+    assert e.end_mjd == 59887.32232569111
+    assert e.ra == 116.32024583333332
+    assert e.dec == -26.25
+    assert e.exp_time == 96.0
+    assert e.filepath == 'DECam_examples/c4d_221104_074232_ori.fits.fz'
+    assert e.filter == 'g DECam SDSS c0001 4720.0 1520.0'
+    assert not e.from_db
+    assert e.header == {}
+    assert e.id is None
+    assert e.target == 'DECaPS-West'
+    assert e.project == '2022A-724693'
+
+    # check that we can lazy load the header from file
+    assert len(e.raw_header) == 150
+    assert e.raw_header['NAXIS'] == 0
+
+    with pytest.raises(ValueError, match=re.escape('The section_id must be a string. ')):
+        _ = e.data[0]
+
+    assert isinstance(e.data['N4'], np.ndarray)
+    assert e.data['N4'].shape == (4146, 2160)
+    assert e.data['N4'].dtype == 'uint16'
+
+    with pytest.raises(ValueError, match=re.escape('The section_id must be a string. ')):
+        _ = e.section_headers[0]
+
+    assert len(e.section_headers['N4']) == 100
+    assert e.section_headers['N4']['NAXIS'] == 2
+    assert e.section_headers['N4']['NAXIS1'] == 2160
+    assert e.section_headers['N4']['NAXIS2'] == 4146
+
+    try:
+        exp_id = None
+        with SmartSession() as session:
+            session.add(e)
+            session.commit()
+            exp_id = e.id
+            assert exp_id is not None
+
+        with SmartSession() as session:
+            e2 = session.scalars(sa.select(Exposure).where(Exposure.id == exp_id)).first()
+            assert e2 is not None
+            assert e2.id == exp_id
+            assert e2.from_db
+
+    finally:
+        if exp_id is not None:
+            with SmartSession() as session:
+                session.delete(e)
+                session.commit()
+
+

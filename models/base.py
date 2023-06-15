@@ -3,8 +3,11 @@ import inspect
 
 from contextlib import contextmanager
 
+from astropy.coordinates import SkyCoord
+
 import sqlalchemy as sa
 from sqlalchemy import func, orm
+from sqlalchemy.types import Enum
 
 from sqlalchemy.orm import sessionmaker, declarative_base
 from sqlalchemy.ext.declarative import declared_attr
@@ -12,6 +15,8 @@ from sqlalchemy.ext.declarative import declared_attr
 import util.config as config
 
 utcnow = func.timezone("UTC", func.current_timestamp())
+
+im_format_enum = Enum("fits", "hdf5", name='image_format')
 
 
 # this is the root SeeChange folder
@@ -77,37 +82,6 @@ def SmartSession(input_session=None):
         raise TypeError(
             "input_session must be a sqlalchemy session or None"
         )
-
-
-def safe_mkdir(path):
-
-    cfg = config.Config.get()
-    allowed_dirs = []
-    if cfg.value('path.data_root') is not None:
-        allowed_dirs.append(cfg.value('path.data_root'))
-    if cfg.value('path.data_temp') is not None:
-        allowed_dirs.append(cfg.value('path.data_temp'))
-    if cfg.value('path.server_data') is not None:
-        allowed_dirs.append(cfg.value('path.server_data'))
-
-    ok = False
-
-    for d in allowed_dirs:
-        parent = os.path.realpath(os.path.abspath(d))
-        child = os.path.realpath(os.path.abspath(path))
-
-        if os.path.commonpath([parent]) == os.path.commonpath([parent, child]):
-            ok = True
-            break
-
-    if not ok:
-        err_str = "Cannot make a new folder not inside the following folders: "
-        err_str += "\n".join(allowed_dirs)
-        err_str += f"\n\nAttempted folder: {path}"
-        raise ValueError(err_str)
-
-    # if the path is ok, also make the subfolders
-    os.makedirs(path, exist_ok=True)
 
 
 class SeeChangeBase:
@@ -208,14 +182,48 @@ class FileOnDiskMixin:
     when the app starts / when the config file is read.
     """
     cfg = config.Config.get()
-    server_path = cfg.value('path.server_data')
-    local_path = cfg.value('path.data_root')
+    server_path = cfg.value('path.server_data', None)
+    local_path = cfg.value('path.data_root', None)
     if local_path is None:
-        local_path = cfg.value('path.data_temp')
+        local_path = cfg.value('path.data_temp', None)
     if local_path is None:
         local_path = os.path.join(CODE_ROOT, 'data')
     if not os.path.isdir(local_path):
         os.makedirs(local_path, exist_ok=True)
+
+    @classmethod
+    def safe_mkdir(cls, path):
+        if path is None or path == '':
+            return  # ignore empty paths, we don't need to make them!
+        cfg = config.Config.get()
+
+        allowed_dirs = []
+        if cls.local_path is not None:
+            allowed_dirs.append(cls.local_path)
+        temp_path = cfg.value('path.data_temp', None)
+        if temp_path is not None:
+            allowed_dirs.append(temp_path)
+
+        allowed_dirs = list(set(allowed_dirs))
+
+        ok = False
+
+        for d in allowed_dirs:
+            parent = os.path.realpath(os.path.abspath(d))
+            child = os.path.realpath(os.path.abspath(path))
+
+            if os.path.commonpath([parent]) == os.path.commonpath([parent, child]):
+                ok = True
+                break
+
+        if not ok:
+            err_str = "Cannot make a new folder not inside the following folders: "
+            err_str += "\n".join(allowed_dirs)
+            err_str += f"\n\nAttempted folder: {path}"
+            raise ValueError(err_str)
+
+        # if the path is ok, also make the subfolders
+        os.makedirs(path, exist_ok=True)
 
     filepath = sa.Column(
         sa.Text,
@@ -232,6 +240,13 @@ class FileOnDiskMixin:
             "Filename extensions for raw exposure. "
             "Can contain any part of the filepath that isn't shared between files. "
         )
+    )
+
+    format = sa.Column(
+        im_format_enum,
+        nullable=False,
+        default='fits',
+        doc="Format of the file on disk. Should be fits or hdf5. "
     )
 
     def __init__(self, *args, **kwargs):
@@ -257,13 +272,62 @@ class FileOnDiskMixin:
                 later be associated with a file on disk (or for tests).
                 This property is NOT SAVED TO DB!
                 Saving to DB should only be done when a file exists
+                This is True by default, except for subclasses that
+                override the _do_not_require_file_to_exist() method.
                 # TODO: add the check that file exists before committing?
         """
         if len(args) == 1 and isinstance(args[0], str):
             self.filepath = args[0]
 
         self.filepath = kwargs.pop('filepath', self.filepath)
-        self.nofile = kwargs.pop('nofile', False)  # do not require a file to exist when making the exposure object
+        self.nofile = kwargs.pop('nofile', self._do_not_require_file_to_exist())
+
+    @orm.reconstructor
+    def init_on_load(self):
+        self.nofile = self._do_not_require_file_to_exist()
+
+    @staticmethod
+    def _do_not_require_file_to_exist():
+        """
+        The default value for the nofile property of new objects.
+        Generally it is ok to make new FileOnDiskMixin derived objects
+        without first having a file (the file is created by the app and
+        saved to disk before the object is committed).
+        Some subclasses (e.g., Exposure) will override this method
+        so that the default is that a file MUST exist upon creation.
+        In either case the caller to the __init__ method can specify
+        the value of nofile explicitly.
+        """
+        return True
+
+    def __setattr__(self, key, value):
+        if key == 'filepath' and isinstance(value, str):
+            value = self._validate_filepath(value)
+
+        super().__setattr__(key, value)
+
+    def _validate_filepath(self, filepath):
+        """
+        Make sure the filepath is legitimate.
+        If the filepath starts with the local path
+        (i.e., an absolute path is given) then
+        the local path is removed from the filepath,
+        forcing it to be a relative path.
+
+        Parameters
+        ----------
+        filepath: str
+            The filepath to validate.
+
+        Returns
+        -------
+        filepath: str
+            The validated filepath.
+        """
+        if filepath.startswith(self.local_path):
+            filepath = filepath[len(self.local_path) + 1:]
+
+        return filepath
 
     def get_fullpath(self, download=True, as_list=False):
         """
@@ -338,7 +402,6 @@ class FileOnDiskMixin:
             fname += ext
 
         fullname = os.path.join(self.local_path, fname)
-
         if not self.nofile and not os.path.exists(fullname) and download and self.server_path is not None:
             self._download_file(fname)
 
@@ -361,6 +424,36 @@ class FileOnDiskMixin:
         # TODO: finish this
         raise NotImplementedError('Downloading files from server is not yet implemented!')
 
+    def remove_data_from_disk(self, remove_folders=True):
+        """
+        Delete the data from disk, if it exists.
+        If remove_folders=True, will also remove any folders
+        if they are empty after the deletion.
+
+        Parameters
+        ----------
+        remove_folders: bool
+            If True, will remove any folders on the path to the files
+            associated to this object, if they are empty.
+        """
+        if self.filepath is None:
+            return
+        for f in self.get_fullpath(as_list=True):
+            if os.path.exists(f):
+                os.remove(f)
+                if remove_folders:
+                    folder = f
+                    for i in range(10):
+                        folder = os.path.dirname(folder)
+                        if len(os.listdir(folder)) == 0:
+                            os.rmdir(folder)
+                        else:
+                            break
+
+
+def safe_mkdir(path):
+    FileOnDiskMixin.safe_mkdir(path)
+
 
 class SpatiallyIndexed:
     """A mixin for tables that have ra and dec fields indexed via q3c."""
@@ -368,12 +461,30 @@ class SpatiallyIndexed:
     ra = sa.Column(sa.Double, nullable=False, doc='Right ascension in degrees')
     dec = sa.Column(sa.Double, nullable=False, doc='Declination in degrees')
 
+    gallat = sa.Column(sa.Double, index=True, doc="Galactic latitude of the target. ")
+
+    gallon = sa.Column(sa.Double, index=False, doc="Galactic longitude of the target. ")
+
+    ecllat = sa.Column(sa.Double, index=True, doc="Ecliptic latitude of the target. ")
+
+    ecllon = sa.Column(sa.Double, index=False, doc="Ecliptic longitude of the target. ")
+
     @declared_attr
     def __table_args__(cls):
         tn = cls.__tablename__
         return (
             sa.Index(f"{tn}_q3c_ang2ipix_idx", sa.func.q3c_ang2ipix(cls.ra, cls.dec)),
         )
+
+    def calculate_coordinates(self):
+        if self.ra is None or self.dec is None:
+            raise ValueError("Object must have RA and Dec set before calculating coordinates! ")
+
+        coords = SkyCoord(self.ra, self.dec, unit="deg", frame="icrs")
+        self.gallat = coords.galactic.b.deg
+        self.gallon = coords.galactic.l.deg
+        self.ecllat = coords.barycentrictrueecliptic.lat.deg
+        self.ecllon = coords.barycentrictrueecliptic.lon.deg
 
 
 if __name__ == "__main__":

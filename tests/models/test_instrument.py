@@ -137,12 +137,12 @@ def test_instrument_offsets_and_filter_array_index():
     assert len(inst.sections) > 1
 
     # check that there are default (no zero) offsets for other sections
-    offsets = inst.get_property(1, 'offsets')
+    offsets = inst.get_property('N4', 'offsets')
     assert isinstance(offsets, tuple)
     assert offsets != (0, 0)
 
     # the filter array for DECam is also just 0 for any section
-    idx = inst.get_property(1, 'filter_array_index')
+    idx = inst.get_property('N4', 'filter_array_index')
     assert idx == 0
 
 
@@ -170,13 +170,15 @@ def test_instrument_inheritance_full_example():
             # will apply kwargs to attributes, and register instrument in the INSTRUMENT_INSTANCE_CACHE
             Instrument.__init__(self, **kwargs)
 
-        def get_section_ids(self):
+        @classmethod
+        def get_section_ids(cls):
             """
             Get a list of SensorSection identifiers for this instrument.
             """
             return range(10)  # let's assume this instrument has 10 sections
 
-        def check_section_id(self, section_id):
+        @classmethod
+        def check_section_id(cls, section_id):
             """
             Check if the section_id is valid for this instrument.
             The section identifier must be between 0 and 9.
@@ -219,15 +221,18 @@ def test_instrument_inheritance_full_example():
         def get_filename_regex(cls):
             return [r'TestInstrument']
 
-        def get_auxiliary_exposure_header_keys(self):
+        @classmethod
+        def get_auxiliary_exposure_header_keys(cls):
             return ['shutter_mode']
 
-        def _get_header_keyword_translations(self):
-            translations = Instrument._get_header_keyword_translations(self)
+        @classmethod
+        def _get_header_keyword_translations(cls):
+            translations = Instrument._get_header_keyword_translations()
             translations.update({'shutter_mode': 'SHUTMODE'})
             return translations
 
-        def _get_header_values_converters(self):
+        @classmethod
+        def _get_header_values_converters(cls):
             # convert exp_time from ms to s:
             return {'exp_time': lambda t: t/1000.0}
 

@@ -92,6 +92,23 @@ class TestConfig:
                                          'nest2': { 'val': 'bar' } }
         assert cfg.value( 'nest.nest1.0.nest1a.val' ) == 'foo'
 
+    def test_missing_value_with_default(self, cfg):
+        with pytest.raises(ValueError, match="Field .* doesn't exist"):
+            cfg.value( 'nest_foo' )
+        assert cfg.value( 'nest_foo', 'default' ) == 'default'
+
+        with pytest.raises(ValueError, match="Error getting field .*"):
+            cfg.value( 'nest.nest15' )
+        assert cfg.value( 'nest.nest15', 15) == 15
+
+        with pytest.raises(ValueError, match="Error getting field .*"):
+            cfg.value( 'nest.nest1.99' )
+        assert cfg.value( 'nest.nest1.99', None) is None
+
+        with pytest.raises(ValueError, match="Error getting field .*"):
+            cfg.value( 'nest.nest1.0.nest1a.foo' )
+        assert cfg.value( 'nest.nest1.0.nest1a.foo', 'bar') == 'bar'
+
     def test_set(self, cfg):
         with pytest.raises( TypeError, match="Tried to add a non-integer field to a list." ):
             cfg.set_value( 'settest.list.notanumber', 'kitten', appendlists=True )

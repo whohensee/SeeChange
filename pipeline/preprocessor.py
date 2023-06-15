@@ -49,7 +49,7 @@ class Preprocessor:
             exposure = ds.get_raw_exposure(session=session)
 
             # TODO: get the CCD image from the exposure
-            image = Image(exposure_id=exposure.id, ccd_id=ds.ccd_id, provenance=ds.provenances['preprocessing'])
+            image = Image(exposure_id=exposure.id, section_id=ds.section_id, provenance=ds.provenances['preprocessing'])
 
         if image is None:
             raise ValueError('Image cannot be None at this point!')

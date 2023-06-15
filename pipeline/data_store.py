@@ -75,7 +75,7 @@ class DataStore:
         """
         # these are data products that can be cached in the store
         self.exposure = None  # single image, entire focal plane
-        self.image = None  # single image from one CCD
+        self.image = None  # single image from one sensor section
         self.sources = None  # extracted sources (a SourceList object, basically a catalog)
         self.wcs = None  # astrometric solution
         self.zp = None  # photometric calibration
@@ -88,16 +88,16 @@ class DataStore:
         self.upstream_provs = None  # provenances to override the upstreams if no upstream objects exist
 
         # these are identifiers used to find the data products in the database
-        self.exp_id = None  # use this and ccd_id to find the raw image
-        self.ccd_id = None  # use this and exp_id to find the raw image
-        self.im_id = None  # use this to specify an image already in the database
+        self.exposure_id = None  # use this and section_id to find the raw image
+        self.section_id = None  # use this and exposure_id to find the raw image
+        self.image_id = None  # use this to specify an image already in the database
 
         self.parse_args(*args, **kwargs)
 
     def parse_args(self, *args, **kwargs):
         """
         Parse the arguments to the DataStore constructor.
-        Can initialize based on exposure and CCD ids,
+        Can initialize based on exposure and section ids,
         or give a specific image id or coadd id.
 
         Parameters
@@ -105,8 +105,8 @@ class DataStore:
         args: list
             A list of arguments to parse.
             Possible argument combinations are:
-            - exp_id, ccd_id: give two integers
-            - im_id: give a single integer
+            - exposure_id, section_id: give two integers or integer and string
+            - image_id: give a single integer
 
         kwargs: dict
             A dictionary of keyword arguments to parse.
@@ -141,10 +141,10 @@ class DataStore:
 
         # parse the args list
         arg_types = [type(arg) for arg in args]
-        if arg_types == [int, int]:  # exp_id, ccd_id
-            self.exp_id, self.ccd_id = args
+        if arg_types == [int, int] or arg_types == [int, str]:  # exposure_id, section_id
+            self.exposure_id, self.section_id = args
         elif arg_types == [int]:
-            self.im_id = args[0]
+            self.image_id = args[0]
         # TODO: add more options here
         #  example: get a string filename to parse a specific file on disk
         else:
@@ -157,7 +157,7 @@ class DataStore:
         # parse the kwargs dict
         for key, val in kwargs.items():
             # override these attributes explicitly
-            if key in ['exp_id', 'ccd_id', 'im_id', 'coadd_id']:
+            if key in ['exposure_id', 'section_id', 'image_id']:
                 if not isinstance(val, int):
                     raise ValueError(f'{key} must be an integer, got {type(val)}')
                 setattr(self, key, val)
@@ -180,8 +180,11 @@ class DataStore:
         Check some of the inputs before saving them.
         """
 
-        if key in ['exp_id', 'ccd_id', 'im_id'] and not isinstance(value, int):
+        if key in ['exposure_id', 'image_id'] and not isinstance(value, int):
             raise ValueError(f'{key} must be an integer, got {type(value)}')
+
+        if key in ['section_id'] and not isinstance(value, (int, str)):
+            raise ValueError(f'{key} must be an integer or a string, got {type(value)}')
 
         if key == 'image' and not isinstance(value, Image):
             raise ValueError(f'image must be an Image object, got {type(value)}')
@@ -234,10 +237,10 @@ class DataStore:
     def get_inputs(self):
         """Get a string with the relevant inputs. """
 
-        if self.im_id is not None:
-            return f'im_id={self.im_id}'
-        elif self.exp_id is not None and self.ccd_id is not None:
-            return f'exp_id={self.exp_id}, ccd_id={self.ccd_id}'
+        if self.image_id is not None:
+            return f'image_id={self.image_id}'
+        elif self.exposure_id is not None and self.section_id is not None:
+            return f'exposure_id={self.exposure_id}, section_id={self.section_id}'
         else:
             raise ValueError('Could not get inputs for DataStore.')
 
@@ -354,11 +357,11 @@ class DataStore:
         Get the raw exposure from the database.
         """
         if self.exposure is None:
-            if self.exp_id is None:
-                raise ValueError('Cannot get raw exposure without exp_id!')
+            if self.exposure_id is None:
+                raise ValueError('Cannot get raw exposure without an exposure_id!')
 
             with SmartSession(session) as session:
-                self.exposure = session.scalars(sa.select(Exposure).where(Exposure.id == self.exp_id)).first()
+                self.exposure = session.scalars(sa.select(Exposure).where(Exposure.id == self.exposure_id)).first()
 
         return self.exposure
 
@@ -366,16 +369,16 @@ class DataStore:
         """
         Get the pre-processed (or coadded) image, either from
         memory or from the database.
-        If the store is initialized with an im_id,
+        If the store is initialized with an image_id,
         that image is returned, no matter the
         provenances or the local parameters.
         This is the only way to ask for a coadd image.
         If an image with such an id is not found,
         in memory or in the database, will raise
         an ValueError.
-        If exp_id and ccd_id are given, will
+        If exposure_id and section_id are given, will
         load an image that is consistent with
-        that exposure and CCD ids, and also with
+        that exposure and section ids, and also with
         the code version and critical parameters
         (using a matching of provenances).
         In this case we will only load a regular
@@ -402,19 +405,19 @@ class DataStore:
 
         """
         # we were explicitly asked for a specific image id:
-        if self.im_id is not None:
-            if self.image is not None and isinstance(self.image, Image) and self.image.id == self.im_id:
+        if self.image_id is not None:
+            if self.image is not None and isinstance(self.image, Image) and self.image.id == self.image_id:
                 pass  # return self.image at the end of function...
             else:  # not found in local memory, get from DB
                 with SmartSession(session) as session:
-                    self.image = session.scalars(sa.select(Image).where(Image.id == self.im_id)).first()
+                    self.image = session.scalars(sa.select(Image).where(Image.id == self.image_id)).first()
 
             # we asked for a specific image, it should exist!
             if self.image is None:
-                raise ValueError(f'Cannot find image with id {self.im_id}!')
+                raise ValueError(f'Cannot find image with id {self.image_id}!')
 
         # this option is for when we are not sure which image id we need
-        elif self.exp_id is not None and self.ccd_id is not None:
+        elif self.exposure_id is not None and self.section_id is not None:
 
             # must compare the image to the current provenance
             if provenance is None:  # check if in upstream_provs/database
@@ -422,7 +425,7 @@ class DataStore:
 
             if (
                 self.image is not None and isinstance(self.image, Image)
-                and self.image.exp_id == self.exp_id and self.image.ccd_id == self.ccd_id
+                and self.image.exposure_id == self.exposure_id and self.image.section_id == str(self.section_id)
             ):
                 # make sure the image has the correct provenance
                 if self.image is not None:
@@ -437,14 +440,14 @@ class DataStore:
                 with SmartSession(session) as session:
                     self.image = session.scalars(
                         sa.select(Image).where(
-                            Image.exp_id == self.exp_id,
-                            Image.ccd_id == self.ccd_id,
+                            Image.exposure_id == self.exposure_id,
+                            Image.section_id == str(self.section_id),
                             Image.provenance.has(unique_hash=provenance.unique_hash)
                         )
                     ).first()
 
         else:
-            raise ValueError('Cannot get processed image without exp_id and ccd_id or im_id!')
+            raise ValueError('Cannot get processed image without exposure_id and section_id or image_id!')
 
         return self.image  # could return none if no image was found
 
@@ -624,7 +627,6 @@ class DataStore:
 
         """
         if self.ref_image is None:
-
 
             with SmartSession(session) as session:
                 image = self.get_image(session=session)
