@@ -12,7 +12,7 @@ import astropy.units as u
 from pipeline.utils import read_fits_image, save_fits_image_file
 
 from models.base import SeeChangeBase, Base, FileOnDiskMixin, SpatiallyIndexed
-from models.exposure import Exposure, im_type_enum
+from models.exposure import Exposure, im_type_enum, im_format_enum
 from models.instrument import get_instrument_instance
 from models.provenance import Provenance
 
@@ -25,10 +25,16 @@ image_source_self_association_table = sa.Table(
     sa.Column('combined_id', sa.Integer, sa.ForeignKey('images.id', ondelete="CASCADE"), primary_key=True),
 )
 
-
 class Image(Base, FileOnDiskMixin, SpatiallyIndexed):
 
     __tablename__ = 'images'
+
+    format = sa.Column(
+        im_format_enum,
+        nullable=False,
+        default='fits',
+        doc="Format of the image on disk. Should be fits or hdf5. "
+    )
 
     exposure_id = sa.Column(
         sa.ForeignKey('exposures.id', ondelete='SET NULL'),
@@ -588,9 +594,8 @@ class Image(Base, FileOnDiskMixin, SpatiallyIndexed):
 
         return filename
 
-    def save(self, filename=None):
-        """
-        Save the data (along with flags, weights, etc.) to disk.
+    def save(self, filename=None, **kwargs ):
+        """Save the data (along with flags, weights, etc.) to disk.
         The format to save is determined by the config file.
         Use the filename to override the default naming convention.
 
@@ -599,6 +604,21 @@ class Image(Base, FileOnDiskMixin, SpatiallyIndexed):
         filename: str (optional)
             The filename to use to save the data.
             If not provided, the default naming convention will be used.
+        **kwargs: passed on to FileOnDiskMixin.save(), include:
+            overwrite - bool, set to True if it's OK to overwrite exsiting files
+            no_archive - bool, set to True to save only to local disk, otherwise also saves to the archive
+            exists_ok, verify_md5 - complicated, see documentation on FileOnDiskMixin
+
+        For images being saved to the database, you probably want to use
+        overwrite=True, verify_md5=True, or perhaps overwrite=False,
+        exists_ok=True, verify_md5=True.  For temporary images being
+        saved as part of local processing, you probably want to use
+        verify_md5=False and either overwrite=True (if you're modifying
+        and writing the file multiple times), or overwrite=False,
+        exists_ok=True (if you might call the save() method more than
+        once on the same image, and you want to trust the filesystem to
+        have saved it right).
+
         """
         if self.data is None:
             raise RuntimeError("The image data is not loaded. Cannot save.")
@@ -606,30 +626,32 @@ class Image(Base, FileOnDiskMixin, SpatiallyIndexed):
         if self.provenance is None:
             raise RuntimeError("The image provenance is not set. Cannot save.")
 
-        if filename is None:
-            filename = self.invent_filename()
+        self.filepath = filename if filename is not None else self.invent_filename()
 
         cfg = config.Config.get()
         single_file = cfg.value('storage.images.single_file', default=False)
         format = cfg.value('storage.images.format', default='fits')
         extensions = []
-
-        full_path = os.path.join(self.local_path, filename)
+        files_written = {}
+        
+        full_path = os.path.join(self.local_path, self.filepath)
 
         if format == 'fits':
             # save the imaging data
             extensions.append('.image.fits')  # assume the primary extension has no name
-            save_fits_image_file(full_path, self.data, self.raw_header, extname='image', single_file=single_file)
-            # TODO: we can have extensions at the end of the filename (e.g., foo.fits.flags)
+            imgpath = save_fits_image_file(full_path, self.data, self.raw_header,
+                                           extname='image', single_file=single_file)
+            files_written['.image.fits'] = imgpath
+            # TODO: we can have extensions at the end of the self.filepath (e.g., foo.fits.flags)
             #  or we can have the extension name carry the file extension (e.g., foo.flags.fits)
-            #  this should be configurable and will affect how we make the filename and extensions.
+            #  this should be configurable and will affect how we make the self.filepath and extensions.
 
             # save the other extensions
             array_list = ['flags', 'weight', 'background', 'score', 'psf']
             for array_name in array_list:
                 array = getattr(self, array_name)
                 if array is not None:
-                    save_fits_image_file(
+                    extpath = save_fits_image_file(
                         full_path,
                         array,
                         self.raw_header,
@@ -640,9 +662,13 @@ class Image(Base, FileOnDiskMixin, SpatiallyIndexed):
                     if not array_name.endswith('.fits'):
                         array_name += '.fits'
                     extensions.append(array_name)
+                    if not single_file:
+                        files_written[array_name] = extpath
 
-            if single_file and not filename.endswith('.fits'):
-                filename += '.fits'
+            if single_file:
+                files_written = files_written['.image.fits']
+                if not self.filepath.endswith('.fits'):
+                    self.filepath += '.fits'
 
         elif format == 'hdf5':
             # TODO: consider writing a more generic utility to save_image_file that handles either fits or hdf5, etc.
@@ -650,10 +676,15 @@ class Image(Base, FileOnDiskMixin, SpatiallyIndexed):
         else:
             raise ValueError(f"Unknown image format: {format}. Use 'fits' or 'hdf5'.")
 
-        self.filepath = filename
-
-        if not single_file:
-            self.filepath_extensions = extensions
+        # Save the file to the archive and update the database record
+        # (as well as self.filepath, self.filepath_extensions, self.md5sum, self.md5sum_extensions)
+        # (From what we did above, it's already in the right place in the local filestore.)
+        if single_file:
+            super().save( files_written, **kwargs )
+        else:
+            for ext in extensions:
+                super().save( files_written[ext], ext, **kwargs )
+                          
 
     def load(self):
         """
@@ -676,6 +707,8 @@ class Image(Base, FileOnDiskMixin, SpatiallyIndexed):
                 raise FileNotFoundError(f"Could not find the image file: {filename}")
             self._data, self._raw_header = read_fits_image(filename, ext=0, output='both')
             # TODO: do we know what the extensions are for weight/flags/etc? are they ordered or named?
+            # Rob: we should have standard names for them; there is already a standard set of names
+            #   in save() above: ['flags', 'weight', 'background', 'score', 'psf']
             self._flags = read_fits_image(filename, ext=1)  # TODO: is the flags always extension 1??
             self._weight = read_fits_image(filename, ext=2)  # TODO: is the weight always extension 2??
 
