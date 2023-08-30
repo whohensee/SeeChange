@@ -401,35 +401,39 @@ class Config:
             if ifield >= len(struct):
                 raise ValueError( f'{ifield} > {len(struct)}, the length of the list' )
             if isleaf:
-                return struct[ifield]
+                return_value = struct[ifield]
             else:
                 try:
-                    return self.value( ".".join(fields[1:]), default, struct[ifield] )
+                    return_value = self.value( ".".join(fields[1:]), default, struct[ifield] )
                 except Exception as e:
                     if isinstance(default, NoValue):
                         raise ValueError( f'Error getting list element {ifield}' ) from e
                     else:
-                        return default
+                        return_value = default
         elif isinstance( struct, dict ):
             if curfield not in struct:
                 if isinstance(default, NoValue):
                     raise ValueError( f'Field {curfield} doesn\'t exist' )
                 else:
-                    return default
-            if isleaf:
-                return struct[curfield]
+                    return_value = default
+            elif isleaf:
+                return_value = struct[curfield]
             else:
                 try:
-                    return self.value( ".".join(fields[1:]), default, struct[curfield] )
+                    return_value = self.value( ".".join(fields[1:]), default, struct[curfield] )
                 except Exception as e:
                     if isinstance(default, NoValue):
                         raise ValueError( f'Error getting field {curfield}' ) from e
                     else:
-                        return default
+                        return_value = default
         else:
             if not isleaf:
                 raise ValueError( f'Tried to get field {curfield} of scalar!' )
-            return struct
+            return_value = struct
+
+        if isinstance(return_value, (dict, list)):
+            return_value = copy.deepcopy( return_value )
+        return return_value
 
     def set_value( self, field, value, structpass=None, appendlists=False ):
         """Set a value in the singleton for the current session.

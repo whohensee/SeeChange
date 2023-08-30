@@ -44,17 +44,19 @@ def provenance_base(code_version):
         code_version=code_version,
         parameters={"test_key": uuid.uuid4().hex},
         upstreams=[],
+        is_testing=True,
     )
 
     with SmartSession() as session:
         session.add(p)
         session.commit()
+        session.refresh(p)
         pid = p.id
 
     yield p
 
     with SmartSession() as session:
-        # session.execute(sa.delete(Provenance).where(Provenance.id == pid))
+        session.execute(sa.delete(Provenance).where(Provenance.id == pid))
         session.commit()
 
 
@@ -65,11 +67,13 @@ def provenance_extra(code_version, provenance_base):
         code_version=code_version,
         parameters={"test_key": uuid.uuid4().hex},
         upstreams=[provenance_base],
+        is_testing=True,
     )
 
     with SmartSession() as session:
         session.add(p)
         session.commit()
+        session.refresh(p)
         pid = p.id
 
     yield p
@@ -157,6 +161,32 @@ def decam_example_file():
 
 
 @pytest.fixture
+def decam_example_exposure(decam_example_file):
+    # always destroy this Exposure object and make a new one, to avoid filepath unique constraint violations
+    decam_example_file_short = decam_example_file[len(CODE_ROOT+'/data/'):]
+    with SmartSession() as session:
+        session.execute(sa.delete(Exposure).where(Exposure.filepath == decam_example_file_short))
+        session.commit()
+
+    exposure = Exposure(decam_example_file)
+    return exposure
+
+
+@pytest.fixture
+def decam_example_image(decam_example_exposure):
+    image = Image.from_exposure(decam_example_exposure, section_id='N1')
+    image.data = image.raw_data.astype(np.float32)  # TODO: add bias/flat corrections at some point
+    return image
+
+
+@pytest.fixture
+def decam_small_image(decam_example_image):
+    image = decam_example_image
+    image.data = image.data[256:256+512, 256:256+512].copy()  # make it C-contiguous
+    return image
+
+
+@pytest.fixture
 def demo_image(exposure):
     exposure.update_instrument()
     im = Image.from_exposure(exposure, section_id=0)
@@ -236,6 +266,7 @@ def reference_entry(exposure_factory, provenance_base, provenance_extra):
                 session.delete(ref)  # should also delete ref_entry
 
                 session.commit()
+
 
 @pytest.fixture
 def archive():

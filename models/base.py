@@ -1,9 +1,7 @@
 import sys
 import os
-import inspect
 import hashlib
 import pathlib
-import shutil
 import logging
 from uuid import UUID
 
@@ -24,6 +22,9 @@ import util.config as config
 from util.archive import Archive
 
 utcnow = func.timezone("UTC", func.current_timestamp())
+
+# TODO: should we replace all enums with integers and a lookup table?
+file_format_enum = Enum("fits", "hdf5", "csv", "npy", name='file_format', create_type=False)
 
 _logger = logging.getLogger("main")
 if len(_logger.handlers) == 0:
@@ -371,6 +372,13 @@ class FileOnDiskMixin:
         doc="If non-null, array of text appended to filepath to get actual saved filenames."
     )
 
+    # format = sa.Column(
+    #     file_format_enum,
+    #     nullable=False,
+    #     default='fits',
+    #     doc="Format of the file on disk. Should be fits, hdf5, csv or npy. "
+    # )
+
     md5sum = sa.Column(
         sqlUUID(as_uuid=True),
         nullable=True,
@@ -551,8 +559,12 @@ class FileOnDiskMixin:
             Full path to the file on local disk.
 
         """
+        if self.filepath is None:
+            return None
+
         if nofile is None:
             nofile = self.nofile
+
         if not nofile and self.local_path is None:
             raise ValueError("Local path not defined!")
 
@@ -840,7 +852,6 @@ class FileOnDiskMixin:
                     else:
                         raise ValueError( f"Archive md5sum for {self.filepath} does not match saved data!" )
 
-
         if mustupload:
             remmd5 = self.archive.upload( localpath, relpath.parent, relpath.name, overwrite=overwrite, md5=origmd5 )
             remmd5 = UUID( remmd5 )
@@ -851,7 +862,6 @@ class FileOnDiskMixin:
                 self.md5sum_extensions = extmd5s
             else:
                 self.md5sum = remmd5
-
 
     def remove_data_from_disk(self, remove_folders=True, purge_archive=False, session=None, nocommit=False):
 
@@ -914,6 +924,7 @@ class FileOnDiskMixin:
                     safe_merge( smsess, self )
                     smsess.commit()
 
+
 def safe_mkdir(path):
     FileOnDiskMixin.safe_mkdir(path)
 
@@ -949,6 +960,7 @@ class SpatiallyIndexed:
         self.gallon = coords.galactic.l.deg
         self.ecllat = coords.barycentrictrueecliptic.lat.deg
         self.ecllon = coords.barycentrictrueecliptic.lon.deg
+
 
 if __name__ == "__main__":
     pass
