@@ -237,8 +237,21 @@ class SeeChangeBase:
 
 Base = declarative_base(cls=SeeChangeBase)
 
+ARCHIVE = None
 
-class FileOnDiskMixin:
+
+def get_archive_object():
+    """Return a global archive object. If it doesn't exist, create it based on the current config. """
+    global ARCHIVE
+    if ARCHIVE is None:
+        cfg = config.Config.get()
+        archive_specs = cfg.value('archive', None)
+        if archive_specs is not None:
+            ARCHIVE = Archive(**archive_specs)
+    return ARCHIVE
+
+
+class FileOnDiskMixin():
     """Mixin for objects that refer to files on disk.
 
     Files are assumed to live on the local disk (underneath the
@@ -315,15 +328,6 @@ class FileOnDiskMixin:
     if not os.path.isdir(local_path):
         os.makedirs(local_path, exist_ok=True)
 
-    archive = cfg.value('archive', None)
-    if archive is not None:
-        archive = Archive( archive_url=cfg.value('archive.url'),
-                           path_base=cfg.value('archive.path_base'),
-                           token=cfg.value('archive.token'),
-                           verify_cert=cfg.value('archive.verify_cert'),
-                           local_read_dir=cfg.value('archive.read_dir'),
-                           local_write_dir=cfg.value('archive.write_dir') )
-        
     @classmethod
     def safe_mkdir(cls, path):
         if path is None or path == '':
@@ -426,9 +430,22 @@ class FileOnDiskMixin:
         self.filepath = kwargs.pop('filepath', self.filepath)
         self.nofile = kwargs.pop('nofile', self._do_not_require_file_to_exist())
 
+        self._archive = None
+
     @orm.reconstructor
     def init_on_load(self):
         self.nofile = self._do_not_require_file_to_exist()
+        self._archive = None
+
+    @property
+    def archive(self):
+        if getattr(self, '_archive', None) is None:
+            self._archive = get_archive_object()
+        return self._archive
+
+    @archive.setter
+    def archive(self, value):
+        self._archive = value
 
     @staticmethod
     def _do_not_require_file_to_exist():

@@ -92,7 +92,7 @@ def test_image_archive_singlefile(demo_image, provenance_base, archive):
     demo_image.flags = np.random.randint(0, 100, size=demo_image.raw_data.shape, dtype=np.uint16)
 
     cfg = config.Config.get()
-    archivebase = f"{os.getenv('ARCHIVE_DIR')}/{cfg.value('archive.path_base')}"
+    archivebase = f"{os.getenv('SEECHANGE_TEST_ARCHIVE_DIR')}/{cfg.value('archive.path_base')}"
     single_fileness = cfg.value( 'storage.images.single_file' )
 
     try:
@@ -159,7 +159,7 @@ def test_image_archive_multifile(demo_image, provenance_base, archive):
     demo_image.flags = np.random.randint(0, 100, size=demo_image.raw_data.shape, dtype=np.uint16)
 
     cfg = config.Config.get()
-    archivebase = f"{os.getenv('ARCHIVE_DIR')}/{cfg.value('archive.path_base')}"
+    archivebase = f"{os.getenv('SEECHANGE_TEST_ARCHIVE_DIR')}/{cfg.value('archive.path_base')}"
     single_fileness = cfg.value( 'storage.images.single_file' )
 
     try:

@@ -130,7 +130,7 @@ def test_fileondisk_save_failuremodes( diskfile ):
 
 def test_fileondisk_save_singlefile( diskfile, archive ):
     cfg = config.Config.get()
-    archivebase = f"{os.getenv('ARCHIVE_DIR')}/{cfg.value('archive.path_base')}"
+    archivebase = f"{os.getenv('SEECHANGE_TEST_ARCHIVE_DIR')}/{cfg.value('archive.path_base')}"
 
     diskfile.filepath = 'test_fileondisk_save.dat'
     data1 = numpy.random.rand( 32 ).tobytes()
@@ -256,7 +256,7 @@ def test_fileondisk_save_singlefile( diskfile, archive ):
 def test_fileondisk_save_multifile( diskfile, archive ):
     try:
         cfg = config.Config.get()
-        archivebase = f"{os.getenv('ARCHIVE_DIR')}/{cfg.value('archive.path_base')}"
+        archivebase = f"{os.getenv('SEECHANGE_TEST_ARCHIVE_DIR')}/{cfg.value('archive.path_base')}"
 
         diskfile.filepath = 'test_fileondisk_save'
         data1 = numpy.random.rand( 32 ).tobytes()
