@@ -740,12 +740,12 @@ class Image(Base, FileOnDiskMixin, SpatiallyIndexed):
             filename = self.get_fullpath()
             if not os.path.isfile(filename):
                 raise FileNotFoundError(f"Could not find the image file: {filename}")
-            self._data, self._raw_header = read_fits_image(filename, ext=0, output='both')
-            # TODO: do we know what the extensions are for weight/flags/etc? are they ordered or named?
-            # Rob: we should have standard names for them; there is already a standard set of names
-            #   in save() above: ['flags', 'weight', 'background', 'score', 'psf']
-            self._flags = read_fits_image(filename, ext=1)  # TODO: is the flags always extension 1??
-            self._weight = read_fits_image(filename, ext=2)  # TODO: is the weight always extension 2??
+            self._data, self._raw_header = read_fits_image(filename, ext='image', output='both')
+            self._flags = read_fits_image(filename, ext='flags')
+            self._weight = read_fits_image(filename, ext='weight')
+            self._background = read_fits_image(filename, ext='background')
+            self._score = read_fits_image(filename, ext='score')
+            # TODO: add more if needed!
 
         else:  # save each data array to a separate file
             # assumes there are filepath_extensions so get_fullpath() will return a list (as_list guarantees this)
