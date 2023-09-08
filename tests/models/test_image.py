@@ -10,7 +10,7 @@ import numpy as np
 from astropy.io import fits
 
 import sqlalchemy as sa
-from sqlalchemy.exc import IntegrityError, DataError
+from sqlalchemy.exc import IntegrityError
 
 import util.config as config
 from models.base import SmartSession
@@ -233,7 +233,6 @@ def test_image_archive_multifile(demo_image, provenance_base, archive):
 
 
 def test_image_enum_values(demo_image, provenance_base):
-    data_filename = None
     with SmartSession() as session:
         demo_image.provenance = provenance_base
         with pytest.raises(RuntimeError, match='The image data is not loaded. Cannot save.'):
@@ -245,17 +244,51 @@ def test_image_enum_values(demo_image, provenance_base):
         assert os.path.exists(data_filename)
 
         try:
-            with pytest.raises(DataError, match='invalid input value for enum image_type: "foo"'):
+            with pytest.raises(ValueError, match='Image type must be one of .* not foo'):
                 demo_image.type = 'foo'
                 session.add(demo_image)
                 session.commit()
             session.rollback()
 
+            # these should work
             for prepend in ["", "Com"]:
                 for t in ["Sci", "Diff", "Bias", "Dark", "DomeFlat"]:
                     demo_image.type = prepend+t
                     session.add(demo_image)
                     session.commit()
+
+            # should have an image with ComDomeFlat type
+            assert demo_image._type == 10  # see image_type_dict
+
+            # make sure we can also select on this:
+            images = session.scalars(sa.select(Image).where(Image.type == "ComDomeFlat")).all()
+            assert demo_image.id in [i.id for i in images]
+
+            images = session.scalars(sa.select(Image).where(Image.type == "Sci")).all()
+            assert demo_image.id not in [i.id for i in images]
+
+            # check the image format enum works as expected:
+            with pytest.raises(ValueError, match='Image format must be one of .* not foo'):
+                demo_image.format = 'foo'
+                session.add(demo_image)
+                session.commit()
+            session.rollback()
+
+            # these should work
+            for f in ['fits', 'hdf5']:
+                demo_image.format = f
+                session.add(demo_image)
+                session.commit()
+
+            # should have an image with ComDomeFlat type
+            assert demo_image._format == 2  # see image_type_dict
+
+            # make sure we can also select on this:
+            images = session.scalars(sa.select(Image).where(Image.format == "hdf5")).all()
+            assert demo_image.id in [i.id for i in images]
+
+            images = session.scalars(sa.select(Image).where(Image.format == "fits")).all()
+            assert demo_image.id not in [i.id for i in images]
 
         finally:
             if data_filename is not None and os.path.exists(data_filename):
@@ -263,6 +296,218 @@ def test_image_enum_values(demo_image, provenance_base):
                 folder = os.path.dirname(data_filename)
                 if len(os.listdir(folder)) == 0:
                     os.rmdir(folder)
+
+
+def test_image_badness(demo_image):
+
+        # this is not a legit "badness" keyword...
+        with pytest.raises(ValueError, match='Keyword "foo" not recognized'):
+            demo_image.badness = 'foo'
+
+        # this is a legit keyword, but for cutouts, not for images
+        with pytest.raises(ValueError, match='Keyword "Cosmic Ray" not recognized'):
+            demo_image.badness = 'Cosmic Ray'
+
+        # this is a legit keyword, but for images, using no space and no capitalization
+        demo_image.badness = 'brightsky'
+
+        # retrieving this keyword, we do get it capitalized and with a space:
+        assert demo_image.badness == 'Bright Sky'
+        assert demo_image.bitflag == 2 ** 5  # the bright sky bit is number 5
+
+        # what happens when we add a second keyword?
+        demo_image.badness = 'brightsky, banding'
+        assert demo_image.bitflag == 2 ** 5 + 2 ** 1  # the bright sky bit is number 5, banding is number 1
+        assert demo_image.badness == 'Banding, Bright Sky'
+
+        # now add a third keyword, but on the Exposure
+        demo_image.exposure.badness = 'saturation'
+        assert demo_image.bitflag == 2 ** 5 + 2 ** 3 + 2 ** 1  # saturation bit is 3
+        assert demo_image.badness == 'Banding, Saturation, Bright Sky'
+
+        # adding the same keyword on the exposure and the image makes no difference
+        demo_image.exposure.badness = 'banding'
+        assert demo_image.bitflag == 2 ** 5 + 2 ** 1
+        assert demo_image.badness == 'Banding, Bright Sky'
+
+        # try appending keywords to the image
+        demo_image.append_badness('shaking')
+        assert demo_image.bitflag == 2 ** 5 + 2 ** 2 + 2 ** 1  # shaking bit is 2
+        assert demo_image.badness == 'Banding, Shaking, Bright Sky'
+
+
+def test_multiple_images_badness(
+        demo_image,
+        demo_image2,
+        demo_image3,
+        demo_image5,
+        demo_image6,
+        provenance_base,
+        provenance_extra
+):
+    # the image itself is marked bad because of bright sky
+    demo_image2.badness = 'brightsky'
+    assert demo_image2.badness == 'Bright Sky'
+    assert demo_image2.bitflag == 2 ** 5
+
+    # note that this image is not directly bad, but the exposure has banding
+    demo_image3.exposure.badness = 'banding'
+    assert demo_image3.badness == 'Banding'
+    assert demo_image._bitflag == 0  # the exposure is bad!
+    assert demo_image3.bitflag == 2 ** 1
+
+    # add these to the DB
+    images = [demo_image, demo_image2, demo_image3]
+    target = uuid.uuid4().hex
+    filter = demo_image.filter
+    filenames = []
+    try:
+        with SmartSession() as session:
+            for im in images:
+                im.target = target
+                im.filter = filter
+                im.provenance = provenance_base
+                im.data = np.float32(im.raw_data)
+                im.save(no_archive=True)
+                filenames.append(im.get_fullpath(as_list=True)[0])
+                assert os.path.exists(filenames[-1])
+                session.add(im)
+            session.commit()
+
+            # leaving this commented code for debugging of bitflag:
+            # for im in images:
+            #     print(f'im.id= {im.id}, im.bitflag= {im.bitflag}')
+            # stmt = sa.select(Image.id, Image.bitflag).where(Image.bitflag>0).order_by(Image.id)
+            # print(stmt)
+            # print(session.execute(stmt).all())
+
+            # find the images that are good vs bad
+            good_images = session.scalars(sa.select(Image).where(Image.bitflag == 0)).all()
+            assert demo_image.id in [i.id for i in good_images]
+
+            bad_images = session.scalars(sa.select(Image).where(Image.bitflag != 0)).all()
+            assert demo_image2.id in [i.id for i in bad_images]
+            assert demo_image3.id in [i.id for i in bad_images]
+
+            # make an image from the two bad exposures using subtraction
+            demo_image4 = Image.from_ref_and_new(demo_image2, demo_image3)
+            demo_image4.provenance = provenance_extra
+            demo_image4.data = np.random.normal(0, 10, size=(100, 100)).astype(np.float32)
+            demo_image4.save(no_archive=True)
+            images.append(demo_image4)
+            filenames.append(demo_image4.get_fullpath(as_list=True)[0])
+            session.add(demo_image4)
+            session.commit()
+            assert demo_image4.id is not None
+            assert demo_image4.ref_image_id == demo_image2.id
+            assert demo_image4.new_image_id == demo_image3.id
+
+            # check that badness is loaded correctly from both parents
+            assert demo_image4.badness == 'Banding, Bright Sky'
+            assert demo_image4._bitflag == 0  # the image itself is not flagged
+            assert demo_image4.bitflag == 2 ** 1 + 2 ** 5
+
+            # check that filtering on this value gives the right bitflag
+            bad_images = session.scalars(sa.select(Image).where(Image.bitflag == 2 ** 1 + 2 ** 5)).all()
+            assert demo_image4.id in [i.id for i in bad_images]
+            assert demo_image3.id not in [i.id for i in bad_images]
+            assert demo_image2.id not in [i.id for i in bad_images]
+
+            # check that adding a badness on the image itself is added to the total badness
+            demo_image4.badness = 'saturation'
+            session.add(demo_image4)
+            session.commit()
+            assert demo_image4.badness == 'Banding, Saturation, Bright Sky'
+            assert demo_image4._bitflag == 2 ** 3  # only this bit is from the image itself
+
+            # make a few good images and make sure they don't get flagged
+            more_images = [demo_image5, demo_image6]
+
+            for im in more_images:
+                im.target = target
+                im.filter = filter
+                im.provenance = provenance_base
+                im.data = np.float32(im.raw_data)
+                im.save(no_archive=True)
+                filenames.append(im.get_fullpath(as_list=True)[0])
+                images.append(im)
+                session.add(im)
+            session.commit()
+
+            # make a new subtraction:
+            demo_image7 = Image.from_ref_and_new(demo_image5, demo_image6)
+            demo_image7.provenance = provenance_extra
+            demo_image7.data = np.random.normal(0, 10, size=(100, 100)).astype(np.float32)
+            demo_image7.save(no_archive=True)
+            images.append(demo_image7)
+            filenames.append(demo_image7.get_fullpath(as_list=True)[0])
+            session.add(demo_image7)
+            session.commit()
+
+            # check that the new subtraction is not flagged
+            assert demo_image7.badness == ''
+            assert demo_image7._bitflag == 0
+            assert demo_image7.bitflag == 0
+
+            good_images = session.scalars(sa.select(Image).where(Image.bitflag == 0)).all()
+            assert demo_image5.id in [i.id for i in good_images]
+            assert demo_image6.id in [i.id for i in good_images]
+            assert demo_image7.id in [i.id for i in good_images]
+
+            bad_images = session.scalars(sa.select(Image).where(Image.bitflag != 0)).all()
+            assert demo_image5.id not in [i.id for i in bad_images]
+            assert demo_image6.id not in [i.id for i in bad_images]
+            assert demo_image7.id not in [i.id for i in bad_images]
+
+            # let's try to coadd an image based on some good and bad images
+            # as a reminder, demo_image2 has Bright Sky (5),
+            # demo_image3's exposure has banding (1), while
+            # demo_image4 has Saturation (3).
+
+            # make a coadded image (without including the subtraction demo_image4):
+            demo_image8 = Image.from_images([demo_image, demo_image2, demo_image3, demo_image5, demo_image6])
+            demo_image8.provenance = provenance_extra
+            demo_image8.data = np.random.normal(0, 10, size=(100, 100)).astype(np.float32)
+            demo_image8.save(no_archive=True)
+            images.append(demo_image8)
+            filenames.append(demo_image8.get_fullpath(as_list=True)[0])
+            session.add(demo_image8)
+            session.commit()
+            assert demo_image8.badness == 'Banding, Bright Sky'
+            assert demo_image8.bitflag == 2 ** 1 + 2 ** 5
+
+            # does this work in queries (i.e., using the bitflag hybrid expression)?
+            bad_images = session.scalars(sa.select(Image).where(Image.bitflag != 0)).all()
+            assert demo_image8.id in [i.id for i in bad_images]
+            bad_coadd = session.scalars(sa.select(Image).where(Image.bitflag == 2 ** 1 + 2 ** 5)).all()
+            assert demo_image8.id in [i.id for i in bad_coadd]
+
+            # now let's add the subtraction image to the coadd:
+            demo_image8.source_images = demo_image8.source_images + [demo_image4]  # we re-assign to trigger SQLA
+            session.add(demo_image8)
+            session.commit()
+
+            assert demo_image8.badness == 'Banding, Saturation, Bright Sky'
+            assert demo_image8.bitflag == 2 ** 1 + 2 ** 3 + 2 ** 5  # this should be 42
+
+            # does this work in queries (i.e., using the bitflag hybrid expression)?
+            bad_images = session.scalars(sa.select(Image).where(Image.bitflag != 0)).all()
+            assert demo_image8.id in [i.id for i in bad_images]
+            bad_coadd = session.scalars(sa.select(Image).where(Image.bitflag == 42)).all()
+            assert demo_image8.id in [i.id for i in bad_coadd]
+
+
+    finally:  # cleanup
+        with SmartSession() as session:
+            for im in images:
+                im.remove_data_from_disk(purge_archive=False, session=session)
+                if im.id is not None:
+                    session.delete(im)
+            session.commit()
+
+        for filename in filenames:
+            assert not os.path.exists(filename)
+
 
 
 def test_image_coordinates():
