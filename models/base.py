@@ -19,6 +19,7 @@ from sqlalchemy.ext.declarative import declared_attr
 from sqlalchemy.ext.hybrid import hybrid_method
 from sqlalchemy.orm.exc import DetachedInstanceError
 from sqlalchemy.dialects.postgresql import UUID as sqlUUID
+from sqlalchemy.dialects.postgresql import array as sqlarray
 
 import util.config as config
 from util.archive import Archive
@@ -34,7 +35,7 @@ if len(_logger.handlers) == 0:
     _logger.addHandler( _logout )
     _formatter = logging.Formatter( f"[%(asctime)s - %(levelname)s] - %(message)s", datefmt="%Y-%m-%d %H:%M:%S" )
     _logout.setFormatter( _formatter )
-    _logout.setLevel( logging.INFO )
+    _logout.setLevel( logging.DEBUG )
 
 # this is the root SeeChange folder
 CODE_ROOT = os.path.abspath(os.path.join(__file__, os.pardir, os.pardir))
@@ -979,6 +980,164 @@ class SpatiallyIndexed:
         self.gallon = coords.galactic.l.deg
         self.ecllat = coords.barycentrictrueecliptic.lat.deg
         self.ecllon = coords.barycentrictrueecliptic.lon.deg
+
+    @hybrid_method
+    def within( self, fourcorn ):
+        """An SQLAlchemy filter to find all things within a FourCorners object
+
+        Parameters
+        ----------
+          fourcorn: FourCorners
+            A FourCorners object
+
+        Returns
+        -------
+          An expression usable in a sqlalchemy filter
+
+        """
+
+        return func.q3c_poly_query( self.ra, self.dec,
+                                    sqlarray( [ fourcorn.ra_corner_00, fourcorn.dec_corner_00,
+                                                fourcorn.ra_corner_01, fourcorn.dec_corner_01,
+                                                fourcorn.ra_corner_11, fourcorn.dec_corner_11,
+                                                fourcorn.ra_corner_10, fourcorn.dec_corner_10 ] ) )
+
+class FourCorners:
+    """A mixin for tables that have four RA/Dec corners"""
+
+    ra_corner_00 = sa.Column( sa.REAL, nullable=False, index=True, doc="RA of the low-RA, low-Dec corner (degrees)" )
+    ra_corner_01 = sa.Column( sa.REAL, nullable=False, index=True, doc="RA of the low-RA, high-Dec corner (degrees)" )
+    ra_corner_10 = sa.Column( sa.REAL, nullable=False, index=True, doc="RA of the high-RA, low-Dec corner (degrees)" )
+    ra_corner_11 = sa.Column( sa.REAL, nullable=False, index=True, doc="RA of the high-RA, high-Dec corner (degrees)" )
+    dec_corner_00 = sa.Column( sa.REAL, nullable=False, index=True, doc="Dec of the low-RA, low-Dec corner (degrees)" )
+    dec_corner_01 = sa.Column( sa.REAL, nullable=False, index=True,
+                               doc="Dec of the low-RA, high-Dec corner (degrees)" )
+    dec_corner_10 = sa.Column( sa.REAL, nullable=False, index=True,
+                               doc="Dec of the high-RA, low-Dec corner (degrees)" )
+    dec_corner_11 = sa.Column( sa.REAL, nullable=False, index=True,
+                               doc="Dec of the high-RA, high-Dec corner (degrees)" )
+
+    @classmethod
+    def sort_radec( cls, ras, decs ):
+        """Sort ra and dec lists so they're each in the order in models.base.FourCorners
+
+        Parameters
+        ----------
+          ras: list of float
+             Four ra values in a list. 
+          decs: list of float
+             Four dec values in a list. 
+
+        Returns
+        -------
+          Two new lists (ra, dec) sorted so they're in the order:
+          (lowRA,lowDec), (lowRA,highDec), (highRA,lowDec), (highRA,highDec)
+
+        """
+
+        if len(ras) != 4:
+            raise ValueError(f'ras must be a list/array with exactly four elements. Got {ras}')
+            raise ValueError(f'decs must be a list/array with exactly four elements. Got {decs}')
+
+        raorder = list( range(4) )
+        raorder.sort( key=lambda i: ras[i] )
+
+        # Of two lowest ras, of those, pick the one with the lower dec;
+        #   that's lowRA,lowDec; the other one is lowRA, highDec
+
+        dex00 = raorder[0] if decs[raorder[0]] < decs[raorder[1]] else raorder[1]
+        dex01 = raorder[1] if decs[raorder[0]] < decs[raorder[1]] else raorder[0]
+
+        # Same thing, only now high ra
+
+        dex10 = raorder[2] if decs[raorder[2]] < decs[raorder[3]] else raorder[3]
+        dex11 = raorder[3] if decs[raorder[2]] < decs[raorder[3]] else raorder[2]
+
+        return ( [  ras[dex00],  ras[dex01],  ras[dex10],  ras[dex11] ],
+                 [ decs[dex00], decs[dex01], decs[dex10], decs[dex11] ] )
+
+
+    @hybrid_method
+    def containing( self, ra, dec ):
+        """An SQLAlchemy filter for objects that might contain a given ra/dec.
+
+        This will be reliable for objects (i.e. images, or whatever else
+        has four corners) that are square to the sky (assuming that the
+        ra* and dec* fields are correct).  However, if the object is at
+        an angle, it will return objects that have the given ra, dec in
+        the rectangle on the sky oriented along ra/dec lines that fully
+        contains the four corners of the image.
+
+        Parameters
+        ----------
+           ra, dec: float
+              Position to search (decimal degrees).
+
+        Returns
+        -------
+           An expression usable in a sqlalchemy filter
+
+        """
+
+        # This query will go through every row of the table it's
+        # searching, because q3c uses the index on the first two
+        # arguments, not on the array argument.
+
+        # It could probably be made faster by making a first pass doing:
+        #   greatest( ra** ) >= ra AND least( ra** ) <= ra AND
+        #   greatest( dec** ) >= dec AND least( dec** ) <= dec
+        # with indexes in ra** and dec**.  Put the results of that into
+        # a temp table, and then do the polygon search on that temp table.
+        #
+        # I have no clue how to implement that simply here as as an
+        # SQLAlchemy filter, so I implement it in find_containing()
+
+        return func.q3c_poly_query( ra, dec, sqlarray( [ self.ra_corner_00, self.dec_corner_00,
+                                                         self.ra_corner_01, self.dec_corner_01,
+                                                         self.ra_corner_11, self.dec_corner_11,
+                                                         self.ra_corner_10, self.dec_corner_10 ] ) )
+
+    @classmethod
+    def find_containing( cls, siobj, session=None ):
+        """Return all images (or whatever) that contain the given SpatiallyIndexed thing
+
+        Parameters
+        ----------
+          siobj: SpatiallyIndexed
+            A single object that is spatially indexed
+
+        Returns
+        -------
+           An sql query result thingy.
+
+        """
+
+        # Overabundance of caution to avoid SQL injection
+        ra = float( siobj.ra )
+        dec = float( siobj.dec )
+
+        with SmartSession( session ) as sess:
+            sess.execute( sa.text( f"SELECT i.id, i.ra_corner_00, i.ra_corner_01, i.ra_corner_10, i.ra_corner_11, "
+                                   f"       i.dec_corner_00, i.dec_corner_01, i.dec_corner_10, i.dec_corner_11 "
+                                   f"INTO TEMP TABLE temp_find_containing "
+                                   f"FROM {cls.__tablename__} i "
+                                   f"WHERE GREATEST(i.ra_corner_00, i.ra_corner_01, "
+                                   f"               i.ra_corner_10, i.ra_corner_11 ) >= :ra "
+                                   f"  AND LEAST(i.ra_corner_00, i.ra_corner_01, "
+                                   f"            i.ra_corner_10, i.ra_corner_11 ) <= :ra "
+                                   f"  AND GREATEST(i.dec_corner_00, i.dec_corner_01, "
+                                   f"               i.dec_corner_10, i.dec_corner_11 ) >= :dec "
+                                   f"  AND LEAST(i.dec_corner_00, i.dec_corner_01, "
+                                   f"            i.dec_corner_10, i.dec_corner_11 ) <= :dec" ),
+                          { 'ra': ra, 'dec': dec } )
+            query = sa.text( f"SELECT i.id FROM temp_find_containing i "
+                             f"WHERE q3c_poly_query( {ra}, {dec}, ARRAY[ i.ra_corner_00, i.dec_corner_00, "
+                             f"                                          i.ra_corner_01, i.dec_corner_01, "
+                             f"                                          i.ra_corner_11, i.dec_corner_11, "
+                             f"                                          i.ra_corner_10, i.dec_corner_10 ])" )
+            objs = sess.scalars( sa.select( cls ).from_statement( query ) ).all()
+            sess.execute( sa.text( "DROP TABLE temp_find_containing" ) )
+            return objs
 
     @hybrid_method
     def cone_search( self, ra, dec, rad, radunit='arcsec' ):
