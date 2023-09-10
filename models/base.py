@@ -19,6 +19,7 @@ from sqlalchemy.ext.hybrid import hybrid_method
 from sqlalchemy.orm.exc import DetachedInstanceError
 from sqlalchemy.dialects.postgresql import UUID as sqlUUID
 from sqlalchemy.dialects.postgresql import array as sqlarray
+from sqlalchemy.schema import CheckConstraint
 
 import util.config as config
 from util.archive import Archive
@@ -264,7 +265,10 @@ class FileOnDiskMixin():
     has the name of that file.  md5sum holds a checksum for the file,
     *if* it has been correctly saved to the archive.  If the file has
     not been saved to the archive, md5sum is null.  In this case,
-    filepath_extensions and md5sum_extensions will be null.
+    filepath_extensions and md5sum_extensions will be null.  (Exception:
+    if you are configured with a null archive (config parameter archive
+    in the yaml config file is null), then md5sum will be set when the
+    image is saved to disk, instead of when it's saved to the archive.)
 
     If there are multiple files associated with this entry, then
     filepath is the beginning of the names of all the files.  Each entry
@@ -388,6 +392,13 @@ class FileOnDiskMixin():
         nullable=True,
         default=None,
         doc="md5sum of extension files; must have same number of elements as filepath_extensions"
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            sqltext='NOT(md5sum IS NULL AND md5sum_extensions IS NULL)',
+            name='md5sum_or_md5sum_extensions_check'
+        ),
     )
 
     def __init__(self, *args, **kwargs):
@@ -825,6 +836,21 @@ class FileOnDiskMixin():
                 if writtenmd5.hexdigest() != origmd5.hexdigest():
                     raise RuntimeError( f"Error writing {localpath}; written file md5sum mismatches expected!" )
 
+        # If there is no archive, update the md5sum now
+        if self.archive is None:
+            if origmd5 is None:
+                origmd5 = hashlib.md5()
+                with open( localpath, "rb" ) as ifp:
+                    origmd5.update( ifp.read() )
+            if curextensions is not None:
+                extmd5s[ extensiondex ] = UUID( origmd5.hexdigest() )
+                self.filepath_extensions = curextensions
+                self.md5sum_extensions = extmd5s
+            else:
+                self.md5sum = UUID( origmd5.hexdigest() )
+            return
+
+        # This is the case where there *is* an archive, but the no_archive option was passed
         if no_archive:
             if curextensions is not None:
                 self.filepath_extensions = curextensions
