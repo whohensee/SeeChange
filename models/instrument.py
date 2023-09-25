@@ -1,14 +1,24 @@
 import os
 import re
+import io
+import math
+import time
+import traceback
+import pathlib
+from enum import Enum
+from datetime import datetime, timedelta
 
 import numpy as np
-from datetime import datetime, timedelta
 
 import sqlalchemy as sa
 
 from models.base import Base, AutoIDMixin, SmartSession
 
+from models.base import Base, SmartSession, FileOnDiskMixin,_logger
+from util.config import Config
+from models.provenance import Provenance
 from pipeline.utils import parse_dateobs, read_fits_image
+import util.radec
 
 # dictionary of regex for filenames, pointing at instrument names
 INSTRUMENT_FILENAME_REGEX = None
@@ -18,6 +28,19 @@ INSTRUMENT_CLASSNAME_TO_CLASS = None
 
 # dictionary of instrument object instances, lazy loaded to be shared between exposures
 INSTRUMENT_INSTANCE_CACHE = None
+
+
+# Orientations for those instruments that have a permanent orientation square to the sky
+# x increases to the right, y increases upward
+class InstrumentOrientation(Enum):
+    NupEleft = 0          # No rotation
+    NrightEup = 1         # 90° clockwise
+    NdownEright = 2       # 180°
+    NleftEdown = 3        # 270° clockwise
+    NupEright = 4         # flip-x
+    NrightEdown = 5       # flip-x, then 90° clockwise
+    NdownEleft = 6        # flip-x, then 180°
+    NleftEup = 7          # flip-x, then 270° clockwise
 
 
 # from: https://stackoverflow.com/a/5883218
@@ -185,13 +208,13 @@ class SensorSection(Base, AutoIDMixin):
     offset_x = sa.Column(
         sa.Integer,
         nullable=True,
-        doc='Offset of the section in the x direction (in pixels). '
+        doc='Offset of the center of the section in the x direction (in pixels). '
     )
 
     offset_y = sa.Column(
         sa.Integer,
         nullable=True,
-        doc='Offset of the section in the y direction (in pixels). '
+        doc='Offset of the center of the section in the y direction (in pixels). '
     )
 
     filter_array_index = sa.Column(
@@ -199,6 +222,12 @@ class SensorSection(Base, AutoIDMixin):
         nullable=True,
         doc='Index in the filter array that specifies which filter this section is located under in the array. '
     )
+
+    # Note that read_noise, dark_current, gain, saturation_limit, and
+    #  non_linearity_limit can vary by lot (10s of %) between amps on a
+    #  single chip.  The values here will be at best "nominal" values,
+    #  and shouldn't be used for any image reduction, but only for
+    #  general low-precision instrument comparison.
 
     read_noise = sa.Column(
         sa.Float,
@@ -329,6 +358,10 @@ class Instrument:
         self.size_x = getattr(self, 'size_x', None)  # number of pixels in the x direction
         self.size_y = getattr(self, 'size_y', None)  # number of pixels in the y direction
         self.read_time = getattr(self, 'read_time', None)  # read time in seconds (e.g., 20.0)
+        # read_noise, dark_currnet, gain, saturation_limit, and non_linearity_limit can
+        #   vary by a lot between chips (and between amps on a single chip).  The numbers
+        #   here should only be used for low-precision instrument comparision, not
+        #   for any data reduction.  (Same comment in SensorSection.)
         self.read_noise = getattr(self, 'read_noise', None)  # read noise in electrons (e.g., 7.0)
         self.dark_current = getattr(self, 'dark_current', None)  # dark current in electrons/pixel/second (e.g., 0.2)
         self.gain = getattr(self, 'gain', None)  # gain in electrons/ADU (e.g., 4.0)
@@ -337,8 +370,11 @@ class Instrument:
 
         self.allowed_filters = getattr(self, 'allowed_filters', None)  # list of allowed filter (e.g., ['g', 'r', 'i'])
 
+        self.orientation_fixed = ( self, 'orientation_fixed', False ) # True if sensor never rotates
+        self.orientation = ( self, 'orientation', None ) # If orientation_fixed is True, one of InstrumentOrientation
+
         self.sections = getattr(self, 'sections', None)  # populate this using fetch_sections(), then a dict
-        self._dateobs_for_sections = getattr(self, '_date_obs_for_sections', None)  # dateobs when sections were loaded
+        self._dateobs_for_sections = getattr(self, '_dateobs_for_sections', None)  # dateobs when sections were loaded
         self._dateobs_range_days = getattr(self, '_dateobs_range_days', 1.0)  # how many days from dateobs to reload
 
         # set the attributes from the kwargs
@@ -353,11 +389,10 @@ class Instrument:
             INSTRUMENT_INSTANCE_CACHE[self.__class__.__name__] = self
 
     def __repr__(self):
-        return (
-            f'<Instrument {self.name} on {self.telescope} ' 
-            f'({self.aperture:.1f}m, {self.pixel_scale:.2f}"/pix, '
-            f'[{",".join(self.allowed_filters)}])>'
-        )
+        ap = None if self.aperture is None else f'{self.aperture:.1f}m'
+        sc = None if self.pixel_scale is None else f'{self.pixel_scale:.2f}"/pix'
+        filts = [] if self.allowed_filters is None else [",".join(self.allowed_filters)]
+        return f'<Instrument {self.name} on {self.telescope} ({ap}, {sc}, {filts})'
 
     @classmethod
     def get_section_ids(cls):
@@ -726,7 +761,7 @@ class Instrument:
 
         Parameters
         ----------
-        filepath: str or list of str
+        filepath: str, Path or list of str or Path
             The filename (and full path) of the exposure file.
             If an Exposure is associated with multiple files,
             this will be a list of filenames.
@@ -742,14 +777,14 @@ class Instrument:
             The header from the exposure file, as a dictionary
             (or the more complex astropy.io.fits.Header object).
         """
-        if isinstance(filepath, str):
+        if isinstance(filepath, (str, pathlib.Path)):
             if section_id is None:
                 return read_fits_image(filepath, ext=0, output='header')
             else:
                 self.check_section_id(section_id)
                 idx = self._get_fits_hdu_index_from_section_id(section_id)
                 return read_fits_image(filepath, ext=idx, output='header')
-        elif isinstance(filepath, list) and all(isinstance(f, str) for f in filepath):
+        elif isinstance(filepath, list) and all( (isinstance(f, (str, pathlib.Path))) for f in filepath):
             if section_id is None:
                 # just read the header of the first file
                 return read_fits_image(filepath[0], ext=0, output='header')
@@ -1087,129 +1122,149 @@ class DemoInstrument(Instrument):
         """
         return 'Demo'
 
+    def find_origin_exposures( self, skip_exposures_in_database=True,
+                               minmjd=None, maxmjd=None, filters=None,
+                               containing_ra=None, containing_dec=None,
+                               minexptime=None ):
+        """Search the external repository associated with this instrument.
 
-class DECam(Instrument):
+        Search the external image/exposure repository for this
+        instrument for exposures that the database doesn't know about
+        already.  For example, for DECam, this searches the noirlab data
+        archive.
 
-    def __init__(self, **kwargs):
-        self.name = 'DECam'
-        self.telescope = 'CTIO 4.0-m telescope'
-        self.aperture = 4.0
-        self.focal_ratio = 2.7
-        self.square_degree_fov = 3.0
-        self.pixel_scale = 0.2637
-        self.read_time = 20.0
-        self.read_noise = 7.0
-        self.dark_current = 0.1
-        self.gain = 4.0
-        self.saturation_limit = 100000
-        self.non_linearity_limit = 200000
-        self.allowed_filters = ["g", "r", "i", "z", "Y"]
-
-        # will apply kwargs to attributes, and register instrument in the INSTRUMENT_INSTANCE_CACHE
-        Instrument.__init__(self, **kwargs)
-
-    @classmethod
-    def get_section_ids(cls):
-        """
-        Get a list of SensorSection identifiers for this instrument.
-        We are using the names of the FITS extensions (e.g., N12, S22, etc.).
-        See ref: https://noirlab.edu/science/sites/default/files/media/archives/images/DECamOrientation.png
-        """
-        n_list = [f'N{i}' for i in range(1, 32)]
-        s_list = [f'S{i}' for i in range(1, 32)]
-        return n_list + s_list
-
-    @classmethod
-    def check_section_id(cls, section_id):
-        """
-        Check that the type and value of the section is compatible with the instrument.
-        In this case, it must be an integer in the range [0, 63].
-        """
-        if not isinstance(section_id, str):
-            raise ValueError(f"The section_id must be a string. Got {type(section_id)}. ")
-
-        letter = section_id[0]
-        number = int(section_id[1:])
-
-        if letter not in ['N', 'S']:
-            raise ValueError(f"The section_id must start with either 'N' or 'S'. Got {letter}. ")
-
-        if not 1 <= number <= 31:
-            raise ValueError(f"The section_id number must be in the range [1, 31]. Got {number}. ")
-
-    @classmethod
-    def get_section_offsets(cls, section_id):
-        """
-        Find the offset for a specific section.
+        WARNING : do not call this without some parameters that limit
+        the search; otherwise, too many things will be returned, and the
+        query is likely to time out or get an error from the external
+        repository. E.g., a good idea is to search only for exposure from the last week. 
 
         Parameters
         ----------
-        section_id: int
-            The identifier of the section.
+        skip_exposures_in_databse: bool
+           If True (default), will filter out any exposures that (as
+           best can be determined) are already known in the SeeChange
+           database.  If False, will include all exposures. 
+        minmjd: float
+           The earliest time of exposure to search (default: no limit)
+        maxmjd: float
+           The latest time of exposure to search (default: no limit)
+        filters: str or list of str
+           Filters to search.  The actual strings are
+           instrument-dependent, and will match what is expected on the
+           external repository.  By default, doesn't limit by filter.
+        containing_ra: float
+           Search for exposures that include this RA (degrees, J2000);
+           default, no RA constraint.
+        containing_dec: float
+           Search for exposures that include this Dec (degrees, J2000);
+           default, no Dec constraint.
+        minexptime: float
+           Search for exposures that have this minimum exposure time in
+           seconds; default, no limit.
 
         Returns
         -------
-        offset_x: int
-            The x offset of the section.
-        offset_y: int
-            The y offset of the section.
-        """
-        # TODO: this is just a placeholder, we need to put the actual offsets here!
-        cls.check_section_id(section_id)
-        letter = section_id[0]
-        number = int(section_id[1:])
-        dx = number % 8
-        dy = number // 8
-        if letter == 'S':
-            dy = -dy
-        return dx * 2048, dy * 4096
+        A InstrumentOriginExposures object, or None if nothing is found.
 
-    def _make_new_section(self, section_id):
         """
-        Make a single section for the DECam instrument.
-        The section_id must be a valid section identifier (int in this case).
+        raise NotImplementedError( f"Instrument class {self.__class__.__name__} hasn't "
+                                   f"implemented find_origin_exposures." )
+
+class InstrumentOriginExposures:
+    """A class encapsulating the response from Instrument.find_origin_exposures()
+
+    Never instantiate one of these (or a subclass) directly; get it from
+    find_origin_exposures().
+
+    Must be subclassed by each instrument that defines
+    find_origin_exposures().  The internal storage of the exposures will
+    differ for each instrument, and no external assumptions should be
+    made about it other than that it's a sequence (and so can be indexed).
+
+    """
+
+    def download_exposures( self, outdir=".", indexes=None, clobber=False, existing_ok=False, session=None ):
+        """Download exposures from the origin.
+
+        Parameters
+        ----------
+        outdir: Path or str
+           Directory where to save the files.  Filenames will be
+           straight from the origin.
+        indexes: list of int or None
+           List of indexes into the set of origin exposures to download;
+           None means download them all.
+        clobber: bool
+           If True, will always download and overwrite existing files.
+           If False, will trust that the file is the right thing if existing_ok=True,
+           otherwise will throw an exception.
+        existing_ok: bool
+           Only matters if clobber=False (see above)
+        session: Session
+           Database session to use.  (A new one will be created if this
+           is None, but that will lead to the returned exposures and
+           members of those exposures not being bound to a session, so
+           lazy-loading won't work).
 
         Returns
         -------
-        section: SensorSection
-            A new section for this instrument.
-        """
-        # TODO: we must improve this!
-        #  E.g., we should add some info on the gain and read noise (etc) for each chip.
-        #  Also need to fix the offsets, this is really not correct.
-        self.check_section_id(section_id)
-        (dx, dy) = self.get_section_offsets(section_id)
-        return SensorSection(section_id, self.name, size_x=2048, size_y=4096, offset_x=dx, offset_y=dy)
+        A list of pathlib.Path for the files that were downloaded.
 
-    @classmethod
-    def _get_fits_hdu_index_from_section_id(cls, section_id):
         """
-        Return the index of the HDU in the FITS file for the DECam files.
-        Since the HDUs have extension names, we can use the section_id directly
-        to index into the HDU list.
-        """
-        cls.check_section_id(section_id)
-        return section_id
+        raise NotImplementedError( f"Instrument class {self.__class__.__name__} hasn't "
+                                   f"implemented download_exposure." )
 
-    @classmethod
-    def get_filename_regex(cls):
-        return [r'c4d.*\.fits']
+    def download_and_commit_exposures( self, indexes=None, clobber=False, existing_ok=False,
+                                       delete_downloads=True, skip_existing=True ):
+        """Download exposures and load them into the database.
 
-    @classmethod
-    def get_short_instrument_name(cls):
-        """
-        Get a short name used for e.g., making filenames.
-        """
-        return 'c4d'
+        Files will first be downloaded to FileOnDiskMixin.local_path
+        with the filename that the origin gave them.  The headers of
+        files will be used to construct Exposure objects.  When each
+        Exposure object is saved, it will copy the file to the file
+        named by Exposure.invent_filpath (relative to
+        FileOnDiskMixin.local_path) and upload the exposure to the
+        archive.
 
-    @classmethod
-    def get_short_filter_name(cls, filter):
+        Parmaeters
+        ----------
+        indexes: list of int or None
+           List of indexes into the set of origin exposures to download;
+           None means download them all.
+        clobber: bool
+           Applies to the originally downloaded file
+           (i.e. FileOnDiskMixin.local_path/{origin_filename}) already
+           exists.  If clobber is True, that originally downloaded file
+           will always be deleted and written over with a redownload.
+           If clobber is False, then if existing_ok is True it will
+           assume that that file is correct, otherwise it throws an
+           exception.
+        existing_ok: bool
+           Applies to the originally downloaded file; see clobber.
+        delete_downloads: bool
+           If True (the default), will delete the originally downloaded
+           files after they have been copied to their final location.
+           (This mainly exists for testing purposes to avoid repeated
+           downloads.)
+        skip_existing: bool
+           If True, will silently skip loading exposures that already exist in the
+           database.  If False, will raise an exception on an attempt to load
+           an exposure that already exists in the database.
+
+        Returns
+        -------
+        A list of Exposure objects.  Depending on skip_existing, the length of this list may
+        not be the same as the length of indexes.
+
         """
-        Return the short version of each filter used by DECam.
-        In this case we just return the first character of the filter name,
-        e.g., shortening "g DECam SDSS c0001 4720.0 1520.0" to "g".
-        """
-        return filter[0:1]
+        raise NotImplementedError( f"Instrument class {self.__class__.__name__} hasn't "
+                                   f"implemented download_and_commit_exposures." )
+
+    def __len__( self ):
+        """The number of exposures this object encapsulates."""
+        raise NotImplementedError( f"Instrument class {self.__class__.__name__} hasn't implemented __len__." )
+
+
 
 
 if __name__ == "__main__":

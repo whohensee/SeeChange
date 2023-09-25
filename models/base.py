@@ -1,6 +1,7 @@
 import sys
 import os
 import math
+import types
 import hashlib
 import pathlib
 import logging
@@ -29,7 +30,7 @@ utcnow = func.timezone("UTC", func.current_timestamp())
 
 _logger = logging.getLogger("main")
 if len(_logger.handlers) == 0:
-    _logout = logging.StreamHandler( sys.stdout )
+    _logout = logging.StreamHandler( sys.stderr )
     _logger.addHandler( _logout )
     _formatter = logging.Formatter( f"[%(asctime)s - %(levelname)s] - %(message)s", datefmt="%Y-%m-%d %H:%M:%S" )
     _logout.setFormatter( _formatter )
@@ -181,6 +182,20 @@ class SeeChangeBase:
 
         return attrs
 
+    def set_attributes_from_dict( self, dictionary ):
+        """Set all atributes of self from a dictionary, excepting existing  attributes that are methods.
+
+        Parameters
+        ----------
+        dictionary: dict
+          A dictionary of attributes to set in self
+
+        """
+        for key, value in dictionary.items():
+            if hasattr(self, key):
+                if type( getattr( self, key ) ) != types.MethodType:
+                    setattr(self, key, value)
+
     def recursive_merge(self, session, done_list=None):
         """
         Recursively merge (using safe_merge) all the objects,
@@ -209,7 +224,8 @@ class SeeChangeBase:
         done_list.add(obj)
 
         # only do the sub-properties if the object was already added to the session
-        attributes = ['provenance', 'exposure', 'image', 'ref_image', 'new_image', 'sub_image', 'source_list']
+        attributes = ['provenance', 'code_version',
+                      'exposure', 'image', 'ref_image', 'new_image', 'sub_image', 'source_list']
 
         # recursively call this on the provenance and other parent objects
         for att in attributes:

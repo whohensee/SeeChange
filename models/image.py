@@ -203,7 +203,7 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners):
         index=True,
         doc=(
             "ID of the provenance of this image. "
-            "The provenance will contain a record of the code version"
+            "The provenance will contain a record of the code version "
             "and the parameters used to produce this image. "
         )
     )
@@ -214,7 +214,7 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners):
         lazy='selectin',
         doc=(
             "Provenance of this image. "
-            "The provenance will contain a record of the code version"
+            "The provenance will contain a record of the code version "
             "and the parameters used to produce this image. "
         )
     )
@@ -929,13 +929,15 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners):
     def __str__(self):
         return self.__repr__()
 
-    def invent_filename(self):
-        """
-        Create a filename for the object based on its metadata.
-        This is used when saving the image to disk.
-        Data products that depend on an image and are also
-        saved to disk (e.g., SourceList) will just append
-        another string to the Image filename.
+    def invent_filepath(self):
+        """Create a relative file path for the object.
+
+        Create a file path relative to data root for the object based on its
+        metadata.  This is used when saving the image to disk.  Data
+        products that depend on an image and are also saved to disk
+        (e.g., SourceList) will just append another string to the Image
+        filename.
+
         """
         prov_hash = inst_name = im_type = date = time = filter = ra = dec = dec_int_pm = ''
         section_id = section_id_int = ra_int = ra_int_h = ra_frac = dec_int = dec_frac = 0
@@ -1037,7 +1039,7 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners):
         if self.provenance is None:
             raise RuntimeError("The image provenance is not set. Cannot save.")
 
-        self.filepath = filename if filename is not None else self.invent_filename()
+        self.filepath = filename if filename is not None else self.invent_filepath()
 
         cfg = config.Config.get()
         single_file = cfg.value('storage.images.single_file', default=False)

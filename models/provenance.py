@@ -283,12 +283,12 @@ class Provenance(Base):
         code_version: CodeVersion
             CodeVersion object
         """
-        code_hash = session.scalars(sa.select(CodeHash).where(CodeHash.id == get_git_hash())).first()
-        if code_hash is not None:
-            code_version = code_hash.code_version
-        else:
-            code_version = session.scalars(sa.select(CodeVersion).order_by(CodeVersion.id.desc())).first()
-
+        with SmartSession( session ) as session:
+            code_hash = session.scalars(sa.select(CodeHash).where(CodeHash.id == get_git_hash())).first()
+            if code_hash is not None:
+                code_version = code_hash.code_version
+            else:
+                code_version = session.scalars(sa.select(CodeVersion).order_by(CodeVersion.id.desc())).first()
         return code_version
 
     def recursive_merge(self, session, done_list=None):
