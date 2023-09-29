@@ -14,12 +14,13 @@ from astropy.time import Time
 from astropy.io import fits
 
 from util.config import Config
-from models.base import SmartSession, CODE_ROOT, _logger
+from models.base import FileOnDiskMixin, SmartSession, CODE_ROOT, _logger
 from models.provenance import CodeVersion, Provenance
 from models.exposure import Exposure
 from models.image import Image
+from models.datafile import DataFile
 from models.references import ReferenceEntry
-from models.instrument import Instrument
+from models.instrument import Instrument, get_instrument_instance
 from models.decam import DECam
 from models.source_list import SourceList
 from util import config
@@ -240,6 +241,15 @@ def decam_example_exposure(decam_example_file):
 
     exposure = Exposure( filepath=decam_example_file, instrument='DECam', **exphdrinfo )
     return exposure
+
+
+# This one is currently completely redudant with decam_example_image, except
+# for the TODO comment
+@pytest.fixture
+def decam_example_raw_image( decam_example_exposure ):
+    image = Image.from_exposure(decam_example_exposure, section_id='N1')
+    image.data = image.raw_data.astype(np.float32)
+    return image
 
 
 @pytest.fixture
@@ -480,3 +490,46 @@ def archive():
 
     except Exception as e:
         warnings.warn(str(e))
+
+
+# Get the flat, fringe, and linearity for
+# a couple of DECam chips and filters
+# Need session scope; otherwise, things
+# get mixed up when _get_default_calibrator
+# is called from within another function.
+@pytest.fixture( scope='session' )
+def decam_default_calibrators():
+    decam = get_instrument_instance( 'DECam' )
+    sections = [ 'N1', 'S1' ]
+    filters = [ 'r', 'i', 'z' ]
+    for sec in sections:
+        for calibtype in [ 'flat', 'fringe' ]:
+            for filt in filters:
+                decam._get_default_calibrator( 60000, sec, calibtype=calibtype, filter=filt )
+    decam._get_default_calibrator( 60000, sec, calibtype='linearity' )
+
+    yield sections, filters
+
+    imagestonuke = set()
+    datafilestonuke = set()
+    with SmartSession() as session:
+        for sec in [ 'N1', 'S1' ]:
+            for filt in [ 'r', 'i', 'z' ]:
+                info = decam.preprocessing_calibrator_files( 'externally_supplied', 'externally_supplied',
+                                                             sec, filt, 60000, nofetch=True, session=session )
+                for filetype in [ 'zero', 'flat', 'dark', 'fringe', 'illumination', 'linearity' ]:
+                    if ( f'{filetype}_fileid' in info ) and ( info[ f'{filetype}_fileid' ] is not None ):
+                        if info[ f'{filetype}_isimage' ]:
+                            imagestonuke.add( info[ f'{filetype}_fileid' ] )
+                        else:
+                            datafilestonuke.add( info[ f'{filetype}_fileid' ] )
+        for imid in imagestonuke:
+            im = session.get( Image, imid )
+            im.remove_data_from_disk( purge_archive=True, session=session, nocommit=True )
+            session.delete( im )
+        for dfid in datafilestonuke:
+            df = session.get( DataFile, dfid )
+            df.remove_data_from_disk( purge_archive=True, session=session, nocommit=True )
+            session.delete( df )
+        session.commit()
+

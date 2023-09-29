@@ -75,7 +75,8 @@ class DataStore:
         See the parse_args method for details on how to initialize this object.
         """
         # these are data products that can be cached in the store
-        self.exposure = None  # single image, entire focal plane
+        self._exposure = None  # single image, entire focal plane
+        self._section = None # SensorSection
         self.image = None  # single image from one sensor section
         self.sources = None  # extracted sources (a SourceList object, basically a catalog)
         self.wcs = None  # astrometric solution
@@ -90,10 +91,34 @@ class DataStore:
 
         # these are identifiers used to find the data products in the database
         self.exposure_id = None  # use this and section_id to find the raw image
-        self.section_id = None  # use this and exposure_id to find the raw image
+        self.section_id = None  # corresponds to SensorSection.identifier (*not* .id)
+                                # use this and exposure_id to find the raw image
         self.image_id = None  # use this to specify an image already in the database
 
+        # The database session parsed in parse_args; it could still be None even after parse_args
+        self.session = None
         self.parse_args(*args, **kwargs)
+
+    @property
+    def exposure( self ):
+        if self._exposure is None:
+            if self.exposure_id is not None:
+                self._exposure = self.get_raw_exposure( session=self.session )
+        return self._exposure
+
+    @exposure.setter
+    def exposure( self, value ):
+        self._exposure = value
+        self.exposure_id = value.id if value is not None else None
+
+    @property
+    def section( self ):
+        if self._section is None:
+            if self.section_id is not None:
+                if self.exposure is not None:
+                    self.exposure.instrument_object.fetch_sections()
+                    self._section = self.exposure.instrument_object.get_section( self.section_id )
+        return self._section
 
     def parse_args(self, *args, **kwargs):
         """
@@ -106,7 +131,9 @@ class DataStore:
         args: list
             A list of arguments to parse.
             Possible argument combinations are:
+            - DataStore: makes a copy of the other DataStore's __dict__
             - exposure_id, section_id: give two integers or integer and string
+            - Exposure, section_id: an Exposure object, and an integer or string
             - image_id: give a single integer
 
         kwargs: dict
@@ -130,6 +157,7 @@ class DataStore:
             return
 
         args, kwargs, output_session = parse_session(*args, **kwargs)
+        self.session = output_session
 
         # remove any provenances from the args list
         for arg in args:
@@ -143,6 +171,9 @@ class DataStore:
             pass
         elif arg_types == [int, int] or arg_types == [int, str]:  # exposure_id, section_id
             self.exposure_id, self.section_id = args
+        elif arg_types == [Exposure, int] or arg_types == [Exposure, str]:
+            self.exposure, self.section_id = args
+            self.exposure_id = self.exposure.id
         elif arg_types == [int]:
             self.image_id = args[0]
         # TODO: add more options here
@@ -245,8 +276,7 @@ class DataStore:
             raise ValueError('Could not get inputs for DataStore.')
 
     def get_provenance(self, process, pars_dict, upstream_provs=None, session=None):
-        """
-        Get the provenance for a given process.
+        """Get the provenance for a given process.
         Will try to find a provenance that matches the current code version
         and the parameter dictionary, and if it doesn't find it,
         it will create a new Provenance object.
@@ -276,14 +306,18 @@ class DataStore:
             self.upstream_provs attribute for that call.
         session: sqlalchemy.orm.session.Session or SmartSession
             An optional session to use for the database query.
-            If not given, will open a new session and close it at
-            the end of the function.
+            If not given, will use the session stored inside the
+            DataStore object; if there is none, will open a new session
+            and close it at the end of the function.
 
         Returns
         -------
         prov: Provenance
             The provenance for the given process.
+
         """
+        session = self.session if session is None else session
+
         if upstream_provs is None:
             upstream_provs = self.upstream_provs
 
@@ -352,6 +386,8 @@ class DataStore:
 
         This will raise if no provenance can be found.
         """
+        session = self.session if session is None else session
+
         # see if it is in the upstream_provs
         if self.upstream_provs is not None:
             prov_list = [p for p in self.upstream_provs if p.process == process]
@@ -369,14 +405,16 @@ class DataStore:
         """
         Get the raw exposure from the database.
         """
-        if self.exposure is None:
+        session = self.session if session is None else session
+
+        if self._exposure is None:
             if self.exposure_id is None:
                 raise ValueError('Cannot get raw exposure without an exposure_id!')
 
             with SmartSession(session) as session:
-                self.exposure = session.scalars(sa.select(Exposure).where(Exposure.id == self.exposure_id)).first()
+                self._exposure = session.scalars(sa.select(Exposure).where(Exposure.id == self.exposure_id)).first()
 
-        return self.exposure
+        return self._exposure
 
     def get_image(self, provenance=None, session=None):
         """
@@ -408,8 +446,9 @@ class DataStore:
             for the "preprocessing" process.
         session: sqlalchemy.orm.session.Session or SmartSession
             An optional session to use for the database query.
-            If not given, will open a new session and close it at
-            the end of the function.
+            If not given, will use the session stored inside the
+            DataStore object; if there is none, will open a new session
+            and close it at the end of the function.
 
         Returns
         -------
@@ -417,9 +456,11 @@ class DataStore:
             The image object, or None if no matching image is found.
 
         """
+        session = self.session if session is None else session
+
         process_name = 'preprocessing'
-        # we were explicitly asked for a specific image id:
         if self.image_id is not None:
+            # we were explicitly asked for a specific image id:
             if isinstance(self.image, Image) and self.image.id == self.image_id:
                 pass  # return self.image at the end of function...
             else:  # not found in local memory, get from DB
@@ -430,8 +471,24 @@ class DataStore:
             if self.image is None:
                 raise ValueError(f'Cannot find image with id {self.image_id}!')
 
-        # this option is for when we are not sure which image id we need
+        elif self.image is not None:
+            # If an image already exists and image_id is none, we may be
+            # working with a datastore that hasn't been committed to the
+            # database; do a quick check for mismatches.
+            # (If all the ids are None, it'll match even if the actual
+            # objects are wrong, but, oh well.)
+            if ( self.exposure_id is not None ) and ( self.section_id is not None ):
+                if ( ( self.image.exposure_id != self.exposure_id ) or
+                     ( self.image.section_id != self.section_id ) ):
+                    raise ValueError( "Image exposure/section id doesn't match what's expected!" )
+            elif ( self.exposure is not None and self.section is not None ):
+                if ( ( self.image.exposure_id != self.exposure.id ) or
+                     ( self.image.section_id != self.section.id ) ):
+                    raise ValueError( "Image exposure/section id doesn't match what's expected!" )
+            # If we get here, self.image is presumed to be good
+
         elif self.exposure_id is not None and self.section_id is not None:
+            # If we don't know the image yet
             # check if self.image is the correct image:
             if (
                 isinstance(self.image, Image) and self.image.exposure_id == self.exposure_id
@@ -468,8 +525,15 @@ class DataStore:
                             )
                         ).first()
 
+        elif self.exposure is not None and self.section is not None:
+            # If we don't have exposure and section ids, but we do have an exposure
+            # and a section, we're probably working with a non-committed datastore.
+            # So, extract the image from the exposure.
+            self.image = Image.from_exposure( self.exposure, self.section.identifier )
+
         else:
-            raise ValueError('Cannot get processed image without exposure_id and section_id or image_id!')
+            raise ValueError('Cannot get image without one of (exposure_id, section_id), '
+                             '(exposure, section), image, or image_id!')
 
         return self.image  # could return none if no image was found
 
@@ -488,8 +552,9 @@ class DataStore:
             for the "extraction" process.
         session: sqlalchemy.orm.session.Session or SmartSession
             An optional session to use for the database query.
-            If not given, will open a new session and close it at
-            the end of the function.
+            If not given, will use the session stored inside the
+            DataStore object; if there is none, will open a new session
+            and close it at the end of the function.
 
         Returns
         -------
@@ -498,6 +563,8 @@ class DataStore:
             or None if no matching source list is found.
 
         """
+        session = self.session if session is None else session
+
         process_name = 'extraction'
         # if sources exists in memory, check the provenance is ok
         if self.sources is not None:
@@ -520,7 +587,7 @@ class DataStore:
         if self.sources is None:
             # this happens when the source list is required as an upstream for another process (but isn't in memory)
             if provenance is None:  # check if in upstream_provs/database
-                provenance = self._get_provanance_for_an_upstream(process_name, session=session)
+                provenance = self._get_provanance_for_an_upstream(process_name, session )
 
             if provenance is not None:  # if we can't find a provenance, then we don't need to load from DB
                 with SmartSession(session) as session:
@@ -550,8 +617,9 @@ class DataStore:
             for the "astro_cal" process.
         session: sqlalchemy.orm.session.Session or SmartSession
             An optional session to use for the database query.
-            If not given, will open a new session and close it at
-            the end of the function.
+            If not given, will use the session stored inside the
+            DataStore object; if there is none, will open a new session
+            and close it at the end of the function.
 
         Returns
         -------
@@ -559,6 +627,8 @@ class DataStore:
             The WCS object, or None if no matching WCS is found.
 
         """
+        session = self.session if session is None else session
+
         process_name = 'astro_cal'
         # make sure the wcs has the correct provenance
         if self.wcs is not None:
@@ -608,14 +678,17 @@ class DataStore:
             for the "photo_cal" process.
         session: sqlalchemy.orm.session.Session or SmartSession
             An optional session to use for the database query.
-            If not given, will open a new session and close it at
-            the end of the function.
+            If not given, will use the session stored inside the
+            DataStore object; if there is none, will open a new session
+            and close it at the end of the function.
 
         Returns
         -------
         wcs: ZeroPoint object
             The photometric calibration object, or None if no matching ZP is found.
         """
+        session = self.session if session is None else session
+
         process_name = 'photo_cal'
         # make sure the zp has the correct provenance
         if self.zp is not None:
@@ -666,8 +739,9 @@ class DataStore:
             for the "coaddition" process.
         session: sqlalchemy.orm.session.Session or SmartSession
             An optional session to use for the database query.
-            If not given, will open a new session and close it at
-            the end of the function.
+            If not given, will use the session stored inside the
+            DataStore object; if there is none, will open a new session
+            and close it at the end of the function.
 
         Returns
         -------
@@ -675,6 +749,8 @@ class DataStore:
             The reference image for this image, or None if no reference is found.
 
         """
+        session = self.session if session is None else session
+
         if self.ref_image is None:
 
             with SmartSession(session) as session:
@@ -717,8 +793,9 @@ class DataStore:
             for the "subtraction" process.
         session: sqlalchemy.orm.session.Session or SmartSession
             An optional session to use for the database query.
-            If not given, will open a new session and close it at
-            the end of the function.
+            If not given, will use the session stored inside the
+            DataStore object; if there is none, will open a new session
+            and close it at the end of the function.
 
         Returns
         -------
@@ -727,6 +804,8 @@ class DataStore:
             or None if no matching subtraction image is found.
 
         """
+        session = self.session if session is None else session
+
         process_name = 'subtraction'
         # make sure the subtraction has the correct provenance
         if self.sub_image is not None:
@@ -779,8 +858,9 @@ class DataStore:
             for the "detection" process.
         session: sqlalchemy.orm.session.Session or SmartSession
             An optional session to use for the database query.
-            If not given, will open a new session and close it at
-            the end of the function.
+            If not given, will use the session stored inside the
+            DataStore object; if there is none, will open a new session
+            and close it at the end of the function.
 
         Returns
         -------
@@ -789,6 +869,8 @@ class DataStore:
             or None if no matching source list is found.
 
         """
+        session = self.session if session is None else session
+
         process_name = 'detection'
         # not in memory, look for it on the DB
         if self.detections is not None:
@@ -840,8 +922,9 @@ class DataStore:
             for the "cutting" process.
         session: sqlalchemy.orm.session.Session or SmartSession
             An optional session to use for the database query.
-            If not given, will open a new session and close it at
-            the end of the function.
+            If not given, will use the session stored inside the
+            DataStore object; if there is none, will open a new session
+            and close it at the end of the function.
 
         Returns
         -------
@@ -849,6 +932,8 @@ class DataStore:
             The list of measurements, or None if no matching measurements are found.
 
         """
+        session = self.session if session is None else session
+
         process_name = 'cutting'
         # make sure the cutouts have the correct provenance
         if self.cutouts is not None:
@@ -899,8 +984,9 @@ class DataStore:
             for the "measurement" process.
         session: sqlalchemy.orm.session.Session or SmartSession
             An optional session to use for the database query.
-            If not given, will open a new session and close it at
-            the end of the function.
+            If not given, will use the session stored inside the
+            DataStore object; if there is none, will open a new session
+            and close it at the end of the function.
 
         Returns
         -------
@@ -908,6 +994,8 @@ class DataStore:
             The list of measurements, or None if no matching measurements are found.
 
         """
+        session = self.session if session is None else session
+
         process_name = 'measurement'
         # make sure the measurements have the correct provenance
         if self.measurements is not None:
@@ -966,7 +1054,7 @@ class DataStore:
             objects, including lists (e.g., Cutouts will be concatenated,
             no nested). Any None values will be removed.
         """
-        attributes = ['exposure', 'image', 'sources', 'wcs', 'zp', 'sub_image', 'detections', 'cutouts', 'measurements']
+        attributes = [ '_exposure' , 'image', 'wcs', 'sources', 'zp', 'sub_image', 'detections', 'cutouts', 'measurements' ]
         result = {att: getattr(self, att) for att in attributes}
         if output == 'dict':
             return result
@@ -1006,12 +1094,13 @@ class DataStore:
             save on local disk.
         session: sqlalchemy.orm.session.Session or SmartSession
             An optional session to use for the database query.
-            If not given, will open a new session and close it at
-            the end of the function.
+            If not given, will use the session stored inside the
+            DataStore object; if there is none, will open a new session
+            and close it at the end of the function.
             Note that this method calls session.commit()
 
         """
-        with SmartSession(session) as session:
+        with SmartSession( self.session if session is None else session ) as session:
             autoflush_state = session.autoflush
             try:
                 # session.autoflush = False
@@ -1029,6 +1118,13 @@ class DataStore:
                     session.add(obj)
 
                 session.commit()
+
+                # This may well have updated some ids, as objects got added to the database
+                if ( self.exposure_id is None ) and ( self._exposure is not None ):
+                    self.exposure_id = self._exposure.id
+                if ( self.image_id is None ) and ( self.image is not None ):
+                    self.image_id = self.image.id
+
             finally:
                 session.autoflush = autoflush_state
 
@@ -1042,11 +1138,12 @@ class DataStore:
         ----------
         session: sqlalchemy.orm.session.Session or SmartSession
             An optional session to use for the database query.
-            If not given, will open a new session and close it at
-            the end of the function.
+            If not given, will use the session stored inside the
+            DataStore object; if there is none, will open a new session
+            and close it at the end of the function.
             Note that this method calls session.commit()
         """
-        with SmartSession(session) as session:
+        with SmartSession( self.session if session is None else session ) as session:
             autoflush_state = session.autoflush
             try:
                 session.autoflush = False

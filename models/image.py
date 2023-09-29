@@ -23,6 +23,7 @@ from models.enums_and_bitflags import (
     ImageTypeConverter,
     image_badness_inverse,
     data_badness_dict,
+    image_preprocessing_dict,
     string_to_bitflag,
     bitflag_to_string,
 )
@@ -297,7 +298,7 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners):
         doc="Name of the telescope used to create this image. "
     )
 
-    filter = sa.Column(sa.Text, nullable=False, index=True, doc="Name of the filter used to make this image. ")
+    filter = sa.Column(sa.Text, nullable=True, index=True, doc="Name of the filter used to make this image. ")
 
     section_id = sa.Column(
         sa.Text,
@@ -318,6 +319,14 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners):
         nullable=False,
         index=True,
         doc='Name of the target object or field id. '
+    )
+
+    preproc_bitflag = sa.Column(
+        sa.SMALLINT,
+        nullable=False,
+        default=0,
+        index=False,
+        doc='Bitflag specifying which preprocessing steps have been completed for the image.'
     )
 
     _bitflag = sa.Column(
@@ -779,6 +788,9 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners):
             gotcorners = True
 
         # the exposure_id will be set automatically at commit time
+        # ...but we have to set it right now because other things are
+        # going to check to see if exposure.id matches image.exposure.id
+        new.exposure_id = exposure.id
         new.exposure = exposure
 
         return new

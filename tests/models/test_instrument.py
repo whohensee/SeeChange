@@ -5,11 +5,15 @@ import datetime
 
 import numpy as np
 
+from astropy.io import fits
+
 import sqlalchemy as sa
 from sqlalchemy.exc import IntegrityError
 
 from models.base import SmartSession, FileOnDiskMixin, _logger
-from models.instrument import SensorSection, Instrument, DemoInstrument
+from models.image import Image
+from models.datafile import DataFile
+from models.instrument import SensorSection, Instrument, DemoInstrument, get_instrument_instance
 from models.decam import DECam
 from models.exposure import Exposure
 
@@ -130,7 +134,9 @@ def test_instrument_offsets_and_filter_array_index():
 
     # for the DECam instrument, the offsets are different
     inst = DECam()
-    inst.name = 'TestInstrument' + uuid.uuid4().hex
+    # Why was this here?  This broke the instrument cache
+    # (get_instrument_instance would return the wrong class)
+    # inst.name = 'TestInstrument' + uuid.uuid4().hex
     inst.fetch_sections()
 
     assert inst.sections is not None
@@ -289,6 +295,7 @@ def test_demoim_search_notimplemented():
     inst = DemoInstrument()
     with pytest.raises( NotImplementedError ):
         inst.find_origin_exposures()
+
 
 
 # TODO: add more tests for e.g., loading FITS headers

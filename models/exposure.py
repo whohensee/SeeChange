@@ -14,7 +14,7 @@ from util.config import Config
 from pipeline.utils import read_fits_image, parse_ra_hms_to_deg, parse_dec_dms_to_deg
 
 from models.base import Base, SeeChangeBase, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, SmartSession
-from models.instrument import Instrument, guess_instrument, get_instrument_instance
+from models.instrument import guess_instrument, get_instrument_instance
 from models.provenance import Provenance
 
 from models.enums_and_bitflags import (
@@ -126,6 +126,26 @@ class SectionHeaders:
         self._header = defaultdict(lambda: None)
 
 
+class ExposureImageIterator:
+    """A class to iterate through the HDUs of an exposure, one for each SensorSection."""
+
+    def __iter__( self, exposure ):
+        self.exposure = exposure
+
+        self.instrument = get_instrument_instance( self.exposure.instrument )
+        self.section_ids = self.instrument.get_section_ids()
+        self.dex = 0
+        return self
+
+    def __next__( self ):
+        if self.dex < len( self.section_ids ):
+            img = Image.from_exposure( self.exposure, self.section_ids[ dex ] )
+            self.dex += 1
+            return img
+        else:
+            raise StopIteration
+
+
 class Exposure(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed):
 
     __tablename__ = "exposures"
@@ -221,6 +241,12 @@ class Exposure(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed):
     exp_time = sa.Column(sa.Float, nullable=False, index=True, doc="Exposure time in seconds. ")
 
     filter = sa.Column(sa.Text, nullable=True, index=True, doc="Name of the filter used to make this exposure. ")
+
+    @property
+    def filter_short(self):
+        if self.filter is None:
+            return None
+        return self.instrument_object.get_short_filter_name(self.filter)
 
     filter_array = sa.Column(
         sa.ARRAY(sa.Text),

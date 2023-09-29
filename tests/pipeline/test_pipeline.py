@@ -92,13 +92,13 @@ def test_parameters( config_test ):
 
     # Verify that we can override from the yaml config file
     pipeline = Pipeline()
-    assert pipeline.preprocessor.pars['use_sky_subtraction']
+    assert not pipeline.preprocessor.pars['use_sky_subtraction']
     assert pipeline.astro_cal.pars['cross_match_catalog'] == 'Gaia'
     assert pipeline.astro_cal.pars['catalog'] == 'Gaia'
     assert pipeline.subtractor.pars['method'] == 'testing_testing'
 
     # Verify that manual override works for all parts of pipeline
-    overrides = { 'preprocessing': { 'use_sky_subtraction': True },
+    overrides = { 'preprocessing': { 'steps': [ 'overscan', 'linearity'] },
                   # 'extraction': # Currently has no parameters defined
                   'astro_cal': { 'cross_match_catalog': 'override' },
                   'photo_cal': { 'cross_match_catalog': 'override' },
@@ -171,7 +171,7 @@ def test_data_flow(exposure, reference_entry):
             check_datastore_and_database_have_everything(exp_id, sec_id, ref_id, session, ds)
 
         # feed the pipeline the same data, but missing the upstream data
-        attributes = ['exposure', 'image', 'sources', 'wcs', 'zp', 'sub_image', 'detections']
+        attributes = ['image', 'sources', 'wcs', 'zp', 'sub_image', 'detections']
 
         for i in range(len(attributes)):
             for j in range(i):
