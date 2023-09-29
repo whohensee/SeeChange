@@ -1051,12 +1051,10 @@ class DataStore:
             try:
                 session.autoflush = False
                 for obj in self.get_all_data_products(output='list'):
-                    # if hasattr(obj, 'provenance'):
-                    #     print(f'Deleting {obj} with provenance= {obj.provenance}')
                     obj = safe_merge(session, obj)
                     if isinstance(obj, FileOnDiskMixin):
-                        obj.remove_data_from_disk( purge_archive=True, session=session, nocommit=True )
-                    if obj in session:
+                        obj.delete_from_disk_and_database(session=session, commit=False)
+                    if sa.inspect(obj).persistent:
                         session.delete(obj)
 
                 session.commit()

@@ -1,3 +1,4 @@
+import os
 import re
 import logging
 import pathlib
@@ -9,6 +10,8 @@ import sqlalchemy as sa
 from models.base import SmartSession, FileOnDiskMixin, _logger
 from models.exposure import Exposure
 from models.decam import DECam
+import util.config as config
+
 
 @pytest.fixture(scope='module')
 def decam_origin_exposures():
@@ -17,6 +20,7 @@ def decam_origin_exposures():
                                        proposals='2023A-716082',
                                        skip_exposures_in_database=False,
                                        proc_type='instcal' )
+
 
 # Note that these tests are probing the internal state of the opaque
 # DECamOriginExposures objects.  If you're looking at this test for
@@ -66,6 +70,7 @@ def test_decam_search_noirlab( decam_origin_exposures ):
     finally:
         _logger.setLevel( origloglevel )
 
+
 def test_decam_download_origin_exposure( decam_origin_exposures ):
     localpath = FileOnDiskMixin.local_path
     assert all( [ row.proc_type=='instcal' for i,row in decam_origin_exposures._frame.iterrows() ] )
@@ -84,7 +89,10 @@ def test_decam_download_origin_exposure( decam_origin_exposures ):
         #     path.unlink()
         pass
 
+
 def test_decam_download_and_commit_exposure( code_version, decam_origin_exposures ):
+    cfg = config.Config.get()
+
     eids = []
     try:
         with SmartSession() as session:
@@ -106,7 +114,9 @@ def test_decam_download_and_commit_exposure( code_version, decam_origin_exposure
                 assert ( pathlib.Path( exposure.get_fullpath( download=False ) ) ==
                          pathlib.Path( FileOnDiskMixin.local_path ) / exposure.filepath )
                 assert pathlib.Path( exposure.get_fullpath( download=False ) ).is_file()
-                assert ( pathlib.Path( '/archive_storage/base/test' ) / exposure.filepath ).is_file()
+                archivebase = f"{os.getenv('SEECHANGE_TEST_ARCHIVE_DIR')}/{cfg.value('archive.path_base')}"
+
+                assert ( pathlib.Path( archivebase ) / exposure.filepath ).is_file()
                 # Perhaps do m5dsums to verify that the local and archive files are the same?
                 # Or, just trust that the archive works because it has its own tests.
                 assert exposure.instrument == 'DECam'
