@@ -55,6 +55,7 @@ def tests_setup_and_teardown():
         session.execute( sa.text( "DELETE FROM code_versions" ) )
         session.commit()
 
+
 def rnd_str(n):
     return ''.join(np.random.choice(list('abcdefghijklmnopqrstuvwxyz'), n))
 
@@ -84,6 +85,7 @@ def code_version():
     except Exception as e:
         warnings.warn(str(e))
 
+
 @pytest.fixture
 def provenance_base(code_version):
     p = Provenance(
@@ -108,6 +110,7 @@ def provenance_base(code_version):
             session.commit()
     except Exception as e:
         warnings.warn(str(e))
+
 
 @pytest.fixture
 def provenance_extra(code_version, provenance_base):
