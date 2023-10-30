@@ -203,11 +203,14 @@ def parse_session(*args, **kwargs):
         session = sessions[-1]
     args = [arg for arg in args if not isinstance(arg, sa.orm.session.Session)]
 
+    sesskeys = []
     for key in kwargs.keys():
         if key in ['session']:
             if not isinstance(kwargs[key], sa.orm.session.Session):
                 raise ValueError(f'Session must be a sqlalchemy.orm.session.Session, got {type(kwargs[key])}')
-            session = kwargs.pop(key)
+            sesskeys.append(key)
+    for key in sesskeys:
+        session = kwargs.pop(key)
 
     return args, kwargs, session
 

@@ -1,4 +1,29 @@
+import pathlib
 import collections.abc
+
+def ensure_file_does_not_exist( filepath, delete=False ):
+    """Check if a file exists.  Delete it, or raise an exception, if it does.
+
+    Will always raise a FileExistsError if the file exists but isn't a normal file.
+
+    Parameters
+    ----------
+    filepath: str or Path
+       Path to the file
+    delete: bool
+       If True, will delete the file if it exists and is a regular
+       file.  If False (default), will raise a FileExistsError
+    """
+
+    filepath = pathlib.Path( filepath )
+    if filepath.exists():
+        if not filepath.is_file():
+            raise FileExistsError( f"{filepath} exists but is not a regular file" )
+        if not delete:
+            raise FileExistsError( f"{filepath} exists and delete is False" )
+        else:
+            filepath.unlink()
+
 
 def listify( val, require_string=False ):
     """Return a list version of val.
