@@ -7,6 +7,7 @@ from models.provenance import CodeVersion, Provenance
 from models.exposure import Exposure
 from models.image import Image
 from models.source_list import SourceList
+from models.psf import PSF
 from models.world_coordinates import WorldCoordinates
 from models.zero_point import ZeroPoint
 from models.references import ReferenceEntry
@@ -77,8 +78,17 @@ class DataStore:
         # these are data products that can be cached in the store
         self._exposure = None  # single image, entire focal plane
         self._section = None # SensorSection
+
+        self._init_data_products()
+
+        # The database session parsed in parse_args; it could still be None even after parse_args
+        self.session = None
+        self.parse_args(*args, **kwargs)
+
+    def _init_data_products( self ):
         self.image = None  # single image from one sensor section
         self.sources = None  # extracted sources (a SourceList object, basically a catalog)
+        self.psf = None   # psf determined from the extracted sources
         self.wcs = None  # astrometric solution
         self.zp = None  # photometric calibration
         self.ref_image = None  # to be used to make subtractions
@@ -94,10 +104,6 @@ class DataStore:
         self.section_id = None  # corresponds to SensorSection.identifier (*not* .id)
                                 # use this and exposure_id to find the raw image
         self.image_id = None  # use this to specify an image already in the database
-
-        # The database session parsed in parse_args; it could still be None even after parse_args
-        self.session = None
-        self.parse_args(*args, **kwargs)
 
     @property
     def exposure( self ):
@@ -602,6 +608,64 @@ class DataStore:
 
         return self.sources
 
+    def get_psf( self, provenance=None, session=None ):
+        """Get a PSF for the image, either from memory or the database.
+
+        Parameters
+        ----------
+        provenance: Provenance object
+          The provenance to use for the PSF.  This provenance should be
+          consistent with the current code version and critical
+          parameters.  If None, will use the latest provenance for the
+          "extraction" process.
+        session: sqlalchemy.orm.session.Sesssion
+          An optional database session.  If not given, will use the
+          session stored in the DataStore object, or open and close a
+          new session if there isn't one.
+
+        Retruns
+        -------
+        psf: PSF Object
+
+        """
+
+        session = self.session if session is None else session
+
+        process_name = 'extraction'
+        # if psf exists in memory already, check that the provenance is ok
+        if self.psf is not None:
+            if self.psf.provenance is None:
+                raise ValueError( 'PSF has no provenance!' )
+            if self.upstream_provs is not None:
+                provenances = [ p for p in self.upstream_provs if p.process == process_name ]
+            else:
+                provenances = []
+            if len(provenances) > 1:
+                raise ValueError( f"More than one {process_name} provenances found!" )
+            if len(provenances) == 1:
+                # Check for a mismatch of given provenance and self.psf's provenance
+                if self.psf.provenance.id != provenances[0].id:
+                    self.psf = None
+
+        # Didn't have the right psf in memory, look for it in the DB
+        if self.psf is None:
+            # This happens when the psf is required as an upstream for another process (but isn't in memory)
+            if provenance is None:
+                provenance = self._get_provenance_for_an_upstream( process_name, session )
+
+            # If we can't find a provenance, then we don't need to load from the DB
+            if provenance is not None:
+                with SmartSession( session ) as session:
+                    image = self.get_image( session=session )
+                    self.psf = session.scalars(
+                        sa.select( PSF ).where(
+                            PSF.image_id == image.id,
+                            PSF.provenance.has( id=provenance.id )
+                        )
+                    ).first()
+
+        return self.psf
+
     def get_wcs(self, provenance=None, session=None):
         """
         Get an astrometric solution (in the form of a WorldCoordinates),
@@ -1057,7 +1121,7 @@ class DataStore:
             no nested). Any None values will be removed.
         """
         attributes = [] if omit_exposure else [ '_exposure' ]
-        attributes.extend( [ 'image', 'wcs', 'sources', 'zp', 'sub_image',
+        attributes.extend( [ 'image', 'wcs', 'sources', 'psf', 'zp', 'sub_image',
                              'detections', 'cutouts', 'measurements' ] )
         result = {att: getattr(self, att) for att in attributes}
         if output == 'dict':
@@ -1138,11 +1202,6 @@ class DataStore:
         All data products in the data store are removed from the DB,
         and all files on disk are deleted.
 
-        WARNING : after calling this, calling this again on the same
-        data_store will cause problems.  (TODO: set all the various _id
-        fields of the objects to None?  Would that fix it?  Or, perhaps
-        set all fields to None?)
-
         NOTE: does *not* delete the exposure.  (There may well be other
         data stores out there with different images from the same
         exposure.)
@@ -1171,3 +1230,5 @@ class DataStore:
             finally:
                 session.autoflush = autoflush_state
 
+        # Make sure all data products are None so that they aren't used again now that they're gone
+        self._init_data_products()

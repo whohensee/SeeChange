@@ -11,6 +11,7 @@ from sqlalchemy.schema import CheckConstraint
 
 from astropy.time import Time
 from astropy.wcs import WCS
+from astropy.io import fits
 import astropy.units as u
 
 from pipeline.utils import read_fits_image, save_fits_image_file
@@ -18,6 +19,7 @@ from pipeline.utils import read_fits_image, save_fits_image_file
 from models.base import SeeChangeBase, Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners
 from models.exposure import Exposure
 from models.instrument import get_instrument_instance
+from models.psf import PSF
 from models.enums_and_bitflags import (
     ImageFormatConverter,
     ImageTypeConverter,
@@ -624,7 +626,7 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners):
         self._weight = None  # the inverse-variance array (2D float array)
         self._background = None  # an estimate for the background flux (2D float array)
         self._score = None  # the image after filtering with the PSF and normalizing to S/N units (2D float array)
-        self._psf = None  # a small point-spread-function image (2D float array)
+        self._psf = None  # a small point-spread-function image (a PSF object)
 
         self._instrument_object = None
         self._bitflag = 0
@@ -1040,6 +1042,11 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners):
         The format to save is determined by the config file.
         Use the filename to override the default naming convention.
 
+        Will save the standard image extensions : image, weight, mask.
+        Does not save the source list or psf or other things that have
+        their own objects; those need to be saved separately.  (Also see
+        pipeline.datastore.)
+
         Parameters
         ----------
         filename: str (optional)
@@ -1088,7 +1095,7 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners):
             #  this should be configurable and will affect how we make the self.filepath and extensions.
 
             # save the other extensions
-            array_list = ['flags', 'weight', 'background', 'score', 'psf']
+            array_list = ['flags', 'weight', 'background', 'score']
             # TODO: the list of extensions should be saved somewhere more central
 
             for array_name in array_list:
@@ -1179,6 +1186,8 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners):
     def raw_header(self):
         if self._raw_header is None and self.filepath is not None:
             self.load()
+        if self._raw_header is None:
+            self._raw_header = fits.Header()
         return self._raw_header
 
     @raw_header.setter
@@ -1237,13 +1246,34 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners):
     def score(self, value):
         self._score = value
 
+    # This version exists in case a calling function
+    # wants to use its own session rather than the
+    # temporarily-created session in the psf property
+    def get_psf(self, session):
+        """Return the PSF object for this image.
+
+        Parameters
+        ----------
+          session: Session or SmartSession (optional)
+            The database session to use.
+
+        Returns
+        -------
+          PSF object, or None if there isn't one for this image.
+
+        """
+        if self._psf is None:
+            with SmartSession(session) as session:
+                q = session.query( PSF ).filter( PSF.image_id==self.id )
+                if q.count() > 0:
+                    self._psf = q.first()
+        return self._psf
+
     @property
     def psf(self):
-        """
-        A small point-spread-function image (2D float array).
-        """
-        if self._data is None and self.filepath is not None:
-            self.load()
+        """The PSF object for this image.  Will query the database if there's not one already in the object."""
+        if self._psf is None:
+            self._psf = self.get_psf()
         return self._psf
 
     @psf.setter

@@ -95,3 +95,4 @@ def test_preprocessing( decam_example_exposure, decam_default_calibrators ):
     assert preppor._ds.section_id == 'N1'
     assert set( preppor.stepfiles.keys() ) == { 'linearity' }
 
+
