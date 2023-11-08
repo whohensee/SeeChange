@@ -1,17 +1,20 @@
 import os
+import re
+import io
 import warnings
 import pytest
 import uuid
 import wget
 import shutil
 import pathlib
+import yaml
 
 import numpy as np
 
 import sqlalchemy as sa
 
 from astropy.time import Time
-from astropy.io import fits
+from astropy.io import fits, votable
 
 from util.config import Config
 from models.base import FileOnDiskMixin, SmartSession, CODE_ROOT, _logger
@@ -23,6 +26,8 @@ from models.references import ReferenceEntry
 from models.instrument import Instrument, get_instrument_instance
 from models.decam import DECam
 from models.source_list import SourceList
+from models.psf import PSF
+from pipeline.data_store import DataStore
 from pipeline.preprocessing import Preprocessor
 from pipeline.detection import Detector
 from util import config
@@ -219,6 +224,17 @@ def exposure_filter_array(exposure_factory):
 
 
 def get_decam_example_file():
+    """Pull a DECam exposure down from the NOIRLab archives.
+
+    Because this is a slow process (depending on the NOIRLab archive
+    speed, it can take up to minutes), first look for
+    "{filename}_cached", and if it exists, just symlink to it.  If not,
+    actually download the image from NOIRLab, rename it to
+    "{filename}_cached", and create the symlink.  That way, until the
+    user manually deletes the _cached file, we won't have to redo the
+    slow NOIRLab download again.
+
+    """
     filename = os.path.join(CODE_ROOT, 'data/test_data/DECam_examples/c4d_221104_074232_ori.fits.fz')
     if not os.path.isfile(filename):
         cachedfilename = f'{filename}_cached'
@@ -229,29 +245,27 @@ def get_decam_example_file():
         os.symlink( cachedfilename, filename )
     return filename
 
-@pytest.fixture
+@pytest.fixture(scope="session")
 def decam_example_file():
     yield get_decam_example_file()
 
-def get_decam_example_exposure():
+@pytest.fixture
+def decam_example_exposure(decam_example_file):
     filename = get_decam_example_file()
     decam_example_file_short = filename[len(CODE_ROOT+'/data/'):]
-    with SmartSession() as session:
-        # always destroy this Exposure object and make a new one, to avoid filepath unique constraint violations
-        session.execute(sa.delete(Exposure).where(Exposure.filepath == decam_example_file_short))
-        session.commit()
 
-    with fits.open( filename, memmap=False ) as ifp:
+    with fits.open( filename, memmap=True ) as ifp:
         hdr = ifp[0].header
     exphdrinfo = Instrument.extract_header_info( hdr, [ 'mjd', 'exp_time', 'filter', 'project', 'target' ] )
 
     exposure = Exposure( filepath=filename, instrument='DECam', **exphdrinfo )
-    return exposure
 
+    yield exposure
 
-@pytest.fixture
-def decam_example_exposure(decam_example_file):
-    return get_decam_example_exposure()
+    # Just in case this exposure got loaded into the database
+    with SmartSession() as session:
+        session.execute(sa.delete(Exposure).where(Exposure.filepath == decam_example_file_short))
+        session.commit()
 
 @pytest.fixture
 def decam_example_raw_image( decam_example_exposure ):
@@ -260,40 +274,153 @@ def decam_example_raw_image( decam_example_exposure ):
     return image
 
 
-@pytest.fixture(scope="session")
-def decam_example_reduced_image_ds():
-    """Returns a datastore with an image that's been loaded into the database."""
-    exposure = get_decam_example_exposure()
+@pytest.fixture
+def decam_example_reduced_image_ds( code_version, decam_example_exposure ):
+    """Provides a datastore with an image, source list, and psf.
+
+    Preprocessing, source extraction, and PSF estimation were all
+    performed as this fixture was written, and saved to
+    data/test_data/DECam_examples, so that this fixture will return
+    quickly.  That does mean that if the code has evolved since those
+    test files were created, the files may not be exactly consistent
+    with the code_version in the provenances they have attached to them,
+    but hopefully the actual data and database records are still good
+    enough for the tests.
+
+    Has an image (with weight and flags), sources, and psf.  The data
+    has not been loaded into the image, sources, or psf fields, but of
+    course that will happen if you access (for instance)
+    decam_example_reduced_image_ds.image.data.  The provenances *have*
+    been loaded into the session (and committed to the database), but
+    the image, sources, and psf have not been added to the session.
+
+    The DataStore has a session inside it.
+
+    """
+
+    exposure = decam_example_exposure
     # Have to spoof the md5sum field to let us add it to the database even
     # though we're not really saving it to the archive
     exposure.md5sum = uuid.uuid4()
-    with SmartSession() as session:
-        # Spoof md5sum so we can add it
-        # Think: may be better just to actually save the exposure
-        # to the test archive?
-        exposure = exposure.recursive_merge( session )
-        session.add( exposure )
-        session.commit()
-        prepper = Preprocessor()
-        # NOTE: this has a side effect of loading some DECam
-        # calibration files (flats, etc.) into the databse
-        ds = prepper.run( exposure, 'N1', session=session )
-        ds.save_and_commit( session=session )
-    yield ds
-    ds.delete_everything()
 
-@pytest.fixture(scope="session")
-def decam_example_reduced_image_source_list_ds( decam_example_reduced_image_ds ):
-    """Returns the same datastore from decam_example_reduced_image_ds, only now with a source list too"""
-    det = Detector()
-    ds = det.run( decam_example_reduced_image_ds )
-    ds.save_and_commit()
-    yield ds
-    # This next line may not be necessary since
-    # decam_example_reduced_image_ds will run it
-    # ...indeed, it looks like data_store.delete_everyting()
-    # is not robust to being called more than once
-    # ds.delete_everything()
+    datadir = pathlib.Path( FileOnDiskMixin.local_path )
+    filepathbase = 'test_data/DECam_examples/c4d_20221104_074232_N1_g_Sci_VWQNR2'
+    fileextensions = { '.image.fits', '.weight.fits', '.flags.fits', '.sources.fits', '.psf', '.psf.xml' }
+
+    # This next block of code generates the files read in this test.  We
+    # don't want to rerun the code to generate them every single time,
+    # because it's a fairly slow process and this is a function-scope
+    # fixture.  As such, generate files with names ending in "_cached"
+    # that we won't delete at fixture teardown.  Then, we'll copy those
+    # files to the ones that the fixture really needs, and those copies
+    # will be deleted at fixture teardown.  (We need this to be a
+    # function-scope fixture because the tests that use the DataStore we
+    # return may well modify it, and may well modify the files on disk.)
+
+    # (Note: this will not regenerate the .yaml files
+    # test_data/DECam_examples, which are used to reconstruct the
+    # database object fields.  If tests fail after regenerating these
+    # files, review those .yaml files to make sure they're still
+    # current.)
+
+    # First check if those files exist; if they don't, generate them.
+    mustregenerate = False
+    for ext in fileextensions:
+        if not ( datadir / f'{filepathbase}{ext}_cached' ).is_file():
+            _logger.info( f"{filepathbase}{ext}_cached missing, decam_example_reduced_image_ds fixture "
+                          f"will regenerate all _cached files" )
+            mustregenerate = True
+
+    if mustregenerate:
+        with SmartSession() as session:
+            exposure = exposure.recursive_merge( session )
+            session.add( exposure )
+            session.commit()              # This will get cleaned up in the decam_example_exposure teardown
+            prepper = Preprocessor()
+            ds = prepper.run( exposure, 'N1', session=session )
+            try:
+                det = Detector()
+                ds = det.run( ds )
+                ds.save_and_commit()
+
+                paths = []
+                for obj in [ ds.image, ds.sources, ds.psf ]:
+                    paths.extend( obj.get_fullpath( as_list=True ) )
+
+                extextract = re.compile( '^(?P<base>.*)(?P<extension>\..*\.fits|\.psf|\.psf.xml)$' )
+                extscopied = set()
+                for src in paths:
+                    match = extextract.search( src )
+                    if match is None:
+                        raise RuntimeError( f"Failed to parse {src}" )
+                    if match.group('extension') not in fileextensions:
+                        raise RuntimeError( f"Unexpected file extension on {src}" )
+                    shutil.copy2( src, datadir/ f'{filepathbase}{match.group("extension")}_cached' )
+                    extscopied.add( match.group('extension') )
+
+                if extscopied != fileextensions:
+                    raise RuntimeError( f"Extensions copied {extcopied} doesn't match expected {extstocopy}" )
+            finally:
+                ds.delete_everything()
+    else:
+        _logger.info( f"decam_example_reduced_image_ds fixture found all _cached files, not regenerating" )
+
+    # Now make sure that the actual files needed are there by copying
+    # the _cached files
+
+    copiesmade = []
+    try:
+        for ext in [ '.image.fits', '.weight.fits', '.flags.fits', '.sources.fits', '.psf', '.psf.xml' ]:
+            actual = datadir / f'{filepathbase}{ext}'
+            if actual.exists():
+                raise FileExistsError( f"{actual} exists, but at this point in the tests it's not supposed to" )
+            shutil.copy2( datadir / f"{filepathbase}{ext}_cached", actual )
+            copiesmade.append( actual )
+
+        with SmartSession() as session:
+            # The filenames will not match the provenance, because the filenames
+            # are what they are, but as the code evoles the provenance tag is
+            # going to change.  What's more, the provenances are different for
+            # the images and for sources/psf.
+            imgprov = Provenance( process="preprocessing", code_version=code_version, upstreams=[], is_testing=True )
+            srcprov = Provenance( process="extraction", code_version=code_version,
+                                  upstreams=[imgprov], is_testing=True )
+            session.add( imgprov )
+            session.add( srcprov )
+            session.commit()
+            session.refresh( imgprov )
+            session.refresh( srcprov )
+
+            with open( datadir / f'{filepathbase}.image.yaml' ) as ifp:
+                imageyaml = yaml.safe_load( ifp )
+            with open( datadir / f'{filepathbase}.sources.yaml' ) as ifp:
+                sourcesyaml = yaml.safe_load( ifp )
+            with open( datadir / f'{filepathbase}.psf.yaml' ) as ifp:
+                psfyaml = yaml.safe_load( ifp )
+            ds = DataStore( session=session )
+            ds.image = Image( **imageyaml )
+            ds.image.provenance = imgprov
+            ds.image.filepath = filepathbase
+            ds.sources = SourceList( **sourcesyaml )
+            ds.sources.image = ds.image
+            ds.sources.provenance = srcprov
+            ds.sources.filepath = f'{filepathbase}.sources.fits'
+            ds.psf = PSF( **psfyaml )
+            ds.psf.image = ds.image
+            ds.psf.provenance = srcprov
+            ds.psf.filepath = filepathbase
+
+            yield ds
+
+            ds.delete_everything()
+            session.delete( imgprov )
+            session.delete( srcprov )
+            session.commit()
+            session.close()
+
+    finally:
+        for f in copiesmade:
+            f.unlink( missing_ok=True )
 
 @pytest.fixture
 def decam_small_image(decam_example_raw_image):
@@ -575,6 +702,38 @@ def example_image_with_sources_and_psf_filenames():
     psf = pathlib.Path( FileOnDiskMixin.local_path ) / "test_data/test_ztf_image.psf"
     psfxml = pathlib.Path( FileOnDiskMixin.local_path ) / "test_data/test_ztf_image.psf.xml"
     return image, weight, flags, sources, psf, psfxml
+
+@pytest.fixture
+def example_ds_with_sources_and_psf( example_image_with_sources_and_psf_filenames ):
+    image, weight, flags, sources, psf, psfxml = example_image_with_sources_and_psf_filenames
+    ds = DataStore()
+
+    ds.image = Image( filepath=str( image.relative_to( FileOnDiskMixin.local_path ) ), format='fits' )
+    with fits.open( image ) as hdul:
+        ds.image._data = hdul[0].data
+        ds.image._raw_header = hdul[0].header
+    with fits.open( weight ) as hdul:
+        ds.image._weight = hdul[0].data
+    with fits.open( flags ) as hdul:
+        ds.image_flags = hdul[0].data
+    ds.image.set_corners_from_header_wcs()
+    ds.image.ra = ( ds.image.ra_corner_00 + ds.image.ra_corner_01 +
+                    ds.image.ra_corner_10 + ds.image.ra_corner_11 ) / 4.
+    ds.image.dec = ( ds.image.dec_corner_00 + ds.image.dec_corner_01 +
+                     ds.image.dec_corner_00 + ds.image.dec_corner_11 ) / 4.
+    ds.image.calculate_coordinates()
+
+    ds.sources = SourceList( filepath=str( sources.relative_to( FileOnDiskMixin.local_path ) ), format='sextrfits' )
+    ds.sources.load( sources )
+    ds.sources.num_sources = len( ds.sources.data )
+
+    ds.psf = PSF( filepath=str( psf.relative_to( FileOnDiskMixin.local_path ) ), format='psfex' )
+    ds.psf.load( download=False, psfpath=psf, psfxmlpath=psfxml )
+    bio = io.BytesIO( ds.psf.info.encode( 'utf-8' ) )
+    tab = votable.parse( bio ).get_table_by_index( 1 )
+    ds.psf.fwhm_pixels = float( tab.array['FWHM_FromFluxRadius_Mean'][0] )
+
+    return ds
 
 @pytest.fixture
 def example_source_list_filename( example_image_with_sources_and_psf_filenames ):

@@ -405,6 +405,26 @@ class SourceList(Base, AutoIDMixin, FileOnDiskMixin):
         else:
             raise NotImplementedError( f"Don't know how to load source lists of format {self.format}" )
 
+    def invent_filepath( self ):
+        if self.image is None:
+            raise RuntimeError( f"Can't invent a filepath for sources without an image" )
+
+        filename = self.image.filepath
+        if filename is None:
+            filename = self.image.invent_filepath()
+
+        if filename.endswith(('.fits', '.h5', '.hdf5')):
+            filename = os.path.splitext(filename)[0]
+
+        filename += '.sources'
+        if self.format == 'sepnpy':
+            filename += '.npy'
+        elif self.format == 'sextrfits':
+            filename += '.fits'
+        else:
+            raise TypeError( f"Unable to create a filepath for sources file of type {self.format}" )
+
+        return filename
 
     def save(self, **kwargs):
         """Save the data table to a file on disk.
@@ -416,22 +436,7 @@ class SourceList(Base, AutoIDMixin, FileOnDiskMixin):
             raise ValueError("Cannot save source list without data")
 
         if self.filepath is None:
-            filename = None if self.image is None else self.image.filepath
-            if filename is None:
-                filename = self.image.invent_filepath()
-
-            if filename.endswith(('.fits', '.h5', '.hdf5')):
-                filename = os.path.splitext(filename)[0]
-
-            filename += '.sources'
-            if self.format == 'sepnpy':
-                filename += '.npy'
-            elif self.format == 'sextrfits':
-                filename += '.fits'
-            else:
-                raise TypeError( f"Unable to write sources file of type {self.format}" )
-
-            self.filepath = filename
+            self.filepath = self.invent_filepath()
 
         fullname = os.path.join(self.local_path, self.filepath)
         self.safe_mkdir(os.path.dirname(fullname))
@@ -516,9 +521,9 @@ class SourceList(Base, AutoIDMixin, FileOnDiskMixin):
 
         data = self.data
         with open( regfile, "w" ) as ofp:
-            for row in data:
+            for x, y in zip( self.x, self.y ):
                 # +1 to go from C-coordinates to FITS-coordinates
-                ofp.write( f"image;circle({row['x']+1},{row['y']+1},{radius}) # color={color} width={width}\n" )
+                ofp.write( f"image;circle({x+1},{y+1},{radius}) # color={color} width={width}\n" )
 
 # add "property" attributes to SourceList referencing the image for convenience
 for att in [

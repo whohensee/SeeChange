@@ -879,6 +879,7 @@ class FileOnDiskMixin:
         # The rest of this deals with the archive
 
         archivemd5 = self.md5sum if extension is None else extmd5s[extensiondex]
+        logfilepath = self.filepath if extension is None else f'{self.filepath}{extension}'
 
         mustupload = False
         if archivemd5 is None:
@@ -886,10 +887,10 @@ class FileOnDiskMixin:
         else:
             if not verify_md5:
                 if overwrite:
-                    _logger.debug( f"Uploading {self.filepath} to archive, overwriting existing file" )
+                    _logger.debug( f"Uploading {logfilepath} to archive, overwriting existing file" )
                     mustupload = True
                 else:
-                    _logger.debug( f"Assuming existing {self.filepath} on archive is correct" )
+                    _logger.debug( f"Assuming existing {logfilepath} on archive is correct" )
             else:
                 if origmd5 is None:
                     origmd5 = hashlib.md5()
@@ -898,14 +899,14 @@ class FileOnDiskMixin:
                             data = ifp.read()
                     origmd5.update( data )
                 if origmd5.hexdigest() == archivemd5.hex:
-                    _logger.debug( f"Archive md5sum for {self.filepath} matches saved data, not reuploading." )
+                    _logger.debug( f"Archive md5sum for {logfilepath} matches saved data, not reuploading." )
                 else:
                     if overwrite:
-                        _logger.debug( f"Archive md5sum for {self.filepath} doesn't match saved data, "
+                        _logger.debug( f"Archive md5sum for {logfilepath} doesn't match saved data, "
                                        f"overwriting on archive." )
                         mustupload = True
                     else:
-                        raise ValueError( f"Archive md5sum for {self.filepath} does not match saved data!" )
+                        raise ValueError( f"Archive md5sum for {logfilepath} does not match saved data!" )
 
         if mustupload:
             remmd5 = self.archive.upload( localpath, relpath.parent, relpath.name, overwrite=overwrite, md5=origmd5 )
@@ -961,6 +962,8 @@ class FileOnDiskMixin:
         (locally or on the archive), or if it isn't on the database,
         and will attempt to delete from any locations regardless
         of if it existed elsewhere or not.
+
+        TODO : this is sometimes broken if you don't pass a session.
 
         Parameters
         ----------
@@ -1040,6 +1043,8 @@ class SpatiallyIndexed:
         )
 
     def calculate_coordinates(self):
+        """Fill self.gallat, self.gallon, self.ecllat, and self.ecllong based on self.ra and self.dec."""
+
         if self.ra is None or self.dec is None:
             raise ValueError("Object must have RA and Dec set before calculating coordinates! ")
 
