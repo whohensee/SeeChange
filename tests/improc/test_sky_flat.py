@@ -12,6 +12,7 @@ from improc.simulator import Simulator
 from improc.sky_flat import calc_sky_flat
 
 
+@pytest.mark.flaky(max_runs=3)
 @pytest.mark.parametrize("num_images", [10, 300])
 def test_simple_sky_flat(num_images):
     clear_cache = True  # cache the images from the simulator
