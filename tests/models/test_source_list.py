@@ -108,52 +108,55 @@ def test_read_sextractor( example_source_list_filename ):
         data = sources.data
     with pytest.raises( ValueError, match="self.aper_rads.*doesn't match sextractor file" ):
         sources = SourceList( format='sextrfits', filepath=filepath, num_sources=112,
-                              aper_rads=[ 2., 6. ] )
+                              aper_rads=[ 2., 5. ] )
+        data = sources.data
+    with pytest.raises( ValueError, match="self.aper_rads.*doesn't match sextractor file" ):
+        sources = SourceList( format='sextrfits', filepath=filepath, num_sources=112,
+                              aper_rads=[ 1., 2. ] )
         data = sources.data
     with pytest.raises( ValueError, match="self.aper_rads.*doesn't match the number of apertures found in" ):
         sources = SourceList( format='sextrfits', filepath=filepath, num_sources=112,
-                              aper_rads=[ 2. ] )
+                              aper_rads=[ 1. ] )
         data = sources.data
 
     # Make sure those fields get properly auto-set
     sources = SourceList( format='sextrfits', filepath=filepath )
     data = sources.data
     assert sources.num_sources == 112
-    assert sources.aper_rads == [ 2., 5. ]
+    assert sources.aper_rads == [ 1., 2.5 ]
 
     # Make sure we can read the file with the right things in place in those fields
-    sources = SourceList( format='sextrfits', filepath=filepath, num_sources=112, aper_rads=[ 2., 5. ] )
+    sources = SourceList( format='sextrfits', filepath=filepath, num_sources=112, aper_rads=[ 1.0, 2.5 ] )
     assert len(sources.data) == 112
     assert sources.num_sources == 112
-    assert sources.aper_rads == [ 2., 5. ]
+    assert sources.good.sum() == 105
+    assert sources.aper_rads == [ 1.0, 2.5 ]
+    assert sources._inf_aper_num is None
+    assert sources.inf_aper_num == 1
     assert sources.x[0] == pytest.approx( 798.24, abs=0.01 )
     assert sources.y[0] == pytest.approx( 17.14, abs=0.01 )
     assert sources.x[50] == pytest.approx( 899.33, abs=0.01 )
     assert sources.y[50] == pytest.approx( 604.52, abs=0.01 )
-    assert sources.ra[0] == pytest.approx( 153.53340, abs=0.1/3600. )
-    assert sources.dec[0] == pytest.approx( 39.22869, abs=0.1/3600. )
-    assert sources.ra[50] == pytest.approx( 153.50760, abs=0.1/3600. )
-    assert sources.dec[50] == pytest.approx( 39.06228, abs=0.1/3600. )
     assert sources.apfluxadu()[0][0] == pytest.approx( 3044.9092, rel=1e-5 )
     assert sources.apfluxadu()[0][50] == pytest.approx( 165.99489, rel=1e-5 )
     assert sources.apfluxadu(apnum=0)[0][0] == pytest.approx( 3044.9092, rel=1e-5 )
     assert sources.apfluxadu(apnum=0)[0][50] == pytest.approx( 165.99489, rel=1e-5 )
-    assert sources.apfluxadu(ap=1.995)[0][0] == pytest.approx( 3044.9092, rel=1e-5 )
-    assert sources.apfluxadu(ap=2.)[0][50] == pytest.approx( 165.99489, rel=1e-5 )
+    assert sources.apfluxadu(ap=0.995)[0][0] == pytest.approx( 3044.9092, rel=1e-5 )
+    assert sources.apfluxadu(ap=1.)[0][50] == pytest.approx( 165.99489, rel=1e-5 )
     assert sources.apfluxadu(apnum=1)[0][0] == pytest.approx( 9883.959, rel=1e-5 )
     assert sources.apfluxadu(apnum=1)[0][50] == pytest.approx( 432.86523, rel=1e-5 )
-    assert sources.apfluxadu(ap=5.005)[0][0] == pytest.approx( 9883.959, rel=1e-5 )
-    assert sources.apfluxadu(ap=5)[0][50] == pytest.approx( 432.86523, rel=1e-5 )
+    assert sources.apfluxadu(ap=2.505)[0][0] == pytest.approx( 9883.959, rel=1e-5 )
+    assert sources.apfluxadu(ap=2.5)[0][50] == pytest.approx( 432.86523, rel=1e-5 )
     assert sources.apfluxadu()[1][0] == pytest.approx( 37.005665, rel=1e-5 )
     assert sources.apfluxadu()[1][50] == pytest.approx( 21.135862, rel=1e-5 )
     assert sources.apfluxadu(apnum=0)[1][0] == pytest.approx( 37.005665, rel=1e-5 )
     assert sources.apfluxadu(apnum=0)[1][50] == pytest.approx( 21.135862, rel=1e-5 )
-    assert sources.apfluxadu(ap=2)[1][0] == pytest.approx( 37.005665, rel=1e-5 )
-    assert sources.apfluxadu(ap=2)[1][50] == pytest.approx( 21.135862, rel=1e-5 )
+    assert sources.apfluxadu(ap=1.)[1][0] == pytest.approx( 37.005665, rel=1e-5 )
+    assert sources.apfluxadu(ap=1.)[1][50] == pytest.approx( 21.135862, rel=1e-5 )
     assert sources.apfluxadu(apnum=1)[1][0] == pytest.approx( 74.79863, rel=1e-5 )
     assert sources.apfluxadu(apnum=1)[1][50] == pytest.approx( 50.378757, rel=1e-5 )
-    assert sources.apfluxadu(ap=5)[1][0] == pytest.approx( 74.79863, rel=1e-5 )
-    assert sources.apfluxadu(ap=5)[1][50] == pytest.approx( 50.378757, rel=1e-5 )
+    assert sources.apfluxadu(ap=2.5)[1][0] == pytest.approx( 74.79863, rel=1e-5 )
+    assert sources.apfluxadu(ap=2.5)[1][50] == pytest.approx( 50.378757, rel=1e-5 )
 
     # Check some apfluxadu failure modes
     with pytest.raises( ValueError, match="Aperture radius number 2 doesn't exist." ):
@@ -165,16 +168,12 @@ def test_read_sextractor( example_source_list_filename ):
 
     assert sources.data['X_IMAGE'][0] == sources.x[0]
     assert sources.data['Y_IMAGE'][0] == sources.y[0]
-    assert sources.data['X_WORLD'][0] == sources.ra[0]
-    assert sources.data['Y_WORLD'][0] == sources.dec[0]
     assert sources.data['XWIN_IMAGE'][0] == pytest.approx( 798.29, abs=0.01 )
     assert sources.data['YWIN_IMAGE'][0] == pytest.approx( 17.11, abs=0.01 )
     assert sources.data['FLUX_APER'][0] == pytest.approx( np.array( [ 3044.9092, 9883.959 ] ), rel=1e-5 )
     assert sources.data['FLUXERR_APER'][0] == pytest.approx( np.array( [ 37.005665, 74.79863 ] ), rel=1e-5 )
     assert sources.data['X_IMAGE'][50] == sources.x[50]
     assert sources.data['Y_IMAGE'][50] == sources.y[50]
-    assert sources.data['X_WORLD'][50] == sources.ra[50]
-    assert sources.data['Y_WORLD'][50] == sources.dec[50]
     assert sources.data['XWIN_IMAGE'][50] == pytest.approx( 899.29, abs=0.01 )
     assert sources.data['YWIN_IMAGE'][50] == pytest.approx( 604.58, abs=0.01 )
     assert sources.data['FLUX_APER'][50] == pytest.approx( np.array( [ 165.99489, 432.86523 ] ), rel=1e-5 )
@@ -213,3 +212,23 @@ def test_write_sextractor():
             assert hdr.cards[0].comment == 'Comment'
     finally:
         pathlib.Path( sources.get_fullpath() ).unlink( missing_ok=True )
+
+def test_calc_apercor( decam_example_reduced_image_ds ):
+    sources = decam_example_reduced_image_ds.get_sources()
+
+    assert sources.calc_aper_cor() == pytest.approx( -0.180, abs=0.001 )
+    assert sources.calc_aper_cor( inf_aper_num=6 ) == pytest.approx( -0.183, abs=0.001 )
+    assert sources.calc_aper_cor( inf_aper_num=2 ) == pytest.approx( -0.170, abs=0.001 )
+    assert sources.calc_aper_cor( aper_num=2 ) == pytest.approx( -0.010, abs=0.001 )
+    assert sources.calc_aper_cor( aper_num=2, inf_aper_num=6 ) == pytest.approx( -0.012, abs=0.001 )
+
+    # The numbers below are what you get if you use the SPREAD_MODEL
+    # parameter in SourceList.is_star instead of CLASS_STAR
+    # ...all of this should make us conclude that we should really not be claiming
+    # to do photometry to better than a couple of percent!
+    # assert sources.calc_aper_cor() == pytest.approx( -0.174, abs=0.001 )
+    # assert sources.calc_aper_cor( inf_aper_num=6 ) == pytest.approx( -0.172, abs=0.001 )
+    # assert sources.calc_aper_cor( inf_aper_num=2 ) == pytest.approx( -0.167, abs=0.001 )
+    # assert sources.calc_aper_cor( aper_num=2 ) == pytest.approx( -0.007, abs=0.001 )
+    # assert sources.calc_aper_cor( aper_num=2, inf_aper_num=6 ) == pytest.approx( -0.004, abs=0.001 )
+
