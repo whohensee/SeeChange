@@ -162,29 +162,24 @@ def provenance_extra(code_version, provenance_base):
         warnings.warn(str(e))
 
 
-@pytest.fixture
-def exposure_factory():
-    def factory():
-        e = Exposure(
-            filepath=f"Demo_test_{rnd_str(5)}.fits",
-            section_id=0,
-            exp_time=np.random.randint(1, 4) * 10,  # 10 to 40 seconds
-            mjd=np.random.uniform(58000, 58500),
-            filter=np.random.choice(list('grizY')),
-            ra=np.random.uniform(0, 360),
-            dec=np.random.uniform(-90, 90),
-            project='foo',
-            target=rnd_str(6),
-            nofile=True,
-            md5sum=uuid.uuid4(),  # this should be done when we clean up the exposure factory a little more
-        )
-        return e
-
-    return factory
+def make_new_exposure():
+    e = Exposure(
+        filepath=f"Demo_test_{rnd_str(5)}.fits",
+        section_id=0,
+        exp_time=np.random.randint(1, 4) * 10,  # 10 to 40 seconds
+        mjd=np.random.uniform(58000, 58500),
+        filter=np.random.choice(list('grizY')),
+        ra=np.random.uniform(0, 360),
+        dec=np.random.uniform(-90, 90),
+        project='foo',
+        target=rnd_str(6),
+        nofile=True,
+        md5sum=uuid.uuid4(),  # this should be done when we clean up the exposure factory a little more
+    )
+    return e
 
 
-def make_exposure_file(exposure):
-    fullname = None
+def add_file_to_exposure(exposure):
     fullname = exposure.get_fullpath()
     open(fullname, 'a').close()
     exposure.nofile = False
@@ -205,25 +200,25 @@ def make_exposure_file(exposure):
 
 
 @pytest.fixture
-def exposure(exposure_factory):
-    e = exposure_factory()
-    make_exposure_file(e)
+def exposure():
+    e = make_new_exposure()
+    add_file_to_exposure(e)
     yield e
 
 
 # idea taken from: https://github.com/pytest-dev/pytest/issues/2424#issuecomment-333387206
-def generate_exposure():
+def generate_exposure_fixture():
     @pytest.fixture
-    def new_exposure(exposure_factory):
-        e = exposure_factory()
-        make_exposure_file(e)
+    def new_exposure():
+        e = make_new_exposure()
+        add_file_to_exposure(e)
         yield e
 
     return new_exposure
 
 
 def inject_exposure_fixture(name):
-    globals()[name] = generate_exposure()
+    globals()[name] = generate_exposure_fixture()
 
 
 for i in range(2, 10):
@@ -231,11 +226,11 @@ for i in range(2, 10):
 
 
 @pytest.fixture
-def exposure_filter_array(exposure_factory):
-    e = exposure_factory()
+def exposure_filter_array():
+    e = make_new_exposure()
     e.filter = None
     e.filter_array = ['r', 'g', 'r', 'i']
-    make_exposure_file(e)
+    add_file_to_exposure(e)
     yield e
 
 
@@ -261,9 +256,11 @@ def get_decam_example_file():
         os.symlink( cachedfilename, filename )
     return filename
 
+
 @pytest.fixture(scope="session")
 def decam_example_file():
     yield get_decam_example_file()
+
 
 @pytest.fixture
 def decam_example_exposure(decam_example_file):
@@ -282,6 +279,7 @@ def decam_example_exposure(decam_example_file):
     with SmartSession() as session:
         session.execute(sa.delete(Exposure).where(Exposure.filepath == decam_example_file_short))
         session.commit()
+
 
 @pytest.fixture
 def decam_example_raw_image( decam_example_exposure ):
@@ -553,12 +551,12 @@ def demo_image(exposure):
 
 
 # idea taken from: https://github.com/pytest-dev/pytest/issues/2424#issuecomment-333387206
-def generate_image():
+def generate_image_fixture():
 
     @pytest.fixture
-    def new_image(exposure_factory):
-        exp = exposure_factory()
-        make_exposure_file(exp)
+    def new_image():
+        exp = make_new_exposure()
+        add_file_to_exposure(exp)
         exp.update_instrument()
         im = Image.from_exposure(exp, section_id=0)
 
@@ -575,7 +573,7 @@ def generate_image():
 
 
 def inject_demo_image_fixture(image_name):
-    globals()[image_name] = generate_image()
+    globals()[image_name] = generate_image_fixture()
 
 
 for i in range(2, 10):
@@ -583,7 +581,7 @@ for i in range(2, 10):
 
 
 @pytest.fixture
-def reference_entry(exposure_factory, provenance_base, provenance_extra):
+def reference_entry(provenance_base, provenance_extra):
     ref_entry = None
     filter = np.random.choice(list('grizY'))
     target = rnd_str(6)
@@ -592,7 +590,7 @@ def reference_entry(exposure_factory, provenance_base, provenance_extra):
     images = []
 
     for i in range(5):
-        exp = exposure_factory()
+        exp = make_new_exposure()
 
         exp.filter = filter
         exp.target = target
@@ -609,7 +607,6 @@ def reference_entry(exposure_factory, provenance_base, provenance_extra):
         im.save()
         images.append(im)
 
-    # TODO: replace with a "from_images" method?
     ref = Image.from_images(images)
     ref.data = np.mean(np.array([im.data for im in images]), axis=0)
 
@@ -736,6 +733,7 @@ def decam_default_calibrators():
             df.delete_from_disk_and_database( session=session, commit=False )
         session.commit()
 
+
 @pytest.fixture
 def example_image_with_sources_and_psf_filenames():
     image = pathlib.Path( FileOnDiskMixin.local_path ) / "test_data/test_ztf_image.fits"
@@ -745,6 +743,7 @@ def example_image_with_sources_and_psf_filenames():
     psf = pathlib.Path( FileOnDiskMixin.local_path ) / "test_data/test_ztf_image.psf"
     psfxml = pathlib.Path( FileOnDiskMixin.local_path ) / "test_data/test_ztf_image.psf.xml"
     return image, weight, flags, sources, psf, psfxml
+
 
 @pytest.fixture
 def example_ds_with_sources_and_psf( example_image_with_sources_and_psf_filenames ):
@@ -778,10 +777,12 @@ def example_ds_with_sources_and_psf( example_image_with_sources_and_psf_filename
 
     return ds
 
+
 @pytest.fixture
 def example_source_list_filename( example_image_with_sources_and_psf_filenames ):
     image, weight, flags, sources, psf, psfxml = example_image_with_sources_and_psf_filenames
     return sources
+
 
 @pytest.fixture
 def example_psfex_psf_files():
@@ -790,5 +791,5 @@ def example_psfex_psf_files():
     psfxmlpath = ( pathlib.Path( FileOnDiskMixin.local_path )
                    / "test_data/ztf_20190317307639_000712_zg_io.083_sources.psf.xml" )
     if not ( psfpath.is_file() and psfxmlpath.is_file() ):
-        raise FileNotFoundErrro( f"Can't read at least one of {psfpath}, {psfxmlpath}" )
+        raise FileNotFoundError( f"Can't read at least one of {psfpath}, {psfxmlpath}" )
     return psfpath, psfxmlpath
