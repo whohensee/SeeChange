@@ -48,7 +48,9 @@ def test_decam_photo_cal( decam_example_reduced_image_ds_with_wcs, headless_plot
             ax.set_ylabel( "zp" )
             ax.set_ylim( ( ds.zp.zp-0.3, ds.zp.zp+0.3 ) )
 
-            fig.savefig( pathlib.Path( CODE_ROOT ) / 'tests/plots/test_decam_photo_cal.svg' )
+            ofpath = pathlib.Path( CODE_ROOT ) / 'tests/plots/test_decam_photo_cal.svg'
+            ofpath.parent.mkdir( exist_ok=True, parents=True )
+            fig.savefig( ofpath )
             pyplot.close( fig )
 
         # WORRY : zp + apercor (for the first aperture) is off from the
