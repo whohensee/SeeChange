@@ -1150,6 +1150,78 @@ class Instrument:
 
         return filter
 
+    @classmethod
+    def standard_apertures( cls ):
+        """Return standard photometry aperture radii in FWHMs.
+
+        The first aperture on the list is the one that will be used for
+        most photometry.  By default, this is 0.6732 FWHMs, which is the
+        optimum for a Gaussian profile when you are sky-noise-limited.
+        (If sky noise is insignificant, then the formal optimum is very
+        large, but practically speaking is a little less than 2 FWHMs.)
+        Undersampled instruments may want to use a larger standard
+        aperture, and so should override this method.
+
+        Returns
+        -------
+           list of float
+
+        """
+        return [ 0.6732, 1., 2., 3., 4., 5., 7., 10. ]
+
+    @classmethod
+    def fiducial_aperture( cls ):
+        """Return the aperture number assumed to be 'infinite' for aperture corrections.
+
+        Defaults to 5, which is 5*FWHM if using the base
+        standard_apertures.  Instruments that override
+        standard_apertures should also override this.
+
+        Returns
+        -------
+          int : the index into standard_apertures() that should be used
+          as the "full flux" aperture for purposes of determining
+          aperture corrections.
+
+        """
+        # By default, we want to use 5*FWHM radius as the "infinite"
+        # aperture.  Empirically, if we get bigger, things seem to
+        # get increasingly pathological (e.g. comparing sextractor to
+        # photutils).  This may be because the isophotal radius no
+        # longer includes all (or even most) of the pixels in the
+        # aperture, so edge effects, bad pixels, etc. aren't getting
+        # flagged by sextractor.  Note that for a 2d Gaussian,
+        # r=5*FWHM has 1-10^-30 of the flux.  Keep the bigger ones,
+        # though, for diagnostic purposes.
+
+        # Note that this 5 is an index, not the value... it's coincidence that the index number is 5.
+        return 5
+
+
+    @classmethod
+    def get_GaiaDR3_transformation( cls, filter ):
+
+        """Return a polynomial transformation from Gaia MAG_G to instrument magnitude.
+
+        The returned array trns allows a conversion from Gaia MAG_G to
+        the magnitude through the desired filter using:
+
+          MAG_filter = Gaia_MAG_G - sum( trns[i] * ( Gaia_MAG _BP - Gaia_MAG_RP ) ** i )
+
+        (with i running from 0 to len(trns)-1).
+
+        Parmaeters
+        ----------
+          filter: str
+            The short filter name of the magnitudes we want.
+
+        Returns
+        -------
+          numpy array
+
+        """
+        return NotImplementedError( f"{self.__class__.__name__} needs to implement get_GaiaDR3_transformation" )
+
     # ----------------------------------------
     # Preprocessing functions.  These live here rather than
     # in pipeline/preprocessing.py because individual instruments

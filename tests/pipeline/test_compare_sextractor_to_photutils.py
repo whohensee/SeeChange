@@ -198,4 +198,3 @@ def test_compare_sextr_photutils( decam_example_reduced_image_ds ):
         pyplot.close( fig )
 
     pass
-

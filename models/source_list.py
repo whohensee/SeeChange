@@ -327,20 +327,26 @@ class SourceList(Base, AutoIDMixin, FileOnDiskMixin):
         apfluxadu() function, etc.
 
         True means the object is likely a star, under the assumption
-        that the image is clean.
+        that the image is clean... but see below.
 
-        Don't expect this to be perfect, or even that good.  For
-        SExtractor, it uses the CLASS_STAR parameter.  On at least one
-        test image, this only produces a ~1/4 subset of the stars
-        identified using the SPREAD_MODEL parameter.  However, adding
-        SPREAD_MODEL to the list of parameters produced increases
-        SExtractor runtime from several seconds to a minute or more.
-        Currently, we're hoping that CLASS_STAR is good enough for our
-        purposes.  This should be evaluated.
+        Notes for SExtractor:
 
-        See
+        SExtrator has two different star/galaxy cateogorizers, CLASS_STAR and SPREAD_MODEL:
+
           https://sextractor.readthedocs.io/en/latest/Position.html#class-star-def
           https://sextractor.readthedocs.io/en/latest/Model.html#spread-model-def
+
+        SPREAD_MODEL is the more reliable one (based on the
+        documentation, and also based on experimentation with one test
+        image); CLASS_STAR that test images misses most of the stars.
+        However, SPREAD_MODEL takes a lot longer to run (see the
+        documentation linked above for a description of what it does).
+        Runtime on the test image goes from a few seconds to roughly a
+        minute.
+
+        Right now, the code doesn't run SPREAD_MODEL, and the
+        classification below is based on CLASS_STAR.  As such, this
+        classification should not be considered very reliable.
 
         """
 
