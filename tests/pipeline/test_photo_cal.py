@@ -10,7 +10,7 @@ from models.zero_point import ZeroPoint
 from pipeline.photo_cal import PhotCalibrator
 
 
-def test_decam_photo_cal( decam_example_reduced_image_ds_with_zp, headless_plots ):
+def test_decam_photo_cal( decam_example_reduced_image_ds_with_zp, blocking_plots ):
     ds, photomotor = decam_example_reduced_image_ds_with_zp
 
     with SmartSession() as session:

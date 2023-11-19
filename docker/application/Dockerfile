@@ -178,6 +178,7 @@ RUN pip install \
       pandas==1.5.3 \
       photutils==1.6.0 \
       psycopg2==2.9.5 \
+      pylandau==2.2.1 \
       pytest==7.2.2 \
       pytest-timeout==2.1.0 \
       python-dateutil==2.8.2 \

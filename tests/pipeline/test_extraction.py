@@ -126,6 +126,7 @@ def test_sep_save_source_list(decam_small_image, provenance_base, code_version):
                 session.execute(sa.delete(Image).where(Image.id == image_id))
             session.commit()
 
+
 # This is running sextractor in one particular way that is used by more than one test
 @pytest.fixture
 def run_sextractor( decam_example_reduced_image_ds ):
@@ -143,6 +144,7 @@ def run_sextractor( decam_example_reduced_image_ds ):
     assert sourcefile.exists()
 
     yield sourcelist, sourcefile
+
 
 def test_sextractor_extract_once( decam_example_reduced_image_ds, run_sextractor ):
     sourcelist, sourcefile = run_sextractor
@@ -197,6 +199,7 @@ def test_sextractor_extract_once( decam_example_reduced_image_ds, run_sextractor
     assert sourcelist.apfluxadu(apnum=1)[0].max() == pytest.approx( 2850920.0, rel=1e-5 )
     assert sourcelist.apfluxadu(apnum=0)[0].min() == pytest.approx( 89.445114, rel=1e-5 )
     assert sourcelist.apfluxadu(apnum=0)[0].max() == pytest.approx( 557651.8, rel=1e-5 )
+
 
 def test_run_psfex( decam_example_reduced_image_ds ):
     sourcelist = decam_example_reduced_image_ds.sources

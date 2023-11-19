@@ -156,7 +156,8 @@ def test_subtraction_no_new_sources():
     assert zogy_failures == 0
 
 
-def test_subtraction_snr_histograms(headless_plots):
+@pytest.mark.skipif( os.getenv('INTERACTIVE') is None, reason='Set INTERACTIVE to run this test' )
+def test_subtraction_snr_histograms(blocking_plots):
     background = 5.0
     seeing = 3.0
     iterations = 300
@@ -194,32 +195,9 @@ def test_subtraction_snr_histograms(headless_plots):
     measured = np.zeros((iterations, len(fluxes)))
 
     for j in range(iterations):
-
-        # remove the additional stars from the reference image
-        # sim.stars.remove_stars(len(sim.stars.star_mean_fluxes) - sim.pars.star_number)
-
-        # make a reference image
-        # sim.make_image(new_sky=True)
-        # truth1 = sim.truth
-        # im1 = sim.apply_bias_correction(sim.image)
-        # im1 -= truth1.background_instance
-        # psf1 = truth1.psf_downsampled
-        # bkg1 = truth1.total_bkg_var
-
         psf1 = sim.psf_downsampled
         bkg1 = background  # TODO: make this slightly variable?
         im1 = np.random.normal(0, np.sqrt(bkg1), size=transients_overlay.shape)
-
-        # # make a new image, with transients
-        # for f, p in zip(fluxes, pos):
-        #     sim.add_extra_stars(flux=f, x=p, y=p)
-
-        # sim.make_image(new_sky=True)
-        # truth2 = sim.truth
-        # im2 = sim.apply_bias_correction(sim.image)
-        # im2 -= truth2.background_instance
-        # psf2 = truth2.psf_downsampled
-        # bkg2 = truth2.total_bkg_var
 
         psf2 = sim.psf_downsampled
         bkg2 = background  # TODO: make this slightly variable?
@@ -261,18 +239,16 @@ def test_subtraction_snr_histograms(headless_plots):
         ax.set_xlabel('Measured S/N')
         ax.legend(loc='upper right')
         plt.subplots_adjust(hspace=0.5)
-    plt.show()
+    plt.show(block=blocking_plots)
 
-    plot_path = os.path.join(CODE_ROOT, "tests/plots")
-    if not os.path.isdir(plot_path):
-        os.mkdir(plot_path)
-    plt.savefig(os.path.join(plot_path, "zogy_snr_histograms.pdf"))
-    plt.savefig(os.path.join(plot_path, "zogy_snr_histograms.png"))
+    filename = os.path.join(CODE_ROOT, "tests/plots/zogy_snr_histograms")
+    plt.savefig(filename + ".png")
+    plt.savefig(filename + ".pdf")
 
 
 @pytest.mark.skip( reason="This test frequently fails even with the flaky.  Can we use a random seed?" )
 @pytest.mark.flaky(max_runs=3)
-def test_subtraction_new_sources_snr():
+def test_subtraction_new_sources_snr(blocking_plots):
     num_stars = 300
     sim = Simulator(
         image_size_x=imsize,  # not too big, but allow some space for stars
@@ -349,12 +325,13 @@ def test_subtraction_new_sources_snr():
     assert chi2 / (len(fluxes) - 2) < 2.0  # the fit should be good
     assert p1[0] > 0.8  # should be close to one, but we are losing about 15% S/N and I don't know why
 
-    # plt.errorbar(exp, mean, err, fmt='.', label='measured vs. expected')
-    # plt.plot(exp, np.polyval(p1, exp), 'r-', label=f'fit: {p1[0]:.3f}x + {p1[1]:.3f}')
-    # plt.xlabel('expected S/N')
-    # plt.ylabel('measured S/N')
-    # plt.legend()
-    # plt.show(block=True)
+    if blocking_plots:
+        plt.errorbar(exp, mean, err, fmt='.', label='measured vs. expected')
+        plt.plot(exp, np.polyval(p1, exp), 'r-', label=f'fit: {p1[0]:.3f}x + {p1[1]:.3f}')
+        plt.xlabel('expected S/N')
+        plt.ylabel('measured S/N')
+        plt.legend()
+        plt.show(block=True)
 
 
 @pytest.mark.skip( reason="This test frequently fails even with the flaky.  Can we use a random seed?" )

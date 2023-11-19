@@ -70,15 +70,24 @@ def tests_setup_and_teardown():
         session.commit()
 
 
-@pytest.fixture
-def headless_plots():
+@pytest.fixture(scope="session")
+def blocking_plots():
     import matplotlib
-
     backend = matplotlib.get_backend()
-    # ref: https://stackoverflow.com/questions/15713279/calling-pylab-savefig-without-display-in-ipython
-    matplotlib.use("Agg")
 
-    yield None
+    # make sure there's a folder to put the plots in
+    if not os.path.isdir(os.path.join(CODE_ROOT, 'tests/plots')):
+        os.makedirs(os.path.join(CODE_ROOT, 'tests/plots'))
+
+    inter = os.getenv('INTERACTIVE', False)
+    if isinstance(inter, str):
+        inter = inter.lower() in ('true', '1')
+
+    if not inter:  # for non-interactive plots, use headless plots that just save to disk
+        # ref: https://stackoverflow.com/questions/15713279/calling-pylab-savefig-without-display-in-ipython
+        matplotlib.use("Agg")
+
+    yield inter
 
     matplotlib.use(backend)
 
