@@ -62,10 +62,10 @@ preprocessing:
 extraction: {}
 
 astro_cal:
-  cross_match_catalog: Gaia
+  cross_match_catalog: GaiaDR3
 
 photo_cal:
-  cross_match_catalog: Gaia
+  cross_match_catalog: GaiaDR3
 
 subtraction:
   method: hotpants

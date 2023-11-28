@@ -9,6 +9,7 @@ from pipeline.detection import Detector
 from pipeline.astro_cal import AstroCalibrator
 from pipeline.photo_cal import PhotCalibrator
 
+
 def test_warp_decam( decam_example_reduced_image_ds_with_zp, ref_for_decam_example_image ):
     ds = decam_example_reduced_image_ds_with_zp[0]
     ds.save_and_commit()

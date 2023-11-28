@@ -113,7 +113,7 @@ class SectionHeaders:
         """
         self.filepath = filepath
         self.instrument = instrument
-        self._header = defaultdict(lambda: None)
+        self._header = defaultdict(lambda: None)  # each item here is a lazy-loaded fits.Header
 
     def __getitem__(self, section_id):
         if self._header[section_id] is None:
@@ -139,8 +139,9 @@ class ExposureImageIterator:
         return self
 
     def __next__( self ):
+        from models.image import Image  # avoid circular import
         if self.dex < len( self.section_ids ):
-            img = Image.from_exposure( self.exposure, self.section_ids[ dex ] )
+            img = Image.from_exposure( self.exposure, self.section_ids[ self.dex ] )
             self.dex += 1
             return img
         else:
@@ -460,7 +461,7 @@ class Exposure(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed):
         # if self.telescope is None:
         #     self.telescope = self.instrument_object.telescope
 
-        # get the header from the file in its raw form as a dictionary
+        # get the header from the file in its raw form as a fits.Header object
         if fromfile is None:
             fromfile = self.get_fullpath()
         raw_header_dictionary = self.instrument_object.read_header( fromfile )
@@ -702,6 +703,12 @@ class Exposure(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed):
         if self._raw_header is None:
             self._raw_header = fits.Header()
         return self._raw_header
+
+    @raw_header.setter
+    def raw_header(self, value):
+        if not isinstance(value, fits.Header):
+            raise ValueError(f"data must be a fits.Header object. Got {type(value)} instead. ")
+        self._raw_header = value
 
     def update_instrument(self, session=None):
         """

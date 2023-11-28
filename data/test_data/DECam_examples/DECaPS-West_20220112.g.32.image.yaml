@@ -3,7 +3,7 @@ filepath: test_data/DECam_examples/DECaPS-West_20220112.g.32
 filepath_extensions: [ '.image.fits', '.weight.fits', '.flags.fits' ]
 md5sum_extensions: [ null, null, null ]
 type: Sci
-filter: g something something
+filter: g DECam SDSS c0001 4720.0 1520.0
 mjd: 59592.21
 end_mjd: 59592.217
 exp_time: 576

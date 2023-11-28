@@ -410,7 +410,7 @@ def decam_example_reduced_image_ds( code_version, decam_example_exposure ):
                     extscopied.add( match.group('extension') )
 
                 if extscopied != fileextensions:
-                    raise RuntimeError( f"Extensions copied {extcopied} doesn't match expected {extstocopy}" )
+                    raise RuntimeError( f"Extensions copied {extscopied} doesn't match expected {fileextensions}" )
             finally:
                 ds.delete_everything()
     else:
@@ -473,9 +473,10 @@ def decam_example_reduced_image_ds( code_version, decam_example_exposure ):
         for f in copiesmade:
             f.unlink( missing_ok=True )
 
+
 # TODO : cache the results of this just like in
-# decam_example_reduced_image_ds so they don't have to be regenerated
-# every time this fixture is used.
+#  decam_example_reduced_image_ds so they don't have to be regenerated
+#  every time this fixture is used.
 @pytest.fixture
 def decam_example_reduced_image_ds_with_wcs( decam_example_reduced_image_ds ):
     ds = decam_example_reduced_image_ds
@@ -500,6 +501,7 @@ def decam_example_reduced_image_ds_with_wcs( decam_example_reduced_image_ds ):
     # decam_example_reduced_image_ds is going to do a
     # ds.delete_everything()
 
+
 @pytest.fixture
 def decam_example_reduced_image_ds_with_zp( decam_example_reduced_image_ds_with_wcs ):
     ds = decam_example_reduced_image_ds_with_wcs[0]
@@ -508,6 +510,7 @@ def decam_example_reduced_image_ds_with_zp( decam_example_reduced_image_ds_with_
     ds = photomotor.run( ds )
 
     return ds, photomotor
+
 
 @pytest.fixture
 def ref_for_decam_example_image( provenance_base ):
@@ -548,6 +551,21 @@ def ref_for_decam_example_image( provenance_base ):
     # And just in case the image was added to the database with a different name:
     for ext in [ '.image.fits', '.weight.fits', '.flags.fits' ]:
         ( datadir / f'{filebase}{ext}' ).unlink( missing_ok=True )
+
+
+@pytest.fixture
+def reference_entry_decam_example(ref_for_decam_example_image):
+    ref_entry = ReferenceEntry()
+    ref_entry.image = ref_for_decam_example_image
+    ref_entry.validity_start = Time(50000, format='mjd', scale='utc').isot
+    ref_entry.validity_end = Time(60500, format='mjd', scale='utc').isot
+
+    yield ref_entry
+
+    # with SmartSession() as session:
+    #     ref_entry = session.merge(ref_entry)
+    #     session.execute(sa.delete(ReferenceEntry).where(ReferenceEntry.id == ref_entry.id))
+    #     session.commit()
 
 @pytest.fixture
 def decam_small_image(decam_example_raw_image):

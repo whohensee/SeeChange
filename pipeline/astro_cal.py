@@ -165,6 +165,9 @@ class AstroCalibrator:
             raise NotImplementedError( f"Don't know what magnitude key to choose for astrometric reference "
                                        f"{catexp.origin}; only GaiaDR3 is implemented." )
 
+        if sources.filepath is None:
+            sources.save()
+
         sourcefile = pathlib.Path( sources.get_fullpath() )
         catfile = pathlib.Path( catexp.get_fullpath() )
 

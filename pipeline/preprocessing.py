@@ -146,7 +146,7 @@ class Preprocessor:
                                                                        ds.section_id,
                                                                        ds.exposure.filter_short,
                                                                        ds.exposure.mjd,
-                                                                       session = session )
+                                                                       session=session )
 
 
         # get the provenance for this step, using the current parameters:

@@ -88,3 +88,10 @@ class ReferenceEntry(Base, AutoIDMixin):
     # this table doesn't have provenance.
     # The underlying image will have its own provenance for the "coaddition" process.
 
+    def __setattr__(self, key, value):
+        if key == 'image':
+            self.target = value.target
+            self.filter = value.filter
+            self.section_id = value.section_id
+
+        super().__setattr__(key, value)

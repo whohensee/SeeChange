@@ -128,9 +128,7 @@ def test_sep_save_source_list(decam_small_image, provenance_base, code_version):
 
 
 # This is running sextractor in one particular way that is used by more than one test
-@pytest.fixture
-def run_sextractor( decam_example_reduced_image_ds ):
-    ds = decam_example_reduced_image_ds
+def run_sextractor( ds ):
     ds.sources = None
     ds.psf = None
 
@@ -143,11 +141,11 @@ def run_sextractor( decam_example_reduced_image_ds ):
     assert not imagefile.exists()
     assert sourcefile.exists()
 
-    yield sourcelist, sourcefile
+    return sourcelist, sourcefile
 
 
-def test_sextractor_extract_once( decam_example_reduced_image_ds, run_sextractor ):
-    sourcelist, sourcefile = run_sextractor
+def test_sextractor_extract_once( decam_example_reduced_image_ds ):
+    sourcelist, sourcefile = run_sextractor(decam_example_reduced_image_ds)
 
     assert sourcelist.num_sources == 5611
     assert len(sourcelist.data) == sourcelist.num_sources
@@ -285,8 +283,8 @@ def test_extract_sources_sextractor( decam_example_reduced_image_ds ):
     assert ( sources.good & sources.is_star ).sum() == 63
 
 
-# TODO : add tests that handle different
-# combinations of measure_psf and psf being passed to the Detector constructor
+# TODO : add tests that handle different combinations
+#  of measure_psf and psf being passed to the Detector constructor
 
 def test_run_detection_sextractor( decam_example_reduced_image_ds ):
     ds = decam_example_reduced_image_ds

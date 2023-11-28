@@ -93,8 +93,8 @@ def test_parameters( config_test ):
     # Verify that we can override from the yaml config file
     pipeline = Pipeline()
     assert not pipeline.preprocessor.pars['use_sky_subtraction']
-    assert pipeline.astro_cal.pars['cross_match_catalog'] == 'Gaia'
-    assert pipeline.astro_cal.pars['catalog'] == 'Gaia'
+    assert pipeline.astro_cal.pars['cross_match_catalog'] == 'GaiaDR3'
+    assert pipeline.astro_cal.pars['catalog'] == 'GaiaDR3'
     assert pipeline.subtractor.pars['method'] == 'testing_testing'
 
     # Verify that manual override works for all parts of pipeline
@@ -127,30 +127,24 @@ def test_parameters( config_test ):
         for key, val in subst.items():
             assert pipelinemod.pars[key] == val
 
-# This one is broken, and it has to do with handling of headers and so
-# forth.  (The actual error is a corrupted FITS header somewhere when we
-# try to save, in a fits.writeto() call I added in detection.py) I
-# believe this is an artifact of creaeting demo headers (such as is done
-# in conftest), becaause everything does run through in
-# test/test_extraction.py, which uses decam_example_reduced_image_ds
-# (which reads an actual exposure).  I started to dig into this, and
-# either it's a bit hidden, or it's going to be an annoying issue.  I'd
-# like to make fixing the header handling a separate issue rather than
-# have to figure out how to fix that for this PR.
-# --> Issue #105
-#
-@pytest.mark.skip( "Broken -- see comments" )
-def test_data_flow(exposure, reference_entry):
+
+# TODO: need to finish this test (i.e., finish subtraction, source extraction from sub image, etc)
+def test_data_flow(decam_example_exposure, reference_entry_decam_example):
     """Test that the pipeline runs end-to-end."""
-    sec_id = reference_entry.section_id
+    exposure = decam_example_exposure
+    exposure.save()
+    ref = reference_entry_decam_example
+    ref.image.save()
+    sec_id = ref.section_id
     exp_id = None
     ds = None
     try:  # cleanup the file at the end
         # add the exposure to DB and use that ID to run the pipeline
         with SmartSession() as session:
-            reference_entry = session.merge(reference_entry)
+            ref = ref.recursive_merge(session)
+            session.add(ref)
             exposure.provenance = session.merge( exposure.provenance )
-            match_exposure_to_reference_entry(exposure, reference_entry)
+            match_exposure_to_reference_entry(exposure, ref)
 
             session.add(exposure)
             session.commit()
@@ -158,14 +152,15 @@ def test_data_flow(exposure, reference_entry):
 
             filename = exposure.get_fullpath()
             open(filename, 'a').close()
-            ref_id = reference_entry.image.id
+            ref_id = ref.image.id
 
         p = Pipeline()
         assert p.extractor.pars.threshold != 3.14
         assert p.detector.pars.threshold != 3.14
 
-        ds = p.run(exp_id, sec_id)
-
+        with pytest.raises(NotImplementedError, match="This needs to be updated for detection on a subtraction."):
+            ds = p.run(exp_id, sec_id)
+        return  # TODO: need to finish subtraction and detection etc and bring this back:
         # commit to DB using this session
         with SmartSession() as session:
             ds.save_and_commit(session=session)

@@ -44,7 +44,7 @@ class Pipeline:
 
         # source detection ("extraction" for the regular image!)
         extraction_config = self.config.value('extraction', {})
-        extraction_config.update(kwargs.get('extraction', {}))
+        extraction_config.update(kwargs.get('extraction', {'measure_psf': True}))
         self.pars.add_defaults_to_dict(extraction_config)
         self.extractor = Detector(**extraction_config)
 
