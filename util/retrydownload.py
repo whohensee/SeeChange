@@ -6,6 +6,7 @@ import requests
 import time
 import traceback
 
+
 def retry_download( url, fpath, md5sum=None, retries=5, sleeptime=5, exists_ok=True, clobber=False,
                     logger=logging.getLogger("main"), sizelog='MiB' ):
     """Download a file from a url, retrying upon failure.
@@ -31,7 +32,7 @@ def retry_download( url, fpath, md5sum=None, retries=5, sleeptime=5, exists_ok=T
       not.
     clobber : bool
       Only matters if exists_ok is True and md5sum is not None.  If the
-      md5sum of a pre-existing file at fpath doesn't matched the passed
+      md5sum of a pre-existing file at fpath doesn't match the passed
       one, delete the file and redownload.
     logger : logging.logger
     sizelog : str
