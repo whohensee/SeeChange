@@ -58,7 +58,8 @@ services:
   setuptables:
     image: ghcr.io/${GITHUB_REPOSITORY_OWNER:-c3-time-domain}/seechange
     build:
-      context: ../docker/application
+      context: ../
+      dockerfile: ./docker/application/Dockerfile
     environment:
       SEECHANGE_CONFIG: /seechange/tests/seechange_config_test.yaml
     depends_on:
@@ -75,7 +76,8 @@ services:
   runtests:
     image: ghcr.io/${GITHUB_REPOSITORY_OWNER:-c3-time-domain}/seechange
     build:
-      context: ../docker/application
+      context: ../
+      dockerfile: ./docker/application/Dockerfile
     environment:
       SEECHANGE_CONFIG: /seechange/tests/seechange_config_test.yaml
       SEECHANGE_TEST_ARCHIVE_DIR: /archive_storage/base
@@ -99,7 +101,8 @@ services:
   runalltests:
     image: ghcr.io/${GITHUB_REPOSITORY_OWNER:-c3-time-domain}/seechange
     build:
-      context: ../docker/application
+      context: ../
+      dockerfile: ./docker/application/Dockerfile
     environment:
       SEECHANGE_CONFIG: /seechange/tests/seechange_config_test.yaml
       SEECHANGE_TEST_ARCHIVE_DIR: /archive_storage/base
@@ -123,7 +126,8 @@ services:
   shell:
     image: ghcr.io/${GITHUB_REPOSITORY_OWNER:-c3-time-domain}/seechange
     build:
-      context: ../docker/application
+      context: ../
+      dockerfile: ./docker/application/Dockerfile
     environment:
       SEECHANGE_CONFIG: /seechange/tests/seechange_config_test.yaml
       SEECHANGE_TEST_ARCHIVE_DIR: /archive_storage/base
