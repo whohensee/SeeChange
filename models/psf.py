@@ -25,6 +25,7 @@ from models.enums_and_bitflags import PSFFormatConverter
 # details of looking into header and info will need different versions
 # for different formats.
 
+
 class PSF( Base, AutoIDMixin, FileOnDiskMixin ):
     __tablename__ = 'psfs'
 
@@ -230,7 +231,6 @@ class PSF( Base, AutoIDMixin, FileOnDiskMixin ):
         FileOnDiskMixin.save( self, psfpath, '.psf', **kwargs )
         FileOnDiskMixin.save( self, psfxmlpath, '.psf.xml', **kwargs )
 
-
     def load( self, download=True, always_verify_md5=False, psfpath=None, psfxmlpath=None ):
         """Load the data from the files into the _data, _header, and _info fields.
 
@@ -321,7 +321,6 @@ class PSF( Base, AutoIDMixin, FileOnDiskMixin ):
 
         return psfbase
 
-
     def _get_clip_info( self ):
         psfwid = self.data.shape[1]
         if ( psfwid % 2 ) == 0:
@@ -338,7 +337,7 @@ class PSF( Base, AutoIDMixin, FileOnDiskMixin ):
         return psfwid, psfsamp, stampwid, psfdex1d
 
     def get_clip( self, x, y, flux, norm=True, noisy=False, gain=1., rng=None, dtype=np.float64 ):
-        """Get a image clip with the psf.
+        """Get an image clip with the psf.
 
         The clip will have the same pixel scale as the image.
 
@@ -367,8 +366,8 @@ class PSF( Base, AutoIDMixin, FileOnDiskMixin ):
 
           rng: numpy.random.Generator, default None
             If not None, will use this (already-seeded) random number
-            generator (produced, for example, with numpy.dfeault_rng) to
-            generate the noise.  Pass this if you want reproducable
+            generator (produced, for example, with numpy.default_rng) to
+            generate the noise.  Pass this if you want reproducible
             noise for testing purposes.  If None, will use
             numpy.random.default_rng() (i.e. seeded from system entropy).
 

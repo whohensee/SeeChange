@@ -28,6 +28,7 @@ import util.util
 from util.retrydownload import retry_download
 from models.enums_and_bitflags import string_to_bitflag, flag_image_bits_inverse
 
+
 class DECam(Instrument):
 
     def __init__(self, **kwargs):

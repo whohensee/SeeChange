@@ -73,32 +73,33 @@ def Session():
 
 
 @contextmanager
-def SmartSession(input_session=None):
+def SmartSession(*args):
     """
     Return a Session() instance that may or may not
     be inside a context manager.
 
-    If the input is already a session, just return that.
-    If the input is None, create a session that would
+    If a given input is already a session, just return that.
+    If all inputs are None, create a session that would
     close at the end of the life of the calling scope.
     """
     global _Session, _engine
 
+    for arg in args:
+        if isinstance(arg, sa.orm.session.Session):
+            yield arg
+            return
+        if arg is None:
+            continue
+        else:
+            raise TypeError(
+                "All inputs must be sqlalchemy sessions or None. "
+                f"Instead, got {args}"
+            )
+
+    # none of the given inputs managed to satisfy any of the conditions...
     # open a new session and close it when outer scope is done
-    if input_session is None:
-
-        with Session() as session:
-            yield session
-
-    # return the input session with the same scope as given
-    elif isinstance(input_session, sa.orm.session.Session):
-        yield input_session
-
-    # wrong input type
-    else:
-        raise TypeError(
-            "input_session must be a sqlalchemy session or None"
-        )
+    with Session() as session:
+        yield session
 
 
 def safe_merge(session, obj):

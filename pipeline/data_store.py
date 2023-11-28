@@ -311,7 +311,7 @@ class DataStore:
             a function parameter, or using the DataStore constructor.
             If given as a parameter, it will override the DataStore's
             self.upstream_provs attribute for that call.
-        session: sqlalchemy.orm.session.Session or SmartSession
+        session: sqlalchemy.orm.session.Session
             An optional session to use for the database query.
             If not given, will use the session stored inside the
             DataStore object; if there is none, will open a new session
@@ -323,12 +323,10 @@ class DataStore:
             The provenance for the given process.
 
         """
-        session = self.session if session is None else session
-
         if upstream_provs is None:
             upstream_provs = self.upstream_provs
 
-        with SmartSession(session) as session:
+        with SmartSession(session, self.session) as session:
             code_version = Provenance.get_code_version(session=session)
             if code_version is None:
                 # this "null" version should never be used in production
@@ -412,13 +410,11 @@ class DataStore:
         """
         Get the raw exposure from the database.
         """
-        session = self.session if session is None else session
-
         if self._exposure is None:
             if self.exposure_id is None:
                 raise ValueError('Cannot get raw exposure without an exposure_id!')
 
-            with SmartSession(session) as session:
+            with SmartSession(session, self.session) as session:
                 self._exposure = session.scalars(sa.select(Exposure).where(Exposure.id == self.exposure_id)).first()
 
         return self._exposure
@@ -484,13 +480,13 @@ class DataStore:
             # database; do a quick check for mismatches.
             # (If all the ids are None, it'll match even if the actual
             # objects are wrong, but, oh well.)
-            if ( self.exposure_id is not None ) and ( self.section_id is not None ):
-                if ( ( self.image.exposure_id != self.exposure_id ) or
-                     ( self.image.section_id != self.section_id ) ):
+            if (self.exposure_id is not None) and (self.section_id is not None):
+                if ( (self.image.exposure_id != self.exposure_id) or
+                     (self.image.section_id != self.section_id) ):
                     raise ValueError( "Image exposure/section id doesn't match what's expected!" )
-            elif ( self.exposure is not None and self.section is not None ):
-                if ( ( self.image.exposure_id != self.exposure.id ) or
-                     ( self.image.section_id != self.section.identifier ) ):
+            elif self.exposure is not None and self.section is not None:
+                if ( (self.image.exposure_id != self.exposure.id) or
+                     (self.image.section_id != self.section.identifier) ):
                     raise ValueError( "Image exposure/section id doesn't match what's expected!" )
             # If we get here, self.image is presumed to be good
 
@@ -570,8 +566,6 @@ class DataStore:
             or None if no matching source list is found.
 
         """
-        session = self.session if session is None else session
-
         process_name = 'extraction'
         # if sources exists in memory, check the provenance is ok
         if self.sources is not None:
@@ -597,7 +591,7 @@ class DataStore:
                 provenance = self._get_provanance_for_an_upstream(process_name, session )
 
             if provenance is not None:  # if we can't find a provenance, then we don't need to load from DB
-                with SmartSession(session) as session:
+                with SmartSession(session, self.session) as session:
                     image = self.get_image(session=session)
                     self.sources = session.scalars(
                         sa.select(SourceList).where(
@@ -629,9 +623,6 @@ class DataStore:
         psf: PSF Object
 
         """
-
-        session = self.session if session is None else session
-
         process_name = 'extraction'
         # if psf exists in memory already, check that the provenance is ok
         if self.psf is not None:
@@ -656,7 +647,7 @@ class DataStore:
 
             # If we can't find a provenance, then we don't need to load from the DB
             if provenance is not None:
-                with SmartSession( session ) as session:
+                with SmartSession(session, self.session) as session:
                     image = self.get_image( session=session )
                     self.psf = session.scalars(
                         sa.select( PSF ).where(
@@ -692,8 +683,6 @@ class DataStore:
             The WCS object, or None if no matching WCS is found.
 
         """
-        session = self.session if session is None else session
-
         process_name = 'astro_cal'
         # make sure the wcs has the correct provenance
         if self.wcs is not None:
@@ -712,7 +701,7 @@ class DataStore:
 
         # not in memory, look for it on the DB
         if self.wcs is None:
-            with SmartSession(session) as session:
+            with SmartSession(session, self.session) as session:
                 # this happens when the wcs is required as an upstream for another process (but isn't in memory)
                 if provenance is None:  # check if in upstream_provs/database
                     provenance = self._get_provanance_for_an_upstream(process_name, session=session)
@@ -752,8 +741,6 @@ class DataStore:
         wcs: ZeroPoint object
             The photometric calibration object, or None if no matching ZP is found.
         """
-        session = self.session if session is None else session
-
         process_name = 'photo_cal'
         # make sure the zp has the correct provenance
         if self.zp is not None:
@@ -773,7 +760,7 @@ class DataStore:
 
         # not in memory, look for it on the DB
         if self.zp is None:
-            with SmartSession(session) as session:
+            with SmartSession(session, self.session) as session:
                 sources = self.get_sources(session=session)
                 # TODO: do we also need the astrometric solution (to query for the ZP)?
                 # this happens when the wcs is required as an upstream for another process (but isn't in memory)
@@ -814,11 +801,9 @@ class DataStore:
             The reference image for this image, or None if no reference is found.
 
         """
-        session = self.session if session is None else session
-
         if self.ref_image is None:
 
-            with SmartSession(session) as session:
+            with SmartSession(session, self.session) as session:
                 image = self.get_image(session=session)
 
                 ref_entry = session.scalars(
@@ -869,8 +854,6 @@ class DataStore:
             or None if no matching subtraction image is found.
 
         """
-        session = self.session if session is None else session
-
         process_name = 'subtraction'
         # make sure the subtraction has the correct provenance
         if self.sub_image is not None:
@@ -889,7 +872,7 @@ class DataStore:
 
         # not in memory, look for it on the DB
         if self.sub_image is None:
-            with SmartSession(session) as session:
+            with SmartSession(session, self.session) as session:
                 image = self.get_image(session=session)
                 ref = self.get_reference_image(session=session)
 
@@ -934,8 +917,6 @@ class DataStore:
             or None if no matching source list is found.
 
         """
-        session = self.session if session is None else session
-
         process_name = 'detection'
         # not in memory, look for it on the DB
         if self.detections is not None:
@@ -955,7 +936,7 @@ class DataStore:
                     self.detections = None  # this must be an old detections object, need to get a new one
 
         if self.detections is None:
-            with SmartSession(session) as session:
+            with SmartSession(session, self.session) as session:
                 sub_image = self.get_subtraction(session=session)
 
                 # this happens when the wcs is required as an upstream for another process (but isn't in memory)
@@ -997,8 +978,6 @@ class DataStore:
             The list of measurements, or None if no matching measurements are found.
 
         """
-        session = self.session if session is None else session
-
         process_name = 'cutting'
         # make sure the cutouts have the correct provenance
         if self.cutouts is not None:
@@ -1018,7 +997,7 @@ class DataStore:
 
         # not in memory, look for it on the DB
         if self.cutouts is None:
-            with SmartSession(session) as session:
+            with SmartSession(session, self.session) as session:
                 sub_image = self.get_subtraction(session=session)
 
                 # this happens when the cutouts are required as an upstream for another process (but aren't in memory)
@@ -1059,8 +1038,6 @@ class DataStore:
             The list of measurements, or None if no matching measurements are found.
 
         """
-        session = self.session if session is None else session
-
         process_name = 'measurement'
         # make sure the measurements have the correct provenance
         if self.measurements is not None:
@@ -1080,7 +1057,7 @@ class DataStore:
 
         # not in memory, look for it on the DB
         if self.measurements is None:
-            with SmartSession(session) as session:
+            with SmartSession(session, self.session) as session:
                 cutouts = self.get_cutouts(session=session)
                 cutout_ids = [c.id for c in cutouts]
 
@@ -1213,7 +1190,7 @@ class DataStore:
             Note that this method calls session.commit()
 
         """
-        with SmartSession( self.session if session is None else session ) as session:
+        with SmartSession( session, self.session ) as session:
             autoflush_state = session.autoflush
             try:
                 # session.autoflush = False
@@ -1264,9 +1241,9 @@ class DataStore:
                 session.commit()
 
                 # This may well have updated some ids, as objects got added to the database
-                if ( self.exposure_id is None ) and ( self._exposure is not None ):
+                if self.exposure_id is None and self._exposure is not None:
                     self.exposure_id = self._exposure.id
-                if ( self.image_id is None ) and ( self.image is not None ):
+                if self.image_id is None and self.image is not None:
                     self.image_id = self.image.id
 
             finally:
@@ -1292,7 +1269,7 @@ class DataStore:
             Note that this method calls session.commit()
 
         """
-        with SmartSession( self.session if session is None else session ) as session:
+        with SmartSession( session, self.session ) as session:
             autoflush_state = session.autoflush
             try:
                 session.autoflush = False
