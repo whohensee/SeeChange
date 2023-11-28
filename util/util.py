@@ -1,6 +1,7 @@
 import pathlib
 import collections.abc
 
+
 def ensure_file_does_not_exist( filepath, delete=False ):
     """Check if a file exists.  Delete it, or raise an exception, if it does.
 

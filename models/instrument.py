@@ -1,9 +1,6 @@
 import os
 import re
-import io
-import math
-import time
-import traceback
+import copy
 import pathlib
 import pytz
 from enum import Enum
@@ -15,12 +12,15 @@ import sqlalchemy as sa
 
 import astropy.time
 from astropy.io import fits
+import astropy.units as u
+from astropy.coordinates import SkyCoord
 
 from models.base import Base, AutoIDMixin, SmartSession
 
 from models.base import Base, SmartSession, FileOnDiskMixin,_logger
 from models.enums_and_bitflags import CalibratorTypeConverter
 from models.provenance import Provenance
+from pipeline.catalog_tools import Bandpass
 from pipeline.utils import parse_dateobs, read_fits_image
 from util.config import Config
 import util.radec
@@ -312,6 +312,7 @@ class SensorSection(Base, AutoIDMixin):
                 return False
 
         return True
+
 
 class Instrument:
     """
@@ -979,7 +980,7 @@ class Instrument:
             return self.get_section( image.section_id ).gain
         elif section_id is not None:
             return self.get_section( section_id ).gain
-        elif sec.gain is not None:
+        elif self.gain is not None:
             return self.gain
         else:
             return 1.
@@ -1197,36 +1198,170 @@ class Instrument:
         # Note that this 5 is an index, not the value... it's coincidence that the index number is 5.
         return 5
 
+    # Gaia specific methods
+    # For GaiaDR3, catdata has fields:
+    # X_WORLD, Y_WORLD, MAG_G, MAGERR_G, MAG_BP, MAGERR_BP, MAG_RP, MAGERR_RP, STARPROB
 
     @classmethod
-    def get_GaiaDR3_transformation( cls, filter ):
+    def GaiaDR3_prune_star_cat(cls, catdata, gaiaminbp_rp=0.5, gaiamaxbp_rp=3.0):
+        """Choose only rows from a catalog that have stars.
 
-        """Return a polynomial transformation from Gaia MAG_G to instrument magnitude.
+        Usually this is done by choosing a subset of the catalog
+        data with reasonable colors, and with a high enough STARPROB.
+        We also remove rows that have NaN values in any of the
+        critical columns (coordinates or magnitudes)
 
-        The returned array trns allows a conversion from Gaia MAG_G to
-        the magnitude through the desired filter using:
-
-          MAG_filter = Gaia_MAG_G - sum( trns[i] * ( Gaia_MAG _BP - Gaia_MAG_RP ) ** i )
-
-        (with i running from 0 to len(trns)-1).
-
-        Parmaeters
+        Parameters
         ----------
-          filter: str
-            The short filter name of the magnitudes we want.
+        catdata: dict or pandas.DataFrame or numpy.recarray or astropy.Table
+            Must be a data structure with the following keys:
+            MAG_G, MAGERR_G, MAG_BP, MAGERR_BP, MAG_RP, MAGERR_RP, STARPROB
+            The data structure, when indexed on those keys, should
+            return a 1D numpy array.
+        gaiaminbp_rp: float, optional
+            The minimum BP-RP color to keep.
+        gaiamaxbp_rp: float, optional
+            The maximum BP-RP color to keep.
 
         Returns
         -------
-          numpy array
-
+        Returns a copy of the input data structure, with only the
+        rows that are likely to be stars.
         """
-        return NotImplementedError( f"{self.__class__.__name__} needs to implement get_GaiaDR3_transformation" )
+        output = copy.deepcopy(catdata)
+
+        color = catdata['MAG_BP'] - catdata['MAG_RP']
+        dex = (color >= gaiaminbp_rp) & (color <= gaiamaxbp_rp)
+        dex &= catdata['STARPROB'] > 0.95
+        dex &= ~np.isnan(catdata['MAG_G'])
+        dex &= ~np.isnan(color)
+        dex &= ~np.isnan(catdata['X_WORLD'])
+        dex &= ~np.isnan(catdata['Y_WORLD'])
+        dex &= ~np.isnan(catdata['PMRA'])
+        dex &= ~np.isnan(catdata['PMDEC'])
+        # TODO: should we also look for FLAGS??
+
+        if isinstance(output, dict):
+            for key, value in output.items():
+                output[key] = value[dex]
+        else:
+            output = output[dex]
+
+        return output
+
+    @classmethod
+    def GaiaDR3_get_skycoords(cls, catdata, image_mjd=None):
+        """Use the RA/Dec from a Gaia catalog data array to initialize an array of SkyCoord objects
+
+        Parameters
+        ----------
+        catdata: dict or pandas.DataFrame or numpy.recarray or astropy.Table
+            Must be a data structure with the following keys:
+            X_WORLD, Y_WORLD, PMRA, PMDEC,
+            The data structure, when indexed on those keys, should
+            return a 1D numpy array.
+        image_mjd: float, optional
+            If given, will adjust the coordinates according to proper
+            motion during the time between the Gaia epoch and the image MJD.
+
+        Returns
+        -------
+        coords: astropy.coordinates.SkyCoord
+            An array of SkyCoord objects
+        """
+        coords = SkyCoord(
+            ra=catdata['X_WORLD'] * u.deg,
+            dec=catdata['Y_WORLD'] * u.deg,
+            # distance=Distance(parallax=wd_cat['parallax'][i] * u.mas) if wd_cat['parallax'][i] > 0 else None,
+            pm_ra_cosdec=catdata['PMRA'] * u.mas / u.yr,
+            pm_dec=catdata['PMDEC'] * u.mas / u.yr,
+            obstime=astropy.time.Time('2016.0', format='jyear', scale='tdb'),
+        )
+        # 2016.0 is the reference epoch for Gaia DR3 (TODO: should be 2015.5?)
+        # coordinate transform ref:
+        # https://docs.astropy.org/en/stable/coordinates/apply_space_motion.html#example-use-velocity-to-compute-sky-position-at-different-epochs
+        image_time = astropy.time.Time(image_mjd, format='mjd', scale='tdb')
+        coords = coords.apply_space_motion(image_time)
+
+        return coords
+
+    @classmethod
+    def GaiaDR3_to_instrument_mag( cls, filter, catdata ):
+        """Transform Gaia DR3 magnitudes to instrument magnitudes.
+
+        Could use a polynomial based on the colors, or any other method.
+
+        Parameters
+        ----------
+        filter: str
+            The (short) filter name of the magnitudes we want.
+        catdata: dict or pandas.DataFrame or numpy.recarray or astropy.Table
+            A data structure that holds the relevant data,
+            that can be indexed on the following keys:
+            MAG_G, MAGERR_G, MAG_BP, MAGERR_BP, MAG_RP, MAGERR_RP
+            If a single magnitude is required, can pass a dict.
+            If an array of magnitudes is required, can be any
+            data structure that when indexed on those keys
+            returns a 1D numpy array (e.g., a pandas DataFrame,
+            or a named structured numpy array, or even a dict
+            with ndarray values).
+
+        Returns
+        -------
+        trans_mag: float or numpy array
+            The instrument magnitude(s).
+        trans_magerr: float or numpy array
+            The instrument magnitude error(s).
+        """
+        return NotImplementedError( f"{cls.__name__} needs to implement GaiaDR3_to_instrument_mag" )
 
     # ----------------------------------------
     # Preprocessing functions.  These live here rather than
     # in pipeline/preprocessing.py because individual instruments
     # may need specific overrides for some of the steps.  For many
     # instruments, the defaults should work.
+
+    @classmethod
+    def get_filter_bandpasses(cls):
+        """
+        Get a dictionary of filter name -> Bandpass object for a list of common filters.
+        The default Instrument just gives some generic filters and their bandpasses,
+        but subclasses should override (or update) this dictionary with their own
+        filters and bandpasses.
+        """
+
+        # we can probably do better than this, but I don't know if it makes any difference
+        # ref: https://en.wikipedia.org/wiki/Photometric_system
+        # wikipedia = dict(
+        #     U=Bandpass(332, 398),
+        #     R=Bandpass(589, 727),
+        #     V=Bandpass(507, 595),
+        #     G=Bandpass(400, 528),
+        #     B=Bandpass(398, 492),
+        #     I=Bandpass(731, 880),
+        #     Z=Bandpass(824, 976),
+        #     Y=Bandpass(960, 1080),
+        #     J=Bandpass(1110, 1326),
+        #     H=Bandpass(1476, 1784),
+        #     K=Bandpass(1995, 2385),
+        #     L=Bandpass(3214, 3686),
+        # )
+
+        # maybe better to use LSST filters?
+        # ref: https://www.lsst.org/sites/default/files/docs/sciencebook/SB_2.pdf Table 2.1 page 11
+        lsst = dict(
+            u=Bandpass(320, 400),
+            g=Bandpass(400, 552),
+            r=Bandpass(552, 691),
+            i=Bandpass(691, 818),
+            z=Bandpass(818, 922),
+            y=Bandpass(950, 1080),
+        )
+
+        values = lsst
+        # values.update(wikipedia)  # TODO: should we remove these or add them as options as well?
+
+        return values
 
     def _get_default_calibrator( self, mjd, section, calibtype='dark', filter=None, session=None ):
         """Acquire (if possible) the default externally-supplied CalibratorFile.
@@ -1456,7 +1591,6 @@ class Instrument:
                                           'y0': int(datamatch.group('y0'))-1, 'y1': int(datamatch.group('y1')) }
                             } )
         return retval
-
 
     def overscan_and_data_sections( self, header ):
         """Return the data sections where they appear in the image after trimming.
@@ -1856,6 +1990,7 @@ class DemoInstrument(Instrument):
         raise NotImplementedError( f"Instrument class {self.__class__.__name__} hasn't "
                                    f"implemented find_origin_exposures." )
 
+
 class InstrumentOriginExposures:
     """A class encapsulating the response from Instrument.find_origin_exposures()
 
@@ -1958,8 +2093,6 @@ class InstrumentOriginExposures:
     def __len__( self ):
         """The number of exposures this object encapsulates."""
         raise NotImplementedError( f"Instrument class {self.__class__.__name__} hasn't implemented __len__." )
-
-
 
 
 if __name__ == "__main__":

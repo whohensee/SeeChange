@@ -316,12 +316,46 @@ class DECam(Instrument):
         return filter[0:1]
 
     @classmethod
-    def get_GaiaDR3_transformation( cls, filter ):
-        """Return a polynomial transformation from Gaia MAG_G to instrument magnitude.
+    def GaiaDR3_to_instrument_mag( cls, filter, catdata ):
+        """Transform Gaia DR3 magnitudes to instrument magnitudes.
 
-        See Instrument.get_GaiaDR3_transformation.
+        Uses a polynomial transformation from Gaia MAG_G to instrument magnitude.
 
+        The array trns allows a conversion from Gaia MAG_G to
+        the magnitude through the desired filter using:
+
+          MAG_filter = Gaia_MAG_G - sum( trns[i] * ( Gaia_MAG _BP - Gaia_MAG_RP ) ** i )
+
+        (with i running from 0 to len(trns)-1).
+
+        Parameters
+        ----------
+        filter: str
+            The (short) filter name of the magnitudes we want.
+        catdata: dict or pandas.DataFrame or numpy.recarray or astropy.Table
+            A data structure that holds the relevant data,
+            that can be indexed on the following keys:
+            MAG_G, MAGERR_G, MAG_BP, MAGERR_BP, MAG_RP, MAGERR_RP
+            If a single magnitude is required, can pass a dict.
+            If an array of magnitudes is required, can be any
+            data structure that when indexed on those keys
+            returns a 1D numpy array (e.g., a pandas DataFrame,
+            or a named structured numpy array, or even a dict
+            with ndarray values).
+
+        Returns
+        -------
+        trans_mag: float or numpy array
+            The catalog magnitude(s) transformed to instrument magnitude(s).
+        trans_magerr: float or numpy array
+            The catalog magnitude error(s) transformed to instrument magnitude error(s).
         """
+        if not isinstance(filter, str):
+            raise ValueError(f"The filter must be a string. Got {type(filter)}. ")
+        if len(filter) > 1:
+            filter_short = cls.get_short_filter_name(filter)
+        else:
+            filter_short = filter
 
         # Emily Ramey came up with these by fitting polynomials to Gaia
         # magnitudes and DECaLS magnitudes
@@ -331,9 +365,25 @@ class DECam(Instrument):
             'i': np.array( [ -0.2491122, 0.51709843, 0.02919352, -0.02097517 ] ),
             'z': np.array( [ -0.38939061, 0.70406435, 0.04190059, -0.01617815 ] )
         }
-        if filter not in transformations:
+        if filter_short not in transformations:
             raise ValueError( f"Unknown short DECam filter name {filter}" )
-        return transformations[ filter ]
+
+        # instrumental mag is sum(trns[i] * (GaiaBP - GaiaRP) ** i)
+        trns = transformations[ filter_short ]
+        fitorder = len(trns) - 1
+
+        colors = catdata['MAG_BP'] - catdata['MAG_RP']
+        colorerrs = np.sqrt(catdata['MAGERR_BP'] ** 2 + catdata['MAGERR_RP'] ** 2)
+        colton = colors[:, np.newaxis] ** np.arange(0, fitorder + 1, 1)
+        coltonminus1 = np.zeros(colton.shape)
+        coltonminus1[:, 1:] = colors[:, np.newaxis] ** np.arange(0, fitorder, 1)
+        coltonerr = np.zeros(colton.shape)
+        coltonerr[:, 1:] = np.arange(1, fitorder + 1, 1) * coltonminus1[:, 1:] * colorerrs.value[:, np.newaxis]
+
+        trans_mag = catdata['MAG_G'] - (trns[np.newaxis, :] * colton).sum(axis=1)
+        trans_magerr = np.sqrt(catdata['MAGERR_G'] ** 2 + (trns[np.newaxis, :] * coltonerr).sum(axis=1) ** 2)
+
+        return trans_mag, trans_magerr
 
     def _get_default_calibrator( self, mjd, section, calibtype='dark', filter=None, session=None ):
         # Just going to use the 56876 versions for everything

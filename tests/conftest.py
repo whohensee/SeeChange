@@ -37,6 +37,8 @@ from pipeline.preprocessing import Preprocessor
 from pipeline.detection import Detector
 from pipeline.astro_cal import AstroCalibrator
 from pipeline.photo_cal import PhotCalibrator
+from pipeline.catalog_tools import fetch_GaiaDR3_excerpt
+
 from util import config
 from util.archive import Archive
 from util.retrydownload import retry_download
@@ -74,6 +76,25 @@ def tests_setup_and_teardown():
 
 @pytest.fixture(scope="session")
 def blocking_plots():
+    """
+    Control how and when plots will be generated.
+    There are three options for the environmental variable "INTERACTIVE".
+     - It is not set: do not make any plots. blocking_plots returns False.
+     - It is set to a False value: make plots, but save them, and do not show on screen/block execution.
+       In this case the blocking_plots returns False, but the tests that skip if INTERACTIVE is None will run.
+     - It is set to a True value: make the plots, but stop the test execution until the figure is closed.
+
+    If a test only makes plots and does not test functionality, it should be marked with
+    @pytest.mark.skipif( os.getenv('INTERACTIVE') is None, reason='Set INTERACTIVE to run this test' )
+
+    If a test makes a diagnostic plot, that is only ever used to visually inspect the results,
+    then it should be surrounded by an if blocking_plots: statement. It will only run in interactive mode.
+
+    If a test makes a plot that should be saved to disk, it should either have the skipif mentioned above,
+    or have an if os.getenv('INTERACTIVE'): statement surrounding the plot itself.
+    You may want to add plt.show(block=blocking_plots) to allow the figure to stick around in interactive mode,
+    on top of saving the figure at the end of the test.
+    """
     import matplotlib
     backend = matplotlib.get_backend()
 
@@ -83,7 +104,7 @@ def blocking_plots():
 
     inter = os.getenv('INTERACTIVE', False)
     if isinstance(inter, str):
-        inter = inter.lower() in ('true', '1')
+        inter = inter.lower() in ('true', '1', 'on', 'yes')
 
     if not inter:  # for non-interactive plots, use headless plots that just save to disk
         # ref: https://stackoverflow.com/questions/15713279/calling-pylab-savefig-without-display-in-ipython
@@ -858,6 +879,19 @@ def example_psfex_psf_files():
     if not ( psfpath.is_file() and psfxmlpath.is_file() ):
         raise FileNotFoundError( f"Can't read at least one of {psfpath}, {psfxmlpath}" )
     return psfpath, psfxmlpath
+
+
+@pytest.fixture
+def gaiadr3_excerpt( example_ds_with_sources_and_psf ):
+    ds = example_ds_with_sources_and_psf
+    catexp = fetch_GaiaDR3_excerpt( ds.image, minstars=50, maxmags=20, magrange=4)
+    assert catexp is not None
+
+    yield catexp
+
+    with SmartSession() as session:
+        catexp = catexp.recursive_merge( session )
+        catexp.delete_from_disk_and_database( session=session )
 
 
 @pytest.fixture

@@ -206,7 +206,6 @@ class CatalogExcerpt(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourC
 
         return catexp
 
-
     def ds9_regfile( self, regfile, radius=2, color='red', width=2, clobber=True ):
 
         """Write a DS9 region file with the contents of this catalog excerpt.
