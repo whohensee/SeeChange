@@ -224,6 +224,8 @@ class Detector:
 
             ds.sources = sources
             ds.psf = psf
+            ds.image.fwhm_estimate = psf.fwhm_pixels  # TODO: should we only write if the property is None?
+            # TODO: where do we get the background mean/rms from?
 
         # make sure this is returned to be used in the next step
         return ds
@@ -418,7 +420,7 @@ class Detector:
             psfargs = []
             paramfilebase = astromatic_dir / "sourcelist_sextractor.param"
 
-        # SExtractor reads the measurements it produes from a parmeters
+        # SExtractor reads the measurements it produces from a parameters
         # file.  We need to edit it, though, so that the number of
         # apertures we have matches the apertures we ask for.
         # TODO : review the default param file and make sure we have the
@@ -447,7 +449,6 @@ class Detector:
             with open( paramfile, "w") as ofp:
                 for param in params:
                     ofp.write( f"{param}\n" )
-
 
         try:
 
@@ -647,7 +648,6 @@ class Detector:
             if not do_not_cleanup:
                 psffile.unlink( missing_ok=True )
                 psfxmlfile.unlink( missing_ok=True )
-
 
     def extract_sources_sep(self, image):
         """

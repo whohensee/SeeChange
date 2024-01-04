@@ -12,14 +12,15 @@ from astropy.io import fits
 import sqlalchemy as sa
 from sqlalchemy.exc import IntegrityError
 
+from tests.conftest import ImageCleanup
 import util.config as config
 import util.radec
 from models.base import SmartSession, FileOnDiskMixin
 from models.exposure import Exposure
 from models.image import Image
-from tests.conftest import ImageCleanup
-from models.instrument import Instrument, get_instrument_instance
-from models.enums_and_bitflags import image_preprocessing_dict, image_preprocessing_inverse, string_to_bitflag
+from models.instrument import Instrument
+from models.references import Reference
+from models.enums_and_bitflags import image_preprocessing_inverse, string_to_bitflag
 
 # Have to have this here; otherwise, decam.py never gets loaded, and
 # DECam never gets added to the global instrument.INSTRUMENT_INSTANCE_CACHE
@@ -28,6 +29,7 @@ from models.enums_and_bitflags import image_preprocessing_dict, image_preprocess
 # in the same file?  Or, should we rerun register_all_instruments() at the bottom
 # of every instrument's .py file?
 # import models.decam
+
 
 def rnd_str(n):
     return ''.join(np.random.choice(list('abcdefghijklmnopqrstuvwxyz'), n))
@@ -272,6 +274,7 @@ def test_image_archive_multifile(exposure, demo_image, provenance_base, archive)
     finally:
         cfg.set_value( 'storage.images.single_file', single_fileness )
 
+
 def test_image_save_justheader( exposure, demo_image, provenance_base ):
     demo_image.provenance = provenance_base
     demo_image.data = np.full( (64, 32), 0.125, dtype=np.float32 )
@@ -311,6 +314,7 @@ def test_image_save_justheader( exposure, demo_image, provenance_base ):
 
     with fits.open( names[1] ) as hdul:
         assert ( hdul[0].data == np.full( (64, 32), 4., dtype=np.float32 ) ).all()
+
 
 def test_image_save_onlyimage( exposure, demo_image, provenance_base ):
     demo_image.provenance = provenance_base
@@ -404,6 +408,57 @@ def test_image_enum_values(exposure, demo_image, provenance_base):
                 if len(os.listdir(folder)) == 0:
                     os.rmdir(folder)
 
+
+def test_image_upstreams_downstreams(demo_image, sim_reference, provenance_base, provenance_extra):
+    with SmartSession() as session:
+        demo_image.provenance = provenance_base
+        demo_image = demo_image.recursive_merge(session)
+
+        # make sure the new image matches the reference in all these attributes
+        demo_image.filter = sim_reference.filter
+        demo_image.target = sim_reference.target
+        demo_image.section_id = sim_reference.section_id
+
+        # save and delete at the end
+        cleanup1 = ImageCleanup.save_image(demo_image)
+        session.add(demo_image)
+
+        sim_reference = session.merge(sim_reference)
+        new = Image.from_new_and_ref(demo_image, sim_reference.image)
+        new.provenance = provenance_extra
+        new = new.recursive_merge(session)
+
+        # save and delete at the end
+        cleanup2 = ImageCleanup.save_image(new)
+
+        session.add(new)
+        session.commit()
+
+    # new make sure a new session can find all the upstreams/downstreams
+    with SmartSession() as session:
+        # check the upstreams/downstreams for the new image
+        upstream_ids = [u.id for u in new.get_upstreams(session=session)]
+        assert demo_image.id in upstream_ids
+        assert sim_reference.image_id in upstream_ids
+        downstream_ids = [d.id for d in new.get_downstreams(session=session)]
+        assert len(downstream_ids) == 0
+
+        upstream_ids = [u.id for u in demo_image.get_upstreams(session=session)]
+        assert [demo_image.exposure_id] == upstream_ids
+        downstream_ids = [d.id for d in demo_image.get_downstreams(session=session)]
+        assert [new.id] == downstream_ids  # should be the only downstream
+
+        # check the upstreams/downstreams for the reference image
+        upstreams = sim_reference.image.get_upstreams(session=session)
+        assert len(upstreams) == 5  # was made of five images
+        assert all([isinstance(u, Image) for u in upstreams])
+        source_images_ids = [im.id for im in sim_reference.image.upstream_images]
+        upstream_ids = [u.id for u in upstreams]
+        assert set(upstream_ids) == set(source_images_ids)
+        downstream_ids = [d.id for d in sim_reference.image.get_downstreams(session=session)]
+        assert [new.id] == downstream_ids  # should be the only downstream
+
+
 def test_image_preproc_bitflag( demo_image, provenance_base ):
 
     with SmartSession() as session:
@@ -412,7 +467,7 @@ def test_image_preproc_bitflag( demo_image, provenance_base ):
         # Spoof an md5sum so we can commit this to the database without saving actual data
         demo_image.md5sum = uuid.uuid4()
         im = demo_image.recursive_merge( session )
-        session.add( im  )
+        session.add( im )
         # Need to do this for the defaults to get set
         # It will be removed from the database in
         # demo_image teardown
@@ -448,7 +503,15 @@ def test_image_preproc_bitflag( demo_image, provenance_base ):
                        == string_to_bitflag( 'overscan, fringe', image_preprocessing_inverse ) ) )
         assert q.count() == 0
 
-def test_image_badness(demo_image):
+
+def test_image_badness(demo_image, provenance_base):
+
+    with SmartSession() as session:
+        demo_image.provenance = provenance_base
+        cleanup = ImageCleanup.save_image(demo_image)
+        demo_image = demo_image.recursive_merge(session)
+        session.add(demo_image)
+        session.commit()
 
         # this is not a legit "badness" keyword...
         with pytest.raises(ValueError, match='Keyword "foo" not recognized'):
@@ -472,11 +535,19 @@ def test_image_badness(demo_image):
 
         # now add a third keyword, but on the Exposure
         demo_image.exposure.badness = 'saturation'
+        session.add(demo_image)
+        session.commit()
+
+        # a manual way to propagate bitflags downstream
+        demo_image.exposure.update_downstream_badness(session)  # make sure the downstreams get the new badness
+        session.commit()
         assert demo_image.bitflag == 2 ** 5 + 2 ** 3 + 2 ** 1  # saturation bit is 3
         assert demo_image.badness == 'Banding, Saturation, Bright Sky'
 
         # adding the same keyword on the exposure and the image makes no difference
         demo_image.exposure.badness = 'banding'
+        demo_image.exposure.update_downstream_badness(session)  # make sure the downstreams get the new badness
+        session.commit()
         assert demo_image.bitflag == 2 ** 5 + 2 ** 1
         assert demo_image.badness == 'Banding, Bright Sky'
 
@@ -486,7 +557,6 @@ def test_image_badness(demo_image):
         assert demo_image.badness == 'Banding, Shaking, Bright Sky'
 
 
-@pytest.mark.skipif( os.getenv('RUN_SLOW_TESTS') is None, reason="Set RUN_SLOW_TESTS to run this test" )
 def test_multiple_images_badness(
         demo_image,
         demo_image2,
@@ -496,42 +566,38 @@ def test_multiple_images_badness(
         provenance_base,
         provenance_extra
 ):
-    # the image itself is marked bad because of bright sky
-    demo_image2.badness = 'brightsky'
-    assert demo_image2.badness == 'Bright Sky'
-    assert demo_image2.bitflag == 2 ** 5
-
-    # note that this image is not directly bad, but the exposure has banding
-    demo_image3.exposure.badness = 'banding'
-    assert demo_image3.badness == 'Banding'
-    assert demo_image._bitflag == 0  # the exposure is bad!
-    assert demo_image3.bitflag == 2 ** 1
-
-    # add these to the DB
-    images = [demo_image, demo_image2, demo_image3]
-    target = uuid.uuid4().hex
-    filter = demo_image.filter
-    filenames = []
-    cleanups = []
     try:
+        images = [demo_image, demo_image2, demo_image3, demo_image5, demo_image6]
+        cleanups = []
+        filter = 'g'
+        target = str(uuid.uuid4())
+        project = 'test project'
         with SmartSession() as session:
             for im in images:
-                im.target = target
                 im.filter = filter
+                im.target = target
+                im.project = project
                 im.provenance = provenance_base
+                im = im.recursive_merge(session)
                 cleanups.append(ImageCleanup.save_image(im))
-                filenames.append(im.get_fullpath(as_list=True)[0])
-                assert os.path.exists(filenames[-1])
-                im = im.recursive_merge( session )
                 session.add(im)
             session.commit()
 
-            # leaving this commented code for debugging of bitflag:
-            # for im in images:
-            #     print(f'im.id= {im.id}, im.bitflag= {im.bitflag}')
-            # stmt = sa.select(Image.id, Image.bitflag).where(Image.bitflag>0).order_by(Image.id)
-            # print(stmt)
-            # print(session.execute(stmt).all())
+            # the image itself is marked bad because of bright sky
+            demo_image2.badness = 'brightsky'
+            assert demo_image2.badness == 'Bright Sky'
+            assert demo_image2.bitflag == 2 ** 5
+            session.commit()
+
+            # note that this image is not directly bad, but the exposure has banding
+            demo_image3.exposure.badness = 'banding'
+            demo_image3.exposure.update_downstream_badness(session)
+            session.commit()
+
+            assert demo_image3.badness == 'Banding'
+            assert demo_image._bitflag == 0  # the exposure is bad!
+            assert demo_image3.bitflag == 2 ** 1
+            session.commit()
 
             # find the images that are good vs bad
             good_images = session.scalars(sa.select(Image).where(Image.bitflag == 0)).all()
@@ -542,17 +608,18 @@ def test_multiple_images_badness(
             assert demo_image3.id in [i.id for i in bad_images]
 
             # make an image from the two bad exposures using subtraction
-            demo_image4 = Image.from_ref_and_new(demo_image2, demo_image3)
+            demo_image4 = Image.from_new_and_ref(demo_image3, demo_image2)
             demo_image4.provenance = provenance_extra
+            demo_image4.provenance.upstreams = demo_image4.get_upstream_provenances()
             cleanups.append(ImageCleanup.save_image(demo_image4))
             images.append(demo_image4)
-            filenames.append(demo_image4.get_fullpath(as_list=True)[0])
-            demo_image4 = demo_image4.recursive_merge( session )
+            demo_image4 = demo_image4.recursive_merge(session)
             session.add(demo_image4)
             session.commit()
+
             assert demo_image4.id is not None
-            assert demo_image4.ref_image_id == demo_image2.id
-            assert demo_image4.new_image_id == demo_image3.id
+            assert demo_image4.ref_image == demo_image2
+            assert demo_image4.new_image == demo_image3
 
             # check that badness is loaded correctly from both parents
             assert demo_image4.badness == 'Banding, Bright Sky'
@@ -572,26 +639,11 @@ def test_multiple_images_badness(
             assert demo_image4.badness == 'Banding, Saturation, Bright Sky'
             assert demo_image4._bitflag == 2 ** 3  # only this bit is from the image itself
 
-            # make a few good images and make sure they don't get flagged
-            more_images = [demo_image5, demo_image6]
-
-            for im in more_images:
-                im.target = target
-                im.filter = filter
-                im.provenance = provenance_base
-                cleanups.append(ImageCleanup.save_image(im))
-                filenames.append(im.get_fullpath(as_list=True)[0])
-                images.append(im)
-                im = im.recursive_merge( session )
-                session.add(im)
-            session.commit()
-
             # make a new subtraction:
-            demo_image7 = Image.from_ref_and_new(demo_image5, demo_image6)
+            demo_image7 = Image.from_ref_and_new(demo_image6, demo_image5)
             demo_image7.provenance = provenance_extra
             cleanups.append(ImageCleanup.save_image(demo_image7))
             images.append(demo_image7)
-            filenames.append(demo_image7.get_fullpath(as_list=True)[0])
             demo_image7 = demo_image7.recursive_merge( session )
             session.add(demo_image7)
             session.commit()
@@ -621,10 +673,10 @@ def test_multiple_images_badness(
             demo_image8.provenance = provenance_extra
             cleanups.append(ImageCleanup.save_image(demo_image8))
             images.append(demo_image8)
-            filenames.append(demo_image8.get_fullpath(as_list=True)[0])
             demo_image8 = demo_image8.recursive_merge( session )
             session.add(demo_image8)
             session.commit()
+
             assert demo_image8.badness == 'Banding, Bright Sky'
             assert demo_image8.bitflag == 2 ** 1 + 2 ** 5
 
@@ -634,8 +686,21 @@ def test_multiple_images_badness(
             bad_coadd = session.scalars(sa.select(Image).where(Image.bitflag == 2 ** 1 + 2 ** 5)).all()
             assert demo_image8.id in [i.id for i in bad_coadd]
 
+            # get rid of this coadd to make a new one
+            demo_image8.delete_from_disk_and_database(session=session)
+            cleanups.pop()
+            images.pop()
+
             # now let's add the subtraction image to the coadd:
-            demo_image8.source_images = demo_image8.source_images + [demo_image4]  # we re-assign to trigger SQLA
+            # make a coadded image (now including the subtraction demo_image4):
+            demo_image8 = Image.from_images([demo_image, demo_image2, demo_image3, demo_image4, demo_image5, demo_image6])
+            demo_image8.provenance = provenance_extra
+            cleanups.append(ImageCleanup.save_image(demo_image8))
+            images.append(demo_image8)
+            demo_image8 = demo_image8.recursive_merge(session)
+            session.add(demo_image8)
+            session.commit()
+
             session.add(demo_image8)
             session.commit()
 
@@ -648,16 +713,23 @@ def test_multiple_images_badness(
             bad_coadd = session.scalars(sa.select(Image).where(Image.bitflag == 42)).all()
             assert demo_image8.id in [i.id for i in bad_coadd]
 
-    finally:  # cleanup
-        with SmartSession() as session:
-            for im in images:
-                im.remove_data_from_disk()
-                if im.id is not None:
-                    session.execute(sa.delete(Image).where(Image.id == im.id))
+            # try to add some badness to one of the underlying exposures
+            demo_image.exposure.badness = 'Shaking'
+            session.add(demo_image)
+            demo_image.exposure.update_downstream_badness(session)
             session.commit()
 
-        for filename in filenames:
-            assert not os.path.exists(filename)
+            assert 'Shaking' in demo_image.badness
+            assert 'Shaking' in demo_image8.badness
+
+    finally:  # cleanup
+        with SmartSession() as session:
+            session.autoflush = False
+            for im in images:
+                im = im.recursive_merge(session)
+                im.delete_from_disk_and_database(session=session, commit=False)
+
+            session.commit()
 
 
 def test_image_coordinates():
@@ -913,7 +985,7 @@ def test_image_from_exposure(exposure, provenance_base):
     assert not im.is_sub
     assert im.id is None  # need to commit to get IDs
     assert im.exposure_id is None  # need to commit to get IDs
-    assert im.source_images == []
+    assert im.upstream_images == []
     assert im.filepath is None  # need to save file to generate a filename
     assert np.array_equal(im.raw_data, exposure.data[0])
     assert im.data is None
@@ -965,7 +1037,7 @@ def test_image_from_exposure_filter_array(exposure_filter_array):
     assert im.filter == filt
 
 
-def test_image_with_multiple_source_images(exposure, exposure2, provenance_base):
+def test_image_with_multiple_upstreams(exposure, exposure2, provenance_base):
     exposure.update_instrument()
     exposure2.update_instrument()
 
@@ -995,11 +1067,6 @@ def test_image_with_multiple_source_images(exposure, exposure2, provenance_base)
         im1_id = None
         im2_id = None
         with SmartSession() as session:
-            # im.provenance = session.merge( im.provenance )
-            # im1.provenance = session.merge( im1.provenance )
-            # im2.provenance = session.merge( im2.provenance )
-            # exposure.provenance = session.merge( exposure.provenance )
-            # exposure2.provenance = session.merge( exposure2.provenance )
             im = im.recursive_merge( session )
             im1 = im1.recursive_merge( session )
             im2 = im2.recursive_merge( session )
@@ -1011,8 +1078,7 @@ def test_image_with_multiple_source_images(exposure, exposure2, provenance_base)
             im_id = im.id
             assert im_id is not None
             assert im.exposure_id is None
-            assert im.is_coadd
-            assert im.source_images == [im1, im2]
+            assert im.upstream_images == [im1, im2]
             assert np.isclose(im.mid_mjd, (im1.mjd + im2.mjd) / 2)
 
             # make sure source images are pulled into the database too
@@ -1020,15 +1086,13 @@ def test_image_with_multiple_source_images(exposure, exposure2, provenance_base)
             assert im1_id is not None
             assert im1.exposure_id is not None
             assert im1.exposure_id == exposure.id
-            assert not im1.is_coadd
-            assert im1.source_images == []
+            assert im1.upstream_images == []
 
             im2_id = im2.id
             assert im2_id is not None
             assert im2.exposure_id is not None
             assert im2.exposure_id == exposure2.id
-            assert not im2.is_coadd
-            assert im2.source_images == []
+            assert im2.upstream_images == []
 
     finally:  # make sure to clean up all images
         for id_ in [im_id, im1_id, im2_id]:
@@ -1079,11 +1143,10 @@ def test_image_subtraction(exposure, exposure2, provenance_base):
             im_id = im.id
             assert im_id is not None
             assert im.exposure_id is None
-            assert im.is_sub
             assert im.ref_image == im1
-            assert im.ref_image_id == im1.id
+            assert im.ref_image.id == im1.id
             assert im.new_image == im2
-            assert im.new_image_id == im2.id
+            assert im.new_image.id == im2.id
             assert im.mjd == im2.mjd
             assert im.exp_time == im2.exp_time
 
@@ -1092,15 +1155,13 @@ def test_image_subtraction(exposure, exposure2, provenance_base):
             assert im1_id is not None
             assert im1.exposure_id is not None
             assert im1.exposure_id == exposure.id
-            assert not im1.is_coadd
-            assert im1.source_images == []
+            assert im1.upstream_images == []
 
             im2_id = im2.id
             assert im2_id is not None
             assert im2.exposure_id is not None
             assert im2.exposure_id == exposure2.id
-            assert not im2.is_coadd
-            assert im2.source_images == []
+            assert im2.upstream_images == []
 
     finally:  # make sure to clean up all images
         for id_ in [im_id, im1_id, im2_id]:

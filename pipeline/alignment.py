@@ -17,6 +17,7 @@ from pipeline.data_store import DataStore
 from pipeline.parameters import Parameters
 from pipeline.utils import read_fits_image
 
+
 class ParsImageAligner(Parameters):
     def __init__(self, **kwargs):
         super().__init__()
@@ -35,10 +36,10 @@ class ParsImageAligner(Parameters):
     def get_process_name(self):
         return 'alignment'
 
+
 class ImageAligner:
     def __init__( self, **kwargs ):
         self.pars = ParsImageAligner( **kwargs )
-
 
     def _align_swarp( self, image, target, sources, targetsources, imagezp, session=None ):
         """Use scamp and swarp to align image to target.
@@ -212,8 +213,6 @@ class ImageAligner:
             outim.unlink( missing_ok=True )
             outwt.unlink( missing_ok=True )
             outimhead.unlink( missing_ok=True )
-
-
 
     def run( self, ds_image, ds_target, session=None ):
         """Warp source image so that it is aligned with target image.

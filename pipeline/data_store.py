@@ -5,12 +5,12 @@ from pipeline.utils import get_latest_provenance, parse_session
 from models.base import SmartSession, FileOnDiskMixin, safe_merge, _logger
 from models.provenance import CodeVersion, Provenance
 from models.exposure import Exposure
-from models.image import Image
+from models.image import Image, image_upstreams_association_table
 from models.source_list import SourceList
 from models.psf import PSF
 from models.world_coordinates import WorldCoordinates
 from models.zero_point import ZeroPoint
-from models.references import ReferenceEntry
+from models.references import Reference
 from models.cutouts import Cutouts
 from models.measurements import Measurements
 
@@ -99,6 +99,7 @@ class DataStore:
         self.measurements = None  # photometry and other measurements for each source
 
         self.upstream_provs = None  # provenances to override the upstreams if no upstream objects exist
+        self.reference = None  # the Reference object needed to make subtractions
 
         # these are identifiers used to find the data products in the database
         self.exposure_id = None  # use this and section_id to find the raw image
@@ -271,6 +272,13 @@ class DataStore:
                 raise ValueError(f'Session must be a SQLAlchemy session or SmartSession, got {type(value)}')
 
         super().__setattr__(key, value)
+
+    def __getattr__(self, key):
+        value = super().__getattribute__(key)
+        if key == 'image' and value is not None:
+            self.apped_image_products(value)
+
+        return value
 
     def get_inputs(self):
         """Get a string with the relevant inputs. """
@@ -540,6 +548,20 @@ class DataStore:
 
         return self.image  # could return none if no image was found
 
+    def apped_image_products(self):
+        """Append the image products to the image object.
+        This is a convenience function to be used by the
+        pipeline applications, to make sure the image
+        object has all the data products it needs.
+        """
+        self.image.sources = self.sources
+        self.image.psf = self.psf
+        self.image.wcs = self.wcs
+        self.image.zp = self.zp
+        self.image.detections = self.detections
+        self.image.cutouts = self.cutouts
+        self.image.measurements = self.measurements
+
     def get_sources(self, provenance=None, session=None):
         """
         Get a SourceList from the original image,
@@ -777,9 +799,9 @@ class DataStore:
 
         return self.zp
 
-    def get_reference_image(self, provenance=None, session=None):
+    def get_reference(self, provenance=None, session=None):
         """
-        Get the reference image for this image.
+        Get the reference for this image.
 
         Parameters
         ----------
@@ -802,32 +824,31 @@ class DataStore:
 
         """
         if self.ref_image is None:
-
             with SmartSession(session, self.session) as session:
                 image = self.get_image(session=session)
 
-                ref_entry = session.scalars(
-                    sa.select(ReferenceEntry).where(
+                ref = session.scalars(
+                    sa.select(Reference).where(
                         sa.or_(
-                            ReferenceEntry.validity_start.is_(None),
-                            ReferenceEntry.validity_start <= image.observation_time
+                            Reference.validity_start.is_(None),
+                            Reference.validity_start <= image.observation_time
                         ),
                         sa.or_(
-                            ReferenceEntry.validity_end.is_(None),
-                            ReferenceEntry.validity_end >= image.observation_time
+                            Reference.validity_end.is_(None),
+                            Reference.validity_end >= image.observation_time
                         ),
-                        ReferenceEntry.filter == image.filter,
-                        ReferenceEntry.target == image.target,
-                        ReferenceEntry.is_bad.is_(False),
+                        Reference.filter == image.filter,
+                        Reference.target == image.target,
+                        Reference.is_bad.is_(False),
                     )
                 ).first()
 
-                if ref_entry is None:
+                if ref is None:
                     raise ValueError(f'No reference image found for image {image.id}')
 
-                self.ref_image = ref_entry.image
+                self.reference = ref
 
-        return self.ref_image
+        return self.reference
 
     def get_subtraction(self, provenance=None, session=None):
         """
@@ -874,19 +895,35 @@ class DataStore:
         if self.sub_image is None:
             with SmartSession(session, self.session) as session:
                 image = self.get_image(session=session)
-                ref = self.get_reference_image(session=session)
+                ref = self.get_reference(session=session)
 
                 # this happens when the subtraction is required as an upstream for another process (but isn't in memory)
                 if provenance is None:  # check if in upstream_provs/database
                     provenance = self._get_provanance_for_an_upstream(process_name, session=session)
 
                 if provenance is not None:  # if None, it means we can't find it on the DB
+                    # self.sub_image = session.scalars(
+                    #     sa.select(Image).where(
+                    #         Image.ref_image_id == ref.image_id,
+                    #         Image.new_image_id == image.id,
+                    #         Image.provenance.has(id=provenance.id),
+                    #     )
+                    # ).first()
+                    aliased_table = sa.orm.aliased(image_upstreams_association_table)
                     self.sub_image = session.scalars(
-                        sa.select(Image).where(
-                            Image.ref_image_id == ref.id,
-                            Image.new_image_id == image.id,
-                            Image.provenance.has(id=provenance.id),
-                        )
+                        sa.select(Image).join(
+                            image_upstreams_association_table,
+                            sa.and_(
+                                image_upstreams_association_table.c.upstream_id == ref.image_id,
+                                image_upstreams_association_table.c.downstream_id == Image.id,
+                            )
+                        ).join(
+                            aliased_table,
+                            sa.and_(
+                                aliased_table.c.upstream_id == image.id,
+                                aliased_table.c.downstream_id == Image.id,
+                            )
+                        ).where(Image.provenance.has(id=provenance.id))
                     ).first()
 
         return self.sub_image
@@ -1202,7 +1239,7 @@ class DataStore:
                         mustsave = True
                         # TODO : if some extensions have a None md5sum and others don't,
                         # right now we'll re-save everything.  Improve this to only
-                        # save the necessary extensions.  (In pratice, this should
+                        # save the necessary extensions.  (In practice, this should
                         # hardly ever come up.)
                         if ( ( not force_save_everything )
                              and
@@ -1226,7 +1263,7 @@ class DataStore:
 
                         elif mustsave:
                             try:
-                                obj.save( overwrite=overwrite, exists_ok=exists_ok )
+                                obj.save( overwrite=overwrite, exists_ok=exists_ok, no_archive=no_archive )
                             except Exception as ex:
                                 _logger.error( f"Failed to save a {obj.__class__.__name__}: {ex}" )
                                 raise ex

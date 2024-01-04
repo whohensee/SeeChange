@@ -16,8 +16,7 @@ from models.exposure import Exposure, SectionData
 from models.instrument import Instrument, DemoInstrument
 from models.decam import DECam
 
-def rnd_str(n):
-    return ''.join(np.random.choice(list('abcdefghijklmnopqrstuvwxyz'), n))
+from tests.conftest import rnd_str
 
 
 def test_exposure_no_null_values():
@@ -86,7 +85,7 @@ def test_exposure_no_null_values():
         exposure_id = e.id
         assert exposure_id is not None
         assert e.provenance.process == 'load_exposure'
-        assert e.provenance.parameters == {}
+        assert e.provenance.parameters == {'instrument': e.instrument}
 
     finally:
         # cleanup

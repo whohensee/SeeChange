@@ -16,11 +16,18 @@ from sqlalchemy import func, orm
 
 from sqlalchemy.orm import sessionmaker, declarative_base
 from sqlalchemy.ext.declarative import declared_attr
-from sqlalchemy.ext.hybrid import hybrid_method
+from sqlalchemy.ext.hybrid import hybrid_method, hybrid_property
 from sqlalchemy.orm.exc import DetachedInstanceError
 from sqlalchemy.dialects.postgresql import UUID as sqlUUID
 from sqlalchemy.dialects.postgresql import array as sqlarray
 from sqlalchemy.schema import CheckConstraint
+
+from models.enums_and_bitflags import (
+    data_badness_dict,
+    data_badness_inverse,
+    string_to_bitflag,
+    bitflag_to_string,
+)
 
 import util.config as config
 from util.archive import Archive
@@ -184,7 +191,7 @@ class SeeChangeBase:
         return attrs
 
     def set_attributes_from_dict( self, dictionary ):
-        """Set all atributes of self from a dictionary, excepting existing  attributes that are methods.
+        """Set all atributes of self from a dictionary, excepting existing attributes that are methods.
 
         Parameters
         ----------
@@ -224,10 +231,18 @@ class SeeChangeBase:
         obj = safe_merge(session, self)
         done_list.add(obj)
 
-        # only do the sub-properties if the object was already added to the session
-        attributes = ['provenance', 'code_version',
-                      'exposure', 'image', 'datafile', 'ref_image', 'new_image', 'sub_image', 'source_images',
-                      'source_list']
+        attributes = [
+            'provenance',
+            'code_version',
+            'exposure',
+            'image',
+            'datafile',
+            'sources',
+            'psf',
+            'wcs',
+            'zp',
+            'upstream_images',
+        ]
 
         # recursively call this on the provenance and other parent objects
         for att in attributes:
@@ -244,6 +259,14 @@ class SeeChangeBase:
                 pass
 
         return obj
+
+    def get_upstreams(self, session=None):
+        """Get all data products that were directly used to create this object (non-recursive)."""
+        raise NotImplementedError('get_upstreams not implemented for this class')
+
+    def get_downstreams(self, session=None):
+        """Get all data products that were created directly from this object (non-recursive)."""
+        raise NotImplementedError('get_downstreams not implemented for this class')
 
 
 Base = declarative_base(cls=SeeChangeBase)
@@ -1005,6 +1028,8 @@ class FileOnDiskMixin:
                 session.delete(self)
                 if commit:
                     session.commit()
+            elif self in session:
+                session.expunge(self)
 
 
 def safe_mkdir(path):
@@ -1246,6 +1271,135 @@ class FourCorners:
             raise ValueError( f'SpatiallyIndexed.cone_search: unknown radius unit {radunit}' )
 
         return func.q3c_radial_query( self.ra, self.dec, ra, dec, rad )
+
+
+class HasBitFlagBadness:
+    """A mixin class that adds a bitflag marking why this object is bad. """
+    _bitflag = sa.Column(
+        sa.BIGINT,
+        nullable=False,
+        default=0,
+        index=True,
+        doc='Bitflag for this object. Good objects have a bitflag of 0. '
+            'Bad objects are each bad in their own way (i.e., have different bits set). '
+            'The bitflag will include this value, bit-wise-or-ed with the bitflags of the '
+            'upstream object that were used to make this one. '
+    )
+
+    @declared_attr
+    def _upstream_bitflag(cls):
+        if cls.__name__ != 'Exposure':
+            return sa.Column(
+                sa.BIGINT,
+                nullable=False,
+                default=0,
+                index=True,
+                doc='Bitflag of objects used to generate this object. '
+            )
+        else:
+            return None
+
+    @hybrid_property
+    def bitflag(self):
+        if self._bitflag is None:
+            self._bitflag = 0
+        if self._upstream_bitflag is None:
+            self._upstream_bitflag = 0
+        return self._bitflag | self._upstream_bitflag
+
+    @bitflag.inplace.expression
+    @classmethod
+    def bitflag(cls):
+        return cls._bitflag.op('|')(cls._upstream_bitflag)
+
+    @bitflag.inplace.setter
+    def bitflag(self, value):
+        allowed_bits = 0
+        for i in self._get_inverse_badness().values():
+            allowed_bits += 2 ** i
+        if value & ~allowed_bits != 0:
+            raise ValueError(f'Bitflag value {bin(value)} has bits set that are not allowed.')
+        self._bitflag = value
+
+    @property
+    def badness(self):
+        """
+        A comma separated string of keywords describing
+        why this data is not good, based on the bitflag.
+        This includes all the reasons this data is bad,
+        including the parent data models that were used
+        to create this data (e.g., the Exposure underlying
+        the Image).
+        """
+        return bitflag_to_string(self.bitflag, data_badness_dict)
+
+    @badness.setter
+    def badness(self, value):
+        """Set the badness for this image using a comma separated string. """
+        self.bitflag = string_to_bitflag(value, self._get_inverse_badness())
+
+    def append_badness(self, value):
+        """Add some keywords (in a comma separated string)
+        describing what is bad about this image.
+        The keywords will be added to the list "badness"
+        and the bitflag for this image will be updated accordingly.
+        """
+        self.bitflag |= string_to_bitflag(value, self._get_inverse_badness())
+
+    description = sa.Column(
+        sa.Text,
+        nullable=True,
+        doc='Free text comment about this data product, e.g., why it is bad. '
+    )
+
+    def update_downstream_badness(self, session=None, commit=True):
+        """Send a recursive command to update all downstream objects that have bitflags.
+
+        Since this function is called recursively, it always updates the current
+        object's _upstream_bitflag to reflect the state of this object's upstreams,
+        before calling the same function on all downstream objects.
+
+        Note that this function will session.add() this object and all its
+        recursive downstreams (to update the changes in bitflag) and will
+        commit the new changes on its own (unless given commit=False)
+        but only at the end of the recursion.
+
+        If session=None and commit=False an exception is raised.
+
+        Parameters
+        ----------
+        session: sqlalchemy session
+            The session to use for the update. If None, will open a new session,
+            which will also close at the end of the call. In that case, must
+            provide a commit=True to commit the changes.
+        commit: bool (default True)
+            Whether to commit the changes to the database.
+        """
+        # make sure this object is current:
+        with SmartSession(session) as session:
+            new_bitflag = 0  # start from scratch, in case some upstreams have lost badness
+            for upstream in self.get_upstreams(session):
+                if hasattr(upstream, '_bitflag'):
+                    new_bitflag |= upstream.bitflag
+
+            if hasattr(self, '_upstream_bitflag'):
+                self._upstream_bitflag = new_bitflag
+                session.add(self)
+
+            # recursively do this for all the other objects
+            for downstream in self.get_downstreams(session):
+                if hasattr(downstream, 'update_downstream_badness') and callable(downstream.update_downstream_badness):
+                    downstream.update_downstream_badness(session=session, commit=False)
+
+            if commit:
+                session.commit()
+
+    def _get_inverse_badness(self):
+        """Get a dict with the allowed values of badness that can be assigned to this object
+
+        For the base class this is the most inclusive inverse (allows all badness).
+        """
+        return data_badness_inverse
 
 
 if __name__ == "__main__":

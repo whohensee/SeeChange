@@ -4,6 +4,7 @@ Here we put all the dictionaries and conversion functions for getting/setting en
 
 from util.classproperty import classproperty
 
+
 class EnumConverter:
     """Base class for creating an (effective) enum that is saved to the database as an int.
 
@@ -15,7 +16,7 @@ class EnumConverter:
 
     2. Define the _dict property of that subclass to have the mapping from integer to string.
 
-    3. If not all of the strings in the _dict are allowed formats for
+    3. If not all the strings in the _dict are allowed formats for
        this class, define a property _allowed_values with a list of
        values (strings) that are allowed.  (See, for example,
        ImageFormatConverter.)  If they are all allowed formats, you can
@@ -125,16 +126,19 @@ class FormatConverter( EnumConverter ):
     _dict_filtered = None
     _dict_inverse = None
 
+
 class ImageFormatConverter( FormatConverter ):
     _allowed_values = ['fits', 'hdf5']
     _dict_filtered = None
     _dict_inverse = None
+
 
 class CutoutsFormatConverter( FormatConverter ):
     _dict = ImageFormatConverter._dict
     _allowed_values = ['fits', 'hdf5', 'jpg', 'png']
     _dict_filtered = None
     _dict_inverse = None
+
 
 class SourceListFormatConverter( EnumConverter ):
     _dict = {
@@ -144,6 +148,7 @@ class SourceListFormatConverter( EnumConverter ):
     _allowed_values = None
     _dict_filtered = None
     _dict_inverse = None
+
 
 class ImageTypeConverter( EnumConverter ):
     _dict = {
@@ -163,6 +168,7 @@ class ImageTypeConverter( EnumConverter ):
         14: 'ComTwiFlat',
         15: 'Fringe',
         16: 'Warped',
+        17: 'ComWarped',
     }
     _allowed_values = None
     _dict_filtered = None
@@ -322,25 +328,43 @@ image_badness_dict = {
 }
 image_badness_inverse = {EnumConverter.c(v): k for k, v in image_badness_dict.items()}
 
-# these are the ways a Cutouts object is allowed to be bad
-cutouts_badness_dict = {
-    21: 'Cosmic Ray',
-    22: 'Ghost',
-    23: 'Satellite',
-    24: 'Offset',
-    25: 'Bad Pixel',
-    26: 'Bleed Trail',
+
+# these are all the ways a PSF object is allowed to be bad
+psf_badness_dict = {
+    11: 'PSF Fit Failed',
 }
-cutouts_badness_inverse = {EnumConverter.c(v): k for k, v in cutouts_badness_dict.items()}
+psf_badness_inverse = {EnumConverter.c(v): k for k, v in psf_badness_dict.items()}
+
 
 # these are the ways a SourceList object is allowed to be bad
 source_list_badness_dict = {
-    41: 'X-Match Failed',
-    42: 'Big Residuals',
-    43: 'Few Sources',
-    44: 'Many Sources',
+    16: 'Few Sources',
+    17: 'Many Sources',
 }
 source_list_badness_inverse = {EnumConverter.c(v): k for k, v in source_list_badness_dict.items()}
+
+
+# these are the ways a WorldCoordinates/ZeroPoint object is allowed to be bad
+# mostly due to bad matches to the catalog
+catalog_match_badness_dict = {
+    21: 'No Catalog',
+    22: 'X-Match Failed',
+    23: 'Big Residuals',
+}
+catalog_match_badness_inverse = {EnumConverter.c(v): k for k, v in catalog_match_badness_dict.items()}
+
+
+# these are the ways a Cutouts object is allowed to be bad
+cutouts_badness_dict = {
+    41: 'Cosmic Ray',
+    42: 'Ghost',
+    43: 'Satellite',
+    44: 'Offset',
+    45: 'Bad Pixel',
+    46: 'Bleed Trail',
+}
+cutouts_badness_inverse = {EnumConverter.c(v): k for k, v in cutouts_badness_dict.items()}
+
 
 # join the badness:
 data_badness_dict = {0: 'Good'}

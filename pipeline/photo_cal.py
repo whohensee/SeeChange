@@ -273,5 +273,8 @@ class PhotCalibrator:
             ds.zp = ZeroPoint( source_list=ds.sources, provenance=prov, zp=zpval, dzp=dzpval,
                                aper_cor_radii=sources.aper_rads, aper_cors=apercors )
 
+            ds.image.zero_point_estimate = ds.zp.zp  # TODO: should we only write if the property is None?
+            # TODO: we should also add a limiting magnitude calculation here.
+
         # make sure the DataStore is returned to be used in the next step
         return ds

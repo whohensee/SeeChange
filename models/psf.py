@@ -9,8 +9,8 @@ from sqlalchemy.ext.hybrid import hybrid_property
 
 from astropy.io import fits
 
-from models.base import Base, SeeChangeBase, AutoIDMixin, FileOnDiskMixin, _logger
-from models.enums_and_bitflags import PSFFormatConverter
+from models.base import Base, SeeChangeBase, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness, _logger
+from models.enums_and_bitflags import PSFFormatConverter, psf_badness_inverse
 
 # NOTE.  As of this writing, the only format for PSFs we were
 # considering was the output of PSFEx.  As such, some stuff here may not
@@ -26,7 +26,7 @@ from models.enums_and_bitflags import PSFFormatConverter
 # for different formats.
 
 
-class PSF( Base, AutoIDMixin, FileOnDiskMixin ):
+class PSF(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
     __tablename__ = 'psfs'
 
     _format = sa.Column(
@@ -149,6 +149,9 @@ class PSF( Base, AutoIDMixin, FileOnDiskMixin ):
     # Right now, this may be PSF specific, in that it assumes
     # there's a header and data from a FITS file, and a votable
     # from the xml file
+    def _get_inverse_badness(self):
+        """Get a dict with the allowed values of badness that can be assigned to this object"""
+        return psf_badness_inverse
 
     def __init__( self, *args, **kwargs ):
         FileOnDiskMixin.__init__( self, **kwargs )

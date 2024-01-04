@@ -14,7 +14,15 @@ from astropy.io import fits
 from util.config import Config
 from pipeline.utils import read_fits_image, parse_ra_hms_to_deg, parse_dec_dms_to_deg
 
-from models.base import Base, SeeChangeBase, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, SmartSession
+from models.base import (
+    Base,
+    SeeChangeBase,
+    AutoIDMixin,
+    FileOnDiskMixin,
+    SpatiallyIndexed,
+    SmartSession,
+    HasBitFlagBadness,
+)
 from models.instrument import guess_instrument, get_instrument_instance
 from models.provenance import Provenance
 
@@ -148,7 +156,7 @@ class ExposureImageIterator:
             raise StopIteration
 
 
-class Exposure(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed):
+class Exposure(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagBadness):
 
     __tablename__ = "exposures"
 
@@ -271,14 +279,6 @@ class Exposure(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed):
         doc='Name of the instrument used to take the exposure. '
     )
 
-    # Removing this ; telescope is uniquely determined by instrument
-    # telescope = sa.Column(
-    #     sa.Text,
-    #     nullable=False,
-    #     index=True,
-    #     doc='Telescope used to take the exposure. '
-    # )
-
     project = sa.Column(
         sa.Text,
         nullable=False,
@@ -300,50 +300,6 @@ class Exposure(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed):
         index=True,
         doc='Bitflag for this exposure. Good exposures have a bitflag of 0. '
             'Bad exposures are each bad in their own way (i.e., have different bits set). '
-    )
-
-    @hybrid_property
-    def bitflag(self):
-        return self._bitflag
-
-    @bitflag.inplace.expression
-    def bitflag(cls):
-        return cls._bitflag
-
-    @bitflag.inplace.setter
-    def bitflag(self, value):
-        allowed_bits = 0
-        for i in image_badness_inverse.values():
-            allowed_bits += 2 ** i
-        if value & ~allowed_bits != 0:
-            raise ValueError(f'Bitflag value {bin(value)} has bits set that are not allowed.')
-        self._bitflag = value
-
-    @property
-    def badness(self):
-        """
-        A comma separated string of keywords describing
-        why this data is not good, based on the bitflag.
-        """
-        return bitflag_to_string(self.bitflag, data_badness_dict)
-
-    @badness.setter
-    def badness(self, value):
-        """Set the badness for this exposure using a comma separated string. """
-        self.bitflag = string_to_bitflag(value, image_badness_inverse)
-
-    def append_badness(self, value):
-        """Add some keywords (in a comma separated string)
-        describing what is bad about this exposure.
-        The keywords will be added to the list "badness"
-        and the bitflag for this exposure will be updated accordingly.
-        """
-        self.bitflag = self.bitflag | string_to_bitflag(value, image_badness_inverse)
-
-    description = sa.Column(
-        sa.Text,
-        nullable=True,
-        doc='Free text comment about this exposure, e.g., why it is bad. '
     )
 
     origin_identifier = sa.Column(
@@ -386,39 +342,36 @@ class Exposure(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed):
         self._section_headers = None  # the headers for individual sections, directly from the FITS file
         self._raw_header = None  # the global (exposure level) header, directly from the FITS file
         self.type = 'Sci'  # default, can override using kwargs
+        self._instrument_object = None
+        self._bitflag = 0
 
         # manually set all properties (columns or not, but don't
         # overwrite instance methods) Do this once here, because some of
         # the values are going to be needed by upcoming function calls.
-        # (See "chicken and egg" comment below).  We will run this exact
-        # code again later so that the keywords can override what's
-        # detected from the header.
+        # We will run this exact code again later so that the keywords
+        # can override what's detected from the header.
         self.set_attributes_from_dict( kwargs )
 
-        # a default provenance for exposures
-        if self.provenance is None:
-            codeversion = Provenance.get_code_version()
-            self.provenance = Provenance( code_version=codeversion, process='load_exposure' )
-            self.provenance.update_id()
+        # must have Instrument to invent a filename (and initialize Provenance)
+        # but if not given, it can be guessed from the filepath
+        if self.filepath is None and self.instrument is None:
+            raise ValueError( "Exposure.__init__: must give at least a filepath or an instrument" )
 
-        self._instrument_object = None
-        self._bitflag = 0
-
-        # Bit of a chicken and egg problem here...
-        # For filepath, invent_filepath tries to use the instrument
-        # For instrument, guess_instrument tries to use the filepath
-        # If we have neither, we're in trouble.
         if self.filepath is None:
-            if self.instrument is None:
-                raise ValueError( "Exposure.__init__: must give at least a filepath or an instrument" )
-            else:
-                if invent_filepath:
-                    self.filepath = self.invent_filepath()
-                elif not self.nofile:
-                    raise ValueError("Exposure.__init__: must give a filepath to initialize an Exposure object. ")
+            # in this case, the instrument must have been given
+            if self.provenance is None:
+                self.make_provenance()  # a default provenance for exposures
+
+            if invent_filepath:
+                self.filepath = self.invent_filepath()
+            elif not self.nofile:
+                raise ValueError("Exposure.__init__: must give a filepath to initialize an Exposure object. ")
 
         if self.instrument is None:
             self.instrument = guess_instrument(self.filepath)
+
+        if self.provenance is None:
+            self.make_provenance()  # a default provenance for exposures
 
         # instrument_obj is lazy loaded when first getting it
         if current_file is None:
@@ -431,6 +384,26 @@ class Exposure(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed):
 
         if self.ra is not None and self.dec is not None:
             self.calculate_coordinates()  # galactic and ecliptic coordinates
+
+    def make_provenance(self):
+        """Generate a Provenance for this exposure.
+
+        The provenance will have only one parameter,
+        which is the instrument name.
+
+        Why use the instrument as a parameter of the exposure?
+        So we never have data products from different instruments
+        with the same provenance (this is important to how we group
+        the upstream images when e.g., making a coadd).
+        """
+        codeversion = Provenance.get_code_version()
+        self.provenance = Provenance(
+            code_version=codeversion,
+            process='load_exposure',
+            parameters={'instrument': self.instrument},
+            upstreams=[],
+        )
+        self.provenance.update_id()
 
     @sa.orm.reconstructor
     def init_on_load(self):
@@ -745,6 +718,19 @@ class Exposure(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed):
         FileOnDiskMixin behavior.
         """
         return False
+
+    def get_upstreams(self, session=None):
+        """An exposure does not have any upstreams. """
+        return []
+
+    def get_downstreams(self, session=None):
+        """An exposure has only Image objects as direct downstreams. """
+        from models.image import Image
+
+        with SmartSession(session) as session:
+            images = session.scalars(sa.select(Image).where(Image.exposure_id == self.id)).all()
+
+        return images
 
 
 if __name__ == '__main__':

@@ -6,7 +6,7 @@ import sqlalchemy as sa
 from models.base import SmartSession, FileOnDiskMixin
 from models.provenance import Provenance
 from models.exposure import Exposure
-from models.image import Image
+from models.image import Image, image_upstreams_association_table
 from models.source_list import SourceList
 from models.world_coordinates import WorldCoordinates
 from models.zero_point import ZeroPoint
@@ -65,8 +65,24 @@ def check_datastore_and_database_have_everything(exp_id, sec_id, ref_id, session
     assert zp is not None
     assert ds.zp.id == zp.id
 
+    # sub = session.scalars(
+    #     sa.select(Image).where(Image.new_image_id == im.id, Image.ref_image_id == ref_id)
+    # ).first()
+    aliased_table = sa.orm.aliased(image_upstreams_association_table)
     sub = session.scalars(
-        sa.select(Image).where(Image.new_image_id == im.id, Image.ref_image_id == ref_id)
+        sa.select(Image).join(
+            image_upstreams_association_table,
+            sa.and_(
+                image_upstreams_association_table.c.upstream_id == ref_id,
+                image_upstreams_association_table.c.downstream_id == Image.id,
+            )
+        ).join(
+            aliased_table,
+            sa.and_(
+                aliased_table.c.upstream_id == im.id,
+                aliased_table.c.downstream_id == Image.id,
+            )
+        )
     ).first()
 
     assert sub is not None

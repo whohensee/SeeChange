@@ -15,7 +15,7 @@ from sqlalchemy.sql.functions import coalesce
 import astropy.table
 from astropy.io import fits
 
-from models.base import Base, AutoIDMixin, FileOnDiskMixin, SeeChangeBase, _logger
+from models.base import Base, SmartSession, AutoIDMixin, FileOnDiskMixin, SeeChangeBase, HasBitFlagBadness, _logger
 from models.image import Image
 from models.enums_and_bitflags import (
     SourceListFormatConverter,
@@ -27,7 +27,8 @@ from models.enums_and_bitflags import (
 from util.util import ensure_file_does_not_exist
 import util.ldac
 
-class SourceList(Base, AutoIDMixin, FileOnDiskMixin):
+
+class SourceList(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
     """Encapsulates a source list.
 
     By default, uses SExtractor.
@@ -90,6 +91,20 @@ class SourceList(Base, AutoIDMixin, FileOnDiskMixin):
     def is_sub(cls):
         return sa.select(Image.is_sub).where(Image.id == cls.image_id).label('is_sub')
 
+    @hybrid_property
+    def is_coadd(self):
+        """Whether this source list is from a coadd image (detections),
+        or from a regular image (sources, the default).
+        """
+        if self.image is None:
+            return None
+        else:
+            return self.image.is_coadd
+
+    @is_coadd.expression
+    def is_coadd(cls):
+        return sa.select(Image.is_coadd).where(Image.id == cls.image_id).label('is_coadd')
+
     aper_rads = sa.Column(
         sa.ARRAY( sa.REAL ),
         nullable=True,
@@ -145,63 +160,9 @@ class SourceList(Base, AutoIDMixin, FileOnDiskMixin):
         )
     )
 
-    _bitflag = sa.Column(
-        sa.BIGINT,
-        nullable=False,
-        default=0,
-        index=True,
-        doc='Bitflag for this source list. Good source lists have a bitflag of 0. '
-            'Bad source list are each bad in their own way (i.e., have different bits set). '
-            'Will include all the bits from data used to make this source list '
-            '(e.g., the exposure it is based on). '
-    )
-
-    @hybrid_property
-    def bitflag(self):
-        return self._bitflag | self.image.bitflag
-
-    @bitflag.inplace.expression
-    @classmethod
-    def bitflag(cls):
-        stmt = sa.select(coalesce(cls._bitflag, 0).op('|')(Image.bitflag))
-        stmt = stmt.where(cls.image_id == Image.id)
-        stmt = stmt.scalar_subquery()
-        return stmt
-
-    @bitflag.setter
-    def bitflag(self, value):
-        self._bitflag = value
-
-    @property
-    def badness(self):
-        """
-        A comma separated string of keywords describing
-        why this data is not good, based on the bitflag.
-        This includes all the reasons this data is bad,
-        including the parent data models that were used
-        to create this data (e.g., the Exposure underlying
-        the Image).
-        """
-        return bitflag_to_string(self.bitflag, data_badness_dict)
-
-    @badness.setter
-    def badness(self, value):
-        """Set the badness for this image using a comma separated string. """
-        self.bitflag = string_to_bitflag(value, source_list_badness_inverse)
-
-    def append_badness(self, value):
-        """Add some keywords (in a comma separated string)
-        describing what is bad about this image.
-        The keywords will be added to the list "badness"
-        and the bitflag for this image will be updated accordingly.
-        """
-        self.bitflag |= string_to_bitflag(value, source_list_badness_inverse)
-
-    description = sa.Column(
-        sa.Text,
-        nullable=True,
-        doc='Free text comment about this source list, e.g., why it is bad. '
-    )
+    def _get_inverse_badness(self):
+        """Get a dict with the allowed values of badness that can be assigned to this object"""
+        return source_list_badness_inverse
 
     def __init__(self, *args, **kwargs):
         FileOnDiskMixin.__init__(self, *args, **kwargs)
@@ -212,9 +173,13 @@ class SourceList(Base, AutoIDMixin, FileOnDiskMixin):
         self._info = None
 
         # manually set all properties (columns or not)
-        for key, value in kwargs.items():
-            if hasattr(self, key):
-                setattr(self, key, value)
+        self.set_attributes_from_dict(kwargs)
+
+    def __setattr__(self, key, value):
+        if key == 'image' and value is not None:
+            self._upstream_bitflag = value.bitflag
+
+        super().__setattr__(key, value)
 
     @orm.reconstructor
     def init_on_load(self):
@@ -325,7 +290,6 @@ class SourceList(Base, AutoIDMixin, FileOnDiskMixin):
         """A numpy array with uncertainties on y position"""
         return np.sqrt( self.vary )
 
-
     @property
     def good( self ):
         """A numpy array of boolean with length num_sources.
@@ -401,7 +365,6 @@ class SourceList(Base, AutoIDMixin, FileOnDiskMixin):
 
         return self._is_star
 
-
     def apfluxadu( self, apnum=0, ap=None ):
 
         """Return two numpy arrays with aperture flux values and errors
@@ -442,7 +405,6 @@ class SourceList(Base, AutoIDMixin, FileOnDiskMixin):
             return self.data['FLUX_APER'], self.data['FLUXERR_APER']
         else:
             return self.data['FLUX_APER'][:, apnum], self.data['FLUXERR_APER'][:, apnum]
-
 
     def psffluxadu( self ):
         """Return two numpy arrays with psf-weighted flux values and errors.
@@ -684,7 +646,6 @@ class SourceList(Base, AutoIDMixin, FileOnDiskMixin):
                 arr[col] +=1
         return arr
 
-
     def ds9_regfile( self, regfile, color='green', radius=2, width=2, whichsources='all', clobber=True ):
         """Write a DS9 region file with circles on the sources.
 
@@ -730,6 +691,23 @@ class SourceList(Base, AutoIDMixin, FileOnDiskMixin):
                     # +1 to go from C-coordinates to FITS-coordinates
                     ofp.write( f"image;circle({x+1},{y+1},{radius}) # color={color} width={width}\n" )
 
+    def get_upstreams(self, session=None):
+        """Get the image that was used to make this source list. """
+        with SmartSession(session) as session:
+            return session.scalars(sa.select(Image).where(Image.id == self.image_id)).all()
+
+    def get_downstreams(self, session=None):
+        """Get all the data products (WCSs and ZPs) that are made using this source list. """
+        from models.world_coordinates import WorldCoordinates
+        from models.zero_point import ZeroPoint
+
+        with SmartSession(session) as session:
+            wcs = session.scalars(sa.select(WorldCoordinates).where(WorldCoordinates.source_list_id == self.id)).all()
+            zps = session.scalars(sa.select(ZeroPoint).where(ZeroPoint.source_list_id == self.id)).all()
+
+        return wcs + zps
+
+
 # add "property" attributes to SourceList referencing the image for convenience
 for att in [
     'section_id',
@@ -740,4 +718,8 @@ for att in [
     'instrument',
     'instrument_object',
 ]:
-    setattr(SourceList, att, property(fget=lambda self, att=att: getattr(self.image, att) if self.image is not None else None))
+    setattr(
+        SourceList,
+        att,
+        property(fget=lambda self, att=att: getattr(self.image, att) if self.image is not None else None)
+    )

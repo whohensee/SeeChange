@@ -8,10 +8,6 @@ from models.base import FileOnDiskMixin, SmartSession
 from models.image import Image
 from pipeline.preprocessing import Preprocessor
 
-# Gotta include this to make sure decam gets registered
-# in Instrument's list of classes
-import models.decam
-
 
 def test_preprocessing( decam_example_exposure, decam_default_calibrators ):
     # The decam_default_calibrators fixture is included so that
@@ -69,7 +65,7 @@ def test_preprocessing( decam_example_exposure, decam_default_calibrators ):
             assert ( archpath.parent / f'{archpath.name}{suffix}' ).is_file()
 
         with SmartSession() as session:
-            q = session.query( Image ).filter( Image.filepath==ds.image.filepath )
+            q = session.query( Image ).filter( Image.filepath == ds.image.filepath )
             assert q.count() == 1
             imobj = q.first()
             assert imobj.filepath_extensions == [ '.image.fits', '.flags.fits', '.weight.fits' ]

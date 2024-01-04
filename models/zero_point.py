@@ -4,7 +4,8 @@ import sqlalchemy as sa
 from sqlalchemy import orm
 from sqlalchemy.ext.associationproxy import association_proxy
 
-from models.base import Base, AutoIDMixin
+from models.base import Base, AutoIDMixin, HasBitFlagBadness
+from models.enums_and_bitflags import catalog_match_badness_inverse
 
 
 class ZeroPoint(Base, AutoIDMixin):
@@ -80,6 +81,10 @@ class ZeroPoint(Base, AutoIDMixin):
               "single aperture applies across the entire image, which should be OK given that the "
               "pipeline isn't expected to have photometry to better than a couple of percent." )
     )
+
+    def _get_inverse_badness(self):
+        """Get a dict with the allowed values of badness that can be assigned to this object"""
+        return catalog_match_badness_inverse
 
     def get_aper_cor( self, rad ):
         """Return the aperture correction for a given aperture radius in pixels.

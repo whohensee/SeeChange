@@ -115,7 +115,6 @@ class Provenance(Base):
         secondary=provenance_self_association_table,
         primaryjoin='provenances.c.id == provenance_upstreams.c.downstream_id',
         secondaryjoin='provenances.c.id == provenance_upstreams.c.upstream_id',
-        # back_populates="downstreams",
         passive_deletes=True,
         lazy='selectin',  # should be able to get upstream_hashes without a session!
     )
@@ -175,13 +174,7 @@ class Provenance(Base):
 
     @property
     def upstream_hashes(self):
-        if self.upstreams is None:
-            return []
-        else:
-            hashes = set( [ u.id for u in self.upstreams ] )
-            hashes = list(hashes)
-            hashes.sort()
-            return hashes
+        return self.upstream_ids  # hash and ID are the same now
 
     def __init__(self, **kwargs):
         """

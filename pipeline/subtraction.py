@@ -55,13 +55,12 @@ class Subtractor:
                 raise ValueError(f'Cannot find an image corresponding to the datastore inputs: {ds.get_inputs()}')
 
             # look for a reference that has to do with the current image
-            ref = ds.get_reference_image(session=session)
+            ref = ds.get_reference(session=session)
             if ref is None:
                 raise ValueError(
                     f'Cannot find a reference image corresponding to the datastore inputs: {ds.get_inputs()}'
                 )
-
-            sub_image = Image.from_ref_and_new(ref, image)
+            sub_image = Image.from_ref_and_new(ref.image, image)
             # TODO: implement the subtraction algorithm here
             #  I put in a really stupid workaround becuase for some reason
             #  the reference FITS file and the exposure FITS file are not
@@ -69,7 +68,7 @@ class Subtractor:
             #  and some extra rows and columns that need to be trimmed).
             #  I have a feeling this will be solved when we insert the
             #  alignment phase into the subtraction. See issue #128
-            sub_image.data = image.data[:100, :100] - ref.data[:100, :100]
+            sub_image.data = image.data[:100, :100] - ref.image.data[:100, :100]
             if sub_image.provenance is None:
                 sub_image.provenance = prov
             else:

@@ -14,97 +14,102 @@ from models.source_list import SourceList
 
 from tests.conftest import ImageCleanup
 
-@pytest.mark.skipif( os.getenv('RUN_SLOW_TESTS') is None, reason="Set RUN_SLOW_TESTS to run this test" )
-def test_source_list_bitflag(sources, demo_image, provenance_base, provenance_extra):
+
+def test_source_list_bitflag(sim_sources, demo_image, provenance_base, provenance_extra):
     filenames = []
     with SmartSession() as session:
-        sources.provenance = provenance_extra
+        sim_sources.provenance = provenance_extra
         demo_image.provenance = provenance_base
         _ = ImageCleanup.save_image(demo_image, archive=True)
 
         filenames.append(demo_image.get_fullpath(as_list=True)[0])
-        sources.save(no_archive=False)
-        filenames.append(sources.get_fullpath(as_list=True)[0])
-        sources = sources.recursive_merge( session )
-        session.add(sources)
+        sim_sources.save(no_archive=False)
+        filenames.append(sim_sources.get_fullpath(as_list=True)[0])
+        sim_sources = sim_sources.recursive_merge( session )
+        session.add(sim_sources)
         session.commit()
 
-        assert demo_image.id is not None  # was added along with sources
-        assert sources.id is not None
-        assert sources.image_id == demo_image.id
+        assert demo_image.id is not None  # was added along with sim_sources
+        assert sim_sources.id is not None
+        assert sim_sources.image_id == demo_image.id
 
         # all these data products should have bitflag zero
-        assert sources.bitflag == 0
-        assert sources.badness == ''
+        assert sim_sources.bitflag == 0
+        assert sim_sources.badness == ''
 
         # try to find this using the bitflag hybrid property
-        sources2 = session.scalars(sa.select(SourceList).where(SourceList.bitflag == 0)).all()
-        assert sources.id in [s.id for s in sources2]
-        sources2x = session.scalars(sa.select(SourceList).where(SourceList.bitflag > 0)).all()
-        assert sources.id not in [s.id for s in sources2x]
+        sim_sources2 = session.scalars(sa.select(SourceList).where(SourceList.bitflag == 0)).all()
+        assert sim_sources.id in [s.id for s in sim_sources2]
+        sim_sources2x = session.scalars(sa.select(SourceList).where(SourceList.bitflag > 0)).all()
+        assert sim_sources.id not in [s.id for s in sim_sources2x]
 
         # now add a badness to the image and exposure
         demo_image.badness = 'Saturation'
         demo_image.exposure.badness = 'Banding'
-
+        demo_image.exposure.update_downstream_badness(session)
         session.add(demo_image)
         session.commit()
 
         assert demo_image.bitflag == 2 ** 1 + 2 ** 3
         assert demo_image.badness == 'Banding, Saturation'
 
-        assert sources.bitflag == 2 ** 1 + 2 ** 3
-        assert sources.badness == 'Banding, Saturation'
+        assert sim_sources.bitflag == 2 ** 1 + 2 ** 3
+        assert sim_sources.badness == 'Banding, Saturation'
 
         # try to find this using the bitflag hybrid property
-        sources3 = session.scalars(sa.select(SourceList).where(SourceList.bitflag == 2 ** 1 + 2 ** 3)).all()
-        assert sources.id in [s.id for s in sources3]
-        sources3x = session.scalars(sa.select(SourceList).where(SourceList.bitflag == 0)).all()
-        assert sources.id not in [s.id for s in sources3x]
+        sim_sources3 = session.scalars(sa.select(SourceList).where(SourceList.bitflag == 2 ** 1 + 2 ** 3)).all()
+        assert sim_sources.id in [s.id for s in sim_sources3]
+        sim_sources3x = session.scalars(sa.select(SourceList).where(SourceList.bitflag == 0)).all()
+        assert sim_sources.id not in [s.id for s in sim_sources3x]
 
         # now add some badness to the source list itself
 
         # cannot add an image badness to a source list
         with pytest.raises(ValueError, match='Keyword "Banding" not recognized in dictionary'):
-            sources.badness = 'Banding'
+            sim_sources.badness = 'Banding'
 
         # add badness that works with source lists (e.g., cross-match failures)
-        sources.badness = 'few sources'
-        session.add(sources)
+        sim_sources.badness = 'few sources'
+        session.add(sim_sources)
         session.commit()
 
-        assert sources.bitflag == 2 ** 1 + 2 ** 3 + 2 ** 43
-        assert sources.badness == 'Banding, Saturation, Few Sources'
+        assert sim_sources.bitflag == 2 ** 1 + 2 ** 3 + 2 ** 16
+        assert sim_sources.badness == 'Banding, Saturation, Few Sources'
 
         # try to find this using the bitflag hybrid property
-        sources4 = session.scalars(sa.select(SourceList).where(SourceList.bitflag == 2 ** 1 + 2 ** 3 + 2 ** 43)).all()
-        assert sources.id in [s.id for s in sources4]
-        sources4x = session.scalars(sa.select(SourceList).where(SourceList.bitflag == 0)).all()
-        assert sources.id not in [s.id for s in sources4x]
+        sim_sources4 = session.scalars(sa.select(SourceList).where(SourceList.bitflag == 2 ** 1 + 2 ** 3 + 2 ** 16)).all()
+        assert sim_sources.id in [s.id for s in sim_sources4]
+        sim_sources4x = session.scalars(sa.select(SourceList).where(SourceList.bitflag == 0)).all()
+        assert sim_sources.id not in [s.id for s in sim_sources4x]
 
         # removing the badness from the exposure is updated directly to the source list
         demo_image.exposure.bitflag = 0
+        demo_image.exposure.update_downstream_badness(session)
         session.add(demo_image)
         session.commit()
 
         assert demo_image.badness == 'Saturation'
-        assert sources.badness == 'Saturation, Few Sources'
+        assert sim_sources.badness == 'Saturation, Few Sources'
 
         # check the database queries still work
-        sources5 = session.scalars(sa.select(SourceList).where(SourceList.bitflag == 2 ** 3 + 2 ** 43)).all()
-        assert sources.id in [s.id for s in sources5]
-        sources5x = session.scalars(sa.select(SourceList).where(SourceList.bitflag == 0)).all()
-        assert sources.id not in [s.id for s in sources5x]
+        sim_sources5 = session.scalars(sa.select(SourceList).where(SourceList.bitflag == 2 ** 3 + 2 ** 16)).all()
+        assert sim_sources.id in [s.id for s in sim_sources5]
+        sim_sources5x = session.scalars(sa.select(SourceList).where(SourceList.bitflag == 0)).all()
+        assert sim_sources.id not in [s.id for s in sim_sources5x]
+
+        # make sure new SourceList object gets the badness from the Image
+        new_sources = SourceList(image=demo_image)
+        assert new_sources.badness == 'Saturation'
+
 
 def test_invent_filepath( provenance_base ):
-    base = pathlib.Path( FileOnDiskMixin.local_path )
     imgargs = { 'instrument': 'DemoInstrument',
                 'section_id': 0,
                 'type': "Sci",
                 'format': "fits",
                 'ra': 12.3456,
                 'dec': -0.42,
-                'mjd': 64738.64,
+                'mjd': 61738.64,
                 'filter': 'r',
                 'provenance': provenance_base }
 
@@ -114,7 +119,7 @@ def test_invent_filepath( provenance_base ):
 
     image = Image( **imgargs )
     sources = SourceList( image=image, format='sextrfits' )
-    assert sources.invent_filepath() == f'012/Demo_20360215_152136_0_r_Sci_{provenance_base.id[:6]}.sources.fits'
+    assert sources.invent_filepath() == f'012/Demo_20271129_152136_0_r_Sci_{provenance_base.id[:6]}.sources.fits'
 
     image = Image( filepath="this.is.a.test", **imgargs )
     sources = SourceList( image=image, format='sextrfits' )
@@ -239,6 +244,7 @@ def test_write_sextractor():
             assert hdr.cards[0].comment == 'Comment'
     finally:
         pathlib.Path( sources.get_fullpath() ).unlink( missing_ok=True )
+
 
 def test_calc_apercor( decam_example_reduced_image_ds ):
     sources = decam_example_reduced_image_ds.get_sources()

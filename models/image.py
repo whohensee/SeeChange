@@ -3,10 +3,7 @@ import math
 import sqlalchemy as sa
 from sqlalchemy import orm
 from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.orm.exc import DetachedInstanceError
 from sqlalchemy.ext.hybrid import hybrid_property
-from sqlalchemy.orm import aliased
-from sqlalchemy.sql.functions import coalesce
 from sqlalchemy.schema import CheckConstraint
 
 from astropy.time import Time
@@ -17,37 +14,43 @@ import astropy.units as u
 
 from pipeline.utils import read_fits_image, save_fits_image_file
 
-from models.base import SeeChangeBase, Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners
+from models.base import (
+    Base,
+    SeeChangeBase,
+    SmartSession,
+    AutoIDMixin,
+    FileOnDiskMixin,
+    SpatiallyIndexed,
+    FourCorners,
+    HasBitFlagBadness,
+    _logger
+)
 from models.exposure import Exposure
 from models.instrument import get_instrument_instance
-from models.psf import PSF
 from models.enums_and_bitflags import (
     ImageFormatConverter,
     ImageTypeConverter,
     image_badness_inverse,
-    data_badness_dict,
-    image_preprocessing_dict,
-    string_to_bitflag,
-    bitflag_to_string,
 )
 
 import util.config as config
 
-image_source_self_association_table = sa.Table(
-    'image_sources',
+# links many-to-many Image to all the Images used to create it
+image_upstreams_association_table = sa.Table(
+    'image_upstreams_association',
     Base.metadata,
-    sa.Column('source_id',
+    sa.Column('upstream_id',
               sa.Integer,
-              sa.ForeignKey('images.id', ondelete="CASCADE", name='image_sources_source_id_fkey'),
+              sa.ForeignKey('images.id', ondelete="CASCADE", name='image_upstreams_association_upstream_id_fkey'),
               primary_key=True),
-    sa.Column('combined_id',
+    sa.Column('downstream_id',
               sa.Integer,
-              sa.ForeignKey('images.id',ondelete="CASCADE", name='image_sources_combined_id_fkey'),
+              sa.ForeignKey('images.id', ondelete="CASCADE", name='image_upstreams_association_downstream_id_fkey'),
               primary_key=True),
 )
 
 
-class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners):
+class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, HasBitFlagBadness):
 
     __tablename__ = 'images'
 
@@ -91,90 +94,93 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners):
         )
     )
 
-    source_images = orm.relationship(
-        "Image",
-        secondary=image_source_self_association_table,
-        primaryjoin='images.c.id == image_sources.c.combined_id',
-        secondaryjoin='images.c.id == image_sources.c.source_id',
+    upstream_images = orm.relationship(
+        'Image',
+        secondary=image_upstreams_association_table,
+        primaryjoin='images.c.id == image_upstreams_association.c.downstream_id',
+        secondaryjoin='images.c.id == image_upstreams_association.c.upstream_id',
+        cascade='save-update, merge, refresh-expire, expunge',
         passive_deletes=True,
-        lazy='selectin',  # should be able to get source_images without a session!
-        order_by='images.c.mjd',  # in chronological order (of the exposure beginnings)
-        doc=(
-            "Images used to produce a multi-image object "
-            "(e.g., an images stack, reference, difference, super-flat, etc)."
-        )
+        lazy='selectin',
+        order_by='images.c.mjd',  # in chronological order of exposure start time
+        doc='Images used to produce a multi-image object, like a coadd or a subtraction. '
     )
 
-    ref_image_id = sa.Column(
-        sa.ForeignKey('images.id', ondelete="CASCADE", name='images_ref_image_id_fkey'),
+    ref_image_index = sa.Column(
+        sa.Integer,
         nullable=True,
-        index=True,
         doc=(
-            "ID of the reference image used to produce a difference image. "
-            "Only set for difference images. This usually refers to a coadd image. "
-        )
-    )
-
-    ref_image = orm.relationship(
-        'Image',
-        cascade='save-update, merge, refresh-expire, expunge',
-        primaryjoin='images.c.ref_image_id == images.c.id',
-        uselist=False,
-        remote_side='Image.id',
-        doc=(
-            "Reference image used to produce a difference image. "
-            "Only set for difference images. This usually refers to a coadd image. "
-        )
-    )
-
-    new_image_id = sa.Column(
-        sa.ForeignKey('images.id', ondelete="CASCADE", name='images_new_image_id_fkey'),
-        nullable=True,
-        index=True,
-        doc=(
-            "ID of the new image used to produce a difference image. "
-            "Only set for difference images. This usually refers to a regular image. "
-        )
-    )
-
-    new_image = orm.relationship(
-        'Image',
-        cascade='save-update, merge, refresh-expire, expunge',
-        primaryjoin='images.c.new_image_id == images.c.id',
-        uselist=False,
-        remote_side='Image.id',
-        doc=(
-            "New image used to produce a difference image. "
-            "Only set for difference images. This usually refers to a regular image. "
+            "Index of the reference image used to produce this image, in the upstream_images list. "
         )
     )
 
     @property
-    def is_coadd(self):
-        try:
-            if self.source_images is not None and len(self.source_images) > 0:
-                return True
-        except DetachedInstanceError:
-            if not self.is_sub and self.exposure_id is None:
-                return True
+    def ref_image(self):
+        if self.ref_image_index is None:
+            return None
+        if len(self.upstream_images) <= self.ref_image_index:
+            raise RuntimeError(f'Index {self.ref_image_index} is out of range for upstream images!')
+        return self.upstream_images[self.ref_image_index]
 
-        return False
+    @ref_image.setter
+    def ref_image(self, value):
+        if value is None:
+            self.ref_image_index = None
+        else:
+            if not isinstance(value, Image):
+                raise ValueError(f"ref_image must be an Image object. Got {type(value)} instead.")
+            if value not in self.upstream_images:
+                raise ValueError(f"ref_image must be in the upstream_images list. Got {value} instead.")
 
-    @hybrid_property
-    def is_sub(self):
-        try:
-            if self.ref_image is not None and self.new_image is not None:
-                return True
-        except DetachedInstanceError:
-            if self.ref_image_id is not None and self.new_image_id is not None:
-                return True
+            # make sure the upstream_images list is sorted by mjd:
+            self.upstream_images.sort(key=lambda x: x.mjd)
+            self.ref_image_index = self.upstream_images.index(value)
 
-        return False
+    new_image_index = sa.Column(
+        sa.Integer,
+        nullable=True,
+        doc=(
+            "Index of the new image used to produce a difference image, in the upstream_images list. "
+        )
+    )
 
-    @is_sub.inplace.expression
-    @classmethod
-    def is_sub(cls):
-        return cls.ref_image_id.isnot(None) & cls.new_image_id.isnot(None)
+    @property
+    def new_image(self):
+        if self.new_image_index is None:
+            return None
+        if len(self.upstream_images) <= self.new_image_index:
+            raise RuntimeError(f'Index {self.new_image_index} is out of range for upstream images!')
+        return self.upstream_images[self.new_image_index]
+
+    @new_image.setter
+    def new_image(self, value):
+        if value is None:
+            self.new_image_index = None
+        else:
+            if not isinstance(value, Image):
+                raise ValueError(f"new_image must be an Image object. Got {type(value)} instead.")
+            if value not in self.upstream_images:
+                raise ValueError(f"new_image must be in the upstream_images list. Got {value} instead.")
+
+            # make sure the upstream_images list is sorted by mjd:
+            self.upstream_images.sort(key=lambda x: x.mjd)
+            self.new_image_index = self.upstream_images.index(value)
+
+    is_sub = sa.Column(
+        sa.Boolean,
+        nullable=False,
+        default=False,
+        index=True,
+        doc='Is this a subtraction image.'
+    )
+
+    is_coadd = sa.Column(
+        sa.Boolean,
+        nullable=False,
+        default=False,
+        index=True,
+        doc='Is this image made by stacking multiple images.'
+    )
 
     _type = sa.Column(
         sa.SMALLINT,
@@ -182,7 +188,7 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners):
         default=ImageTypeConverter.convert('Sci'),
         index=True,
         doc=(
-            "Type of image. One of: Sci, Diff, Bias, Dark, DomeFlat, SkyFlat, TwiFlat, "
+            "Type of image. One of: [Sci, Diff, Bias, Dark, DomeFlat, SkyFlat, TwiFlat, Warped] "
             "or any of the above types prepended with 'Com' for combined "
             "(e.g., a ComSci image is a science image combined from multiple exposures)."
             "Saved as an integer in the database, but converted to a string when read. "
@@ -340,285 +346,66 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners):
         doc=( 'Has a WCS been solved for this image.  This should be set to true after astro_cal '
               'has been run, or for images (like subtractions) that are derived from other images '
               'with complete WCSes that can be copied.  This does not promise that the "latest and '
-              'greatest" astrometric calibration is what\'s in the image header, only that there is '
+              'greatest" astrometric calibration is what is in the image header, only that there is '
               'one from the pipeline that should be good for visual identification of positions.' )
     )
 
-    _bitflag = sa.Column(
-        sa.BIGINT,
+    sky_sub_done = sa.Column(
+        sa.BOOLEAN,
         nullable=False,
-        default=0,
-        index=True,
-        doc='Bitflag for this image. Good images have a bitflag of 0. '
-            'Bad images are each bad in their own way (i.e., have different bits set). '
-            'The bitflag will include this value, bit-wise-or-ed with the bitflags of the '
-            'exposure or images used to make this image. '
+        default=False,
+        index=False,
+        doc='Has the sky been subtracted from this image. '
     )
 
-    @hybrid_property
-    def bitflag(self):
-        bf = self._bitflag
-        if self.source_images is not None and len(self.source_images) > 0:
-            for img in self.source_images:
-                if img.bitflag is not None:
-                    bf |= img.bitflag
-        elif self.ref_image is not None and self.new_image is not None:
-            if self.ref_image.bitflag is not None:
-                bf |= self.ref_image.bitflag
-            if self.new_image.bitflag is not None:
-                bf |= self.new_image.bitflag
-        elif self.exposure is not None:
-            if self.exposure.bitflag is not None:
-                bf |= self.exposure.bitflag
-        else:
-            raise RuntimeError('Cannot get bitflag without source images, ref_image, new_image, or exposure.')
-
-        return bf
-
-    @bitflag.inplace.expression
-    @classmethod
-    def bitflag(cls):
-
-        class ImTable:
-            """
-            This is a helper class that defines the recursive relationship
-            between Image and its parents. Some images will have an Exposure parent,
-            some will have a ref/new pair of images as parents, and some will have
-            a list of source images as parents. Each instance of ImTable will contain
-            aliased versions of the Image and Exposure tables, and will have a role
-            to play (is it a new image, a ref image, a source image, etc).
-            The role helps tell the following code how to join the SQL tables together
-            when we construct the select expression.
-
-
-            """
-            def __init__(self, role):
-                """
-                Create a new ImTable with a given role.
-                The roles can be "first", "ref", "new", and "src".
-                The first is the Image table we are querying on.
-                The ref/new are images that act as the pair used for subtraction.
-                The src are a list of images used to build up a coadd.
-
-                The self.dad attribute links back to the ImTable above this one.
-                The self.ref, self.new and self.src are references to the ImTable
-                objects below this one.
-                Thus we get a linked tree of ImTables that forms the blueprint for
-                the massive join we want to make in the end.
-                """
-                self.role = role
-                self.img = aliased(Image)
-                self.exp = aliased(Exposure)
-                self.dad = None
-                self.ref = None
-                self.new = None
-                self.src = None
-                if role == 'src':
-                    self.association_table = aliased(image_source_self_association_table)
-
-            def make_children(self, iterations=3):
-                """
-                Recursively make the child ImTable objects for this ImTable.
-                Will stop when iterations reach 0.
-                """
-                if iterations < 1:
-                    return
-
-                self.ref = ImTable(role='ref')
-                self.ref.dad = self
-                self.ref.make_children(iterations=iterations-1)
-
-                self.new = ImTable(role='new')
-                self.new.dad = self
-                self.new.make_children(iterations=iterations-1)
-
-                self.src = ImTable(role='src')
-                self.src.dad = self
-                self.src.make_children(iterations=iterations-1)
-
-            def add_to_columns(self, col=None):
-                """
-                Add the column that we want to select. If col=None will just create a column
-                based on the current img._bitflag and its associated exp._bitflag.
-                This only happens for the first ImTable (the one we are querying on).
-
-                If col is given, it is "or'ed" together using op.('|')(bit_or(...)).
-                The internal bit_or is used to aggregate the bitflags of an array of images
-                (e.g., the source images).
-
-                The resulting col is returned, so it can be used recursively
-                or just put into the select statement in the end.
-
-                Since we use coalesce(bitflag, 0) and bit_or(bitflag) any null
-                values in these tables will be ignored/replaced by zero.
-                So only if we have a non-zero value in any of the bitflags
-                will the final bitflag be non-zero (it will be the bit or of all bitflags).
-                """
-                if self.role == 'first':
-                    return self.img._bitflag.op('|')(coalesce(self.exp._bitflag, 0))
-                else:
-                    return col.op('|')(
-                        coalesce(sa.func.bit_or(self.img._bitflag), 0).op('|')(
-                            coalesce(sa.func.bit_or(self.exp._bitflag), 0)
-                        )
-                    )
-
-            def add_children_to_columns(self, col):
-                """
-                Applies the add_to_column to the children ImTables.
-                This is re-applied recursively to the children's children
-                until a generation is reached that has None as children.
-                """
-                if self.ref is None or self.new is None or self.src is None:
-                    return col
-
-                col = self.ref.add_to_columns(col)
-                col = self.new.add_to_columns(col)
-                col = self.src.add_to_columns(col)
-
-                col = self.ref.add_children_to_columns(col)
-                col = self.new.add_children_to_columns(col)
-                col = self.src.add_children_to_columns(col)
-
-                return col
-
-            def add_to_joins(self, stmt):
-                """
-                Updates the "stmt" (select statement) with the joins needed
-                to get the data from more and more aliased versions of Image
-                and Exposure tables, so we get the bitflag of all the objects
-                that were used to make the image we are querying on.
-
-                We outerjoin the exposures, ref/new pairs and the source images,
-                and wherever there is no parent of that type we just allow a null row.
-                Those null rows are not included in the bit_or aggregate function,
-                and in case all rows are null, we use coalesce to get 0 instead of null.
-
-                Each role has a different join condition, and the joins are applied
-                recursively to the children ImTables.
-
-                For any of the roles, after we join the correct Image table,
-                we need to also join the Exposures used to make (some) of those images.
-
-                The function returns the "stmt" after modifying it, so it can be used
-                recursively and at the end it can be used as a select statement for
-                the hybrid_property expression.
-                """
-                if self.role == 'first':
-                    stmt = stmt.select_from(self.img)
-                elif self.role == 'ref':
-                    stmt = stmt.outerjoin(
-                        self.img, self.dad.img.ref_image_id == self.img.id
-                    )
-                elif self.role == 'new':
-                    stmt = stmt.outerjoin(
-                        self.img, self.dad.img.new_image_id == self.img.id
-                    )
-                elif self.role == 'src':
-                    stmt = stmt.outerjoin(
-                        self.association_table, self.association_table.c.combined_id == self.dad.img.id
-                    ).outerjoin(
-                        self.img, self.association_table.c.source_id == self.img.id
-                    )
-                # also add the exposures for each image
-                stmt = stmt.outerjoin(
-                        self.exp, self.img.exposure_id == self.exp.id
-                    )
-                return stmt
-
-            def add_children_to_joins(self, stmt):
-                """
-                Recursively apply the joins of add_to_joins
-                to all of this ImTable's children, and to their
-                children, until a generation of children that has
-                None as their children.
-                """
-                if self.ref is None or self.new is None or self.src is None:
-                    return stmt
-
-                stmt = self.ref.add_to_joins(stmt)
-                stmt = self.new.add_to_joins(stmt)
-                stmt = self.src.add_to_joins(stmt)
-
-                stmt = self.ref.add_children_to_joins(stmt)
-                stmt = self.new.add_children_to_joins(stmt)
-                stmt = self.src.add_children_to_joins(stmt)
-
-                return stmt
-
-        # end of ImTable class
-        # start of the bitflag expression built up from those ImTables:
-
-        # define a recursive structure with X number of layers
-        # each Image has zero or one Exposures, but can also
-        # have one ref/new pair of images, or a list of source images
-        # each of those images (ref, new, sources) has their own parents,
-        # up to the number of recursions allowed.
-        # This step only builds up the blueprint for the relationships
-        # between the different aliased versions of the Image table (and Exposure table).
-        first_table = ImTable(role='first')
-        first_table.make_children(iterations=3)  # recursively add three layers of children
-
-        # this is where we add the column that needs to get selected
-        # e.g., the _bitflag of each table, using op('|') to combine them
-        columns = first_table.add_to_columns()
-        columns = first_table.add_children_to_columns(columns)
-
-        # here we join more and more tables in, including
-        # the exposures associated with each image,
-        # and the images recursively associated with other images
-        stmt = sa.select(columns)
-        stmt = first_table.add_to_joins(stmt)
-        stmt = first_table.add_children_to_joins(stmt)
-
-        # since we aggregate every associated image/exposure using bit_or,
-        # we need to make sure to group by the top level image and exposure combination
-        stmt = stmt.group_by(first_table.img.id, first_table.exp.id)
-
-        # this last where makes sure that when querying on Image externally
-        # each Image row will correspond to one result, hence the scalar_subquery
-        stmt = stmt.where(cls.id == first_table.img.id).scalar_subquery()
-
-        return stmt
-
-    @bitflag.inplace.setter
-    def bitflag(self, value):
-        allowed_bits = 0
-        for i in image_badness_inverse.values():
-            allowed_bits += 2 ** i
-        if value & ~allowed_bits != 0:
-            raise ValueError(f'Bitflag value {bin(value)} has bits set that are not allowed.')
-        self._bitflag = value
-
-    @property
-    def badness(self):
-        """
-        A comma separated string of keywords describing
-        why this data is not good, based on the bitflag.
-        This includes all the reasons this data is bad,
-        including the parent data models that were used
-        to create this data (e.g., the Exposure underlying
-        the Image).
-        """
-        return bitflag_to_string(self.bitflag, data_badness_dict)
-
-    @badness.setter
-    def badness(self, value):
-        """Set the badness for this image using a comma separated string. """
-        self.bitflag = string_to_bitflag(value, image_badness_inverse)
-
-    def append_badness(self, value):
-        """Add some keywords (in a comma separated string)
-        describing what is bad about this image.
-        The keywords will be added to the list "badness"
-        and the bitflag for this image will be updated accordingly.
-        """
-        self.bitflag |= string_to_bitflag(value, image_badness_inverse)
-
-    description = sa.Column(
-        sa.Text,
+    fwhm_estimate = sa.Column(
+        sa.Float,
         nullable=True,
-        doc='Free text comment about this image, e.g., why it is bad. '
+        index=True,
+        doc=(
+            'FWHM estimate for the image, in arcseconds, '
+            'from the first time the image was processed.'
+        )
+    )
+
+    zero_point_estimate = sa.Column(
+        sa.Float,
+        nullable=True,
+        index=True,
+        doc=(
+            'Zero point estimate for the image, '
+            'from the first time the image was processed.'
+        )
+    )
+
+    lim_mag_estimate = sa.Column(
+        sa.Float,
+        nullable=True,
+        index=True,
+        doc=(
+            'Limiting magnitude estimate for the image, '
+            'from the first time the image was processed.'
+        )
+    )
+
+    bkg_mean_estimate = sa.Column(
+        sa.Float,
+        nullable=True,
+        index=True,
+        doc=(
+            'Background estimate for the image, '
+            'from the first time the image was processed.'
+        )
+    )
+
+    bkg_rms_estimate = sa.Column(
+        sa.Float,
+        nullable=True,
+        index=True,
+        doc=(
+            'Background RMS estimate for the image, '
+            'from the first time the image was processed.'
+        )
     )
 
     __table_args__ = (
@@ -627,6 +414,10 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners):
             name='md5sum_or_md5sum_extensions_check'
         ),
     )
+
+    def _get_inverse_badness(self):
+        """Get a dict with the allowed values of badness that can be assigned to this object"""
+        return image_badness_inverse
 
     def __init__(self, *args, **kwargs):
         FileOnDiskMixin.__init__(self, *args, **kwargs)
@@ -639,7 +430,10 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners):
         self._weight = None  # the inverse-variance array (2D float array)
         self._background = None  # an estimate for the background flux (2D float array)
         self._score = None  # the image after filtering with the PSF and normalizing to S/N units (2D float array)
-        self._psf = None  # a small point-spread-function image (a PSF object)
+        self.sources = None  # the sources extracted from this Image (optionally loaded)
+        self.psf = None  # the point-spread-function object (optionally loaded)
+        self.wcs = None  # the WorldCoordinates object (optionally loaded)
+        self.zp = None  # the zero-point object (optionally loaded)
 
         self._instrument_object = None
         self._bitflag = 0
@@ -652,6 +446,13 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners):
         if self.ra is not None and self.dec is not None:
             self.calculate_coordinates()  # galactic and ecliptic coordinates
 
+    def __setattr__(self, key, value):
+        if key == 'upstream_images':
+            # make sure the upstream_images list is sorted by mjd:
+            value.sort(key=lambda x: x.mjd)
+
+        super().__setattr__(key, value)
+
     @orm.reconstructor
     def init_on_load(self):
         Base.init_on_load(self)
@@ -663,9 +464,15 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners):
         self._weight = None
         self._background = None
         self._score = None
-        self._psf = None
+        self.sources = None
+        self.psf = None
+        self.wcs = None
+        self.zp = None
 
         self._instrument_object = None
+        this_object_session = orm.Session.object_session(self)
+        if this_object_session is not None:  # if just loaded, should usually have a session!
+            self.load_upstream_products(this_object_session)
 
     def set_corners_from_header_wcs( self ):
         wcs = WCS( self._raw_header )
@@ -692,7 +499,6 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners):
         self.dec_corner_01 = decs[1]
         self.dec_corner_10 = decs[2]
         self.dec_corner_11 = decs[3]
-
 
     @classmethod
     def from_exposure(cls, exposure, section_id):
@@ -834,9 +640,18 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners):
         """
         Create a new Image object from a list of other Image objects.
         This is the first step in making a multi-image (usually a coadd).
+        Do not use this to make subtractions! use from_ref_and_new instead.
+
         The output image doesn't have any data, and is created with
         nofile=True. It is up to the calling application to fill in the
         data, flags, weight, etc. using the appropriate preprocessing tools.
+
+        The Image objects used as inputs must have their own data products
+        loaded before calling this method, so their provenances will be recorded.
+        The provenance of the output object should be generated, then a call to
+        output.provenance.upstreams = output.get_upstream_provenances()
+        will make sure the provenance has the correct upstreams.
+
         After that, the data needs to be saved to file, and only then
         can the new Image be added to the database.
 
@@ -853,14 +668,24 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners):
         if len(images) < 1:
             raise ValueError("Must provide at least one image to combine.")
 
+        # sort images by mjd:
+        images = sorted(images, key=lambda x: x.mjd)
+
         output = Image(nofile=True)
 
-        # for each attribute, check that all the images have the same value
+        # use the first image to apply these attributes (some must be uniform across images)
         for att in ['section_id', 'instrument', 'telescope', 'type', 'filter', 'project', 'target']:
-            values = set([getattr(image, att) for image in images])
-            if len(values) != 1:
-                raise ValueError(f"Cannot combine images with different {att} values: {values}")
-            output.__setattr__(att, values.pop())
+            # TODO: should replace this condition with a check that RA and Dec are overlapping?
+            #  in that case: what do we consider close enough? how much overlap is reasonable?
+            #  another issue: what happens if the section_id is different, what would be the
+            #  value for the subtracted image? can it live without a value entirely?
+            #  the same goes for target. what about coadded images? can they have no section_id??
+            if att in ['filter', 'section_id', 'target']:  # check these values are the same across all images
+                values = set([str(getattr(image, att)) for image in images])
+                if len(values) != 1:
+                    raise ValueError(f"Cannot combine images with different {att} values: {values}")
+            setattr(output, att, getattr(images[0], att))
+
         # TODO: should RA and Dec also be exactly the same??
         output.ra = images[0].ra
         output.dec = images[0].dec
@@ -877,72 +702,110 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners):
         output.exp_time = sum([image.exp_time for image in images])
 
         # start MJD and end MJD
-        output.mjd = min([image.mjd for image in images])
-        output.end_mjd = max([image.end_mjd for image in images])
+        output.mjd = images[0].mjd  # assume sorted by start of exposures
+        output.end_mjd = max([image.end_mjd for image in images])  # exposure ends are not necessarily sorted
 
         # TODO: what about the header? should we combine them somehow?
         output.header = images[0].header
         output.raw_header = images[0].raw_header
 
-        output.source_images = images
         base_type = images[0].type
         if not base_type.startswith('Com'):
             output.type = 'Com' + base_type
+
+        output.upstream_images = images
+
+        # mark the first image as the reference (this can be overriden later when actually warping into one image)
+        output.ref_image_index = 0
+
+        output._upstream_bitflag = 0
+        for im in images:
+            output._upstream_bitflag |= im.bitflag
 
         # Note that "data" is not filled by this method, also the provenance is empty!
         return output
 
     @classmethod
-    def from_ref_and_new(cls, ref, new):
+    def from_ref_and_new(cls, ref_image, new_image):
+        return cls.from_new_and_ref(new_image, ref_image)
+
+    @classmethod
+    def from_new_and_ref(cls, new_image, ref_image):
         """
         Create a new Image object from a reference Image object and a new Image object.
         This is the first step in making a difference image.
+
         The output image doesn't have any data, and is created with
         nofile=True. It is up to the calling application to fill in the
         data, flags, weight, etc. using the appropriate preprocessing tools.
+
+        The Image objects used as inputs must have their own data products
+        loaded before calling this method, so their provenances will be recorded.
+        The provenance of the output object should be generated, then a call to
+        output.provenance.upstreams = output.get_upstream_provenances()
+        will make sure the provenance has the correct upstreams.
+
         After that, the data needs to be saved to file, and only then
         can the new Image be added to the database.
 
         Parameters
         ----------
-        ref: Image object
-            The reference image to use.
-        new: Image object
+        new_image: Image object
             The new image to use.
+        ref_image: Image object
+            The reference image to use.
 
         Returns
         -------
         output: Image
             The new Image object. It would not have any data variables or filepath.
         """
+        if ref_image is None:
+            raise ValueError("Must provide a reference image.")
+        if new_image is None:
+            raise ValueError("Must provide a new image.")
+
         output = Image(nofile=True)
 
         # for each attribute, check the two images have the same value
-        for att in ['section_id', 'instrument', 'telescope', 'filter', 'project', 'target']:
-            ref_value = getattr(ref, att)
-            new_value = getattr(new, att)
+        for att in ['instrument', 'telescope', 'project', 'section_id', 'filter', 'target']:
+            ref_value = getattr(ref_image, att)
+            new_value = getattr(new_image, att)
 
             if att == 'section_id':
                 ref_value = str(ref_value)
                 new_value = str(new_value)
-            if ref_value != new_value:
+
+            # TODO: should replace this condition with a check that RA and Dec are overlapping?
+            #  in that case: what do we consider close enough? how much overlap is reasonable?
+            #  another issue: what happens if the section_id is different, what would be the
+            #  value for the subtracted image? can it live without a value entirely?
+            #  the same goes for target. what about coadded images? can they have no section_id??
+            if att in ['section_id', 'filter', 'target'] and ref_value != new_value:
                 raise ValueError(
                     f"Cannot combine images with different {att} values: "
                     f"{ref_value} and {new_value}. "
                 )
-            output.__setattr__(att, new_value)
-        # TODO: should RA and Dec also be exactly the same??
+
+            # assign the values from the new image
+            setattr(output, att, new_value)
+
+        output.upstream_images = [ref_image, new_image]
+        output.ref_image_index = 0
+        output.new_image_index = 1
+
+        output._upstream_bitflag = 0
+        output._upstream_bitflag |= ref_image.bitflag
+        output._upstream_bitflag |= new_image.bitflag
 
         # get some more attributes from the new image
         for att in ['exp_time', 'mjd', 'end_mjd', 'header', 'raw_header', 'ra', 'dec',
                     'ra_corner_00', 'ra_corner_01', 'ra_corner_10', 'ra_corner_11',
                     'dec_corner_00', 'dec_corner_01', 'dec_corner_10', 'dec_corner_11' ]:
-            output.__setattr__(att, getattr(new, att))
+            output.__setattr__(att, getattr(new_image, att))
 
-        output.ref_image = ref
-        output.new_image = new
         output.type = 'Diff'
-        if new.type.startswith('Com'):
+        if new_image.type.startswith('Com'):
             output.type = 'ComDiff'
 
         # Note that "data" is not filled by this method, also the provenance is empty!
@@ -1242,6 +1105,292 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners):
                 if not ( gotim and gotweight and gotflags ):
                     raise FileNotFoundError( "Failed to load at least one of image, weight, flags" )
 
+    def get_upstream_provenances(self):
+        """Collect the provenances for all upstream objects.
+
+        This does not recursively go back to the upstreams of the upstreams.
+        It gets only the provenances of the immediate upstream objects.
+
+        Provenances that are the same (have the same hash) are combined (returned only once).
+
+        This is what would generally be put into a new provenance's upstreams list.
+
+        Note that upstream_images must each have the other related products
+        like sources, psf, wcs, etc. already loaded.
+        This happens when the objects are used to produce, e.g., a coadd or
+        a subtraction image, but they would not necessarily be loaded automatically from the DB.
+        To load those products (assuming all were previously committed with their own provenances)
+        use the load_upstream_products() method.
+
+        IMPORTANT RESTRICTION:
+        When putting images in the upstream of a combined image (coadded or subtracted),
+        if there are multiple images with the same provenance, they must also have
+        loaded downstream products (e.g., SourceList) that have the same provenance.
+        This is used to maintain the ability of a downstream to recover its upstreams
+        using the provenance (which is the definition of why we need a provenance).
+        The images could still be associated with multiple different products with
+        different provenances, but not have them loaded into the relevant in-memory
+        attributes of the Image objects when creating the coadd.
+        Images from different instruments, or a coadded reference vs. a new image,
+        would naturally have different provenances, so their products could (and indeed must)
+        have different provenances. But images from the same instrument with the same provenance
+        should all be produced using the same code and parameters, otherwise it will be impossible
+        to know which product was processed in which way.
+
+        Returns
+        -------
+        list of Provenance objects:
+            A list of all the provenances for the upstream objects.
+        """
+        output = []
+        # split the images into groups based on their provenance hash
+        im_prov_hashes = list(set([im.provenance.id for im in self.upstream_images]))
+        for im_prov_hash in im_prov_hashes:
+
+            im_group = [im for im in self.upstream_images if im.provenance.id == im_prov_hash]
+            sources_provs = {}
+            psf_provs = {}
+            wcs_provs = {}
+            zp_provs = {}
+
+            for im in im_group:
+                if im.sources is not None:
+                    sources_provs[im.sources.provenance.id] = im.sources.provenance
+                if im.psf is not None:
+                    psf_provs[im.psf.provenance.id] = im.psf.provenance
+                if im.wcs is not None:
+                    wcs_provs[im.wcs.provenance.id] = im.wcs.provenance
+                if im.zp is not None:
+                    zp_provs[im.zp.provenance.id] = im.zp.provenance
+
+            if len(sources_provs) > 1:
+                raise ValueError(
+                    f"Image group with provenance {im_prov_hash} "
+                    "has SourceList objects with different provenances."
+                )
+            if len(psf_provs) > 1:
+                raise ValueError(
+                    f"Image group with provenance {im_prov_hash} "
+                    "has PSF objects with different provenances."
+                )
+            if len(wcs_provs) > 1:
+                raise ValueError(
+                    f"Image group with provenance {im_prov_hash} "
+                    "has WCS objects with different provenances."
+                )
+            if len(zp_provs) > 1:
+                raise ValueError(
+                    f"Image group with provenance {im_prov_hash} "
+                    "has ZeroPoint objects with different provenances."
+                )
+            output += [im_group[0].provenance]
+            output += list(sources_provs.values())
+            output += list(psf_provs.values())
+            output += list(wcs_provs.values())
+            output += list(zp_provs.values())
+
+        # because each Image group has a different prov-hash, no products from different groups
+        # could ever have the same provenance (it is hashed using the upstreams) so we don't need
+        # to also check for repeated provenances between groups
+        return output
+
+    def load_upstream_products(self, session=None):
+        """Make sure each upstream image has its related products loaded.
+
+        This only works after all the images and products are committed to the database,
+        with provenances consistent with what is saved in this Image's provenance
+        and its own upstreams.
+        """
+        prov_ids = self.provenance.upstream_ids
+        # check to make sure there is any need to load
+        need_to_load = False
+        for im in self.upstream_images:
+            if im.sources is None or im.sources.provenance_id not in prov_ids:
+                need_to_load = True
+                break
+            if im.psf is None or im.psf.provenance_id not in prov_ids:
+                need_to_load = True
+                break
+            if im.wcs is None or im.wcs.provenance_id not in prov_ids:
+                need_to_load = True
+                break
+            if im.zp is None or im.zp.provenance_id not in prov_ids:
+                need_to_load = True
+                break
+
+        if not need_to_load:
+            return
+
+        from models.source_list import SourceList
+        from models.psf import PSF
+        from models.world_coordinates import WorldCoordinates
+        from models.zero_point import ZeroPoint
+
+        # split the images into groups based on their provenance hash
+        im_prov_hashes = list(set([im.provenance.id for im in self.upstream_images]))
+
+        with SmartSession(session) as session:
+            for im_prov_hash in im_prov_hashes:
+                im_group = [im for im in self.upstream_images if im.provenance.id == im_prov_hash]
+                im_ids = [im.id for im in im_group]
+
+                # get all the products for all images in this group
+                sources_result = session.scalars(
+                    sa.select(SourceList).where(
+                        SourceList.image_id.in_(im_ids),
+                        SourceList.provenance_id.in_(prov_ids),
+                    )
+                ).all()
+                sources_ids = [s.id for s in sources_result]
+
+                psf_results = session.scalars(
+                    sa.select(PSF).where(
+                        PSF.image_id.in_(im_ids),
+                        PSF.provenance_id.in_(prov_ids),
+                    )
+                ).all()
+
+                wcs_results = session.scalars(
+                    sa.select(WorldCoordinates).where(
+                        WorldCoordinates.source_list_id.in_(sources_ids),
+                        WorldCoordinates.provenance_id.in_(prov_ids),
+                    )
+                ).all()
+
+                zp_results = session.scalars(
+                    sa.select(ZeroPoint).where(
+                        ZeroPoint.source_list_id.in_(sources_ids),
+                        ZeroPoint.provenance_id.in_(prov_ids),
+                    )
+                ).all()
+
+                for im in im_group:
+                    sources = [s for s in sources_result if s.image_id == im.id]  # only get the sources for this image
+                    if len(sources) > 1:
+                        raise ValueError(
+                            f"Image {im.id} has more than one SourceList matching upstream provenance."
+                        )
+                    elif len(sources) == 1:
+                        im.sources = sources[0]
+
+                    psfs = [p for p in psf_results if p.image_id == im.id]  # only get the psfs for this image
+                    if len(psfs) > 1:
+                        raise ValueError(
+                            f"Image {im.id} has more than one PSF matching upstream provenance."
+                        )
+                    elif len(psfs) == 1:
+                        im.psf = psfs[0]
+
+                    wcses = [w for w in wcs_results if w.image_id == im.id]  # only get the wcses for this image
+                    if len(wcses) > 1:
+                        raise ValueError(
+                            f"Image {im.id} has more than one WCS matching upstream provenance."
+                        )
+                    elif len(wcses) == 1:
+                        im.wcs = wcses[0]
+
+                    zps = [z for z in zp_results if z.image_id == im.id]  # only get the zps for this image
+                    if len(zps) > 1:
+                        raise ValueError(
+                            f"Image {im.id} has more than one ZeroPoint matching upstream provenance."
+                        )
+                    elif len(zps) == 1:
+                        im.zp = zps[0]
+
+    def get_upstreams(self, session=None):
+        """
+        Get the upstream images and associated products that were used to make this image.
+        This includes the reference/new image (for subtractions) or the set of images
+        used to build a coadd.  Each image will have some products that were generated
+        from it (source lists, PSFs, etc.) that also count as upstreams to this image.
+
+        Parameters
+        ----------
+        session: SQLAlchemy session (optional)
+            The session to use to query the database.  If not provided,
+            will open a new session that automatically closes at
+            the end of the function.
+
+        Returns
+        -------
+        upstreams: list of Image objects
+            The upstream images.
+        """
+        with SmartSession(session) as session:
+            self.load_upstream_products(session)
+            upstreams = []
+            # get the exposure
+            try:
+                exposure = self.exposure
+            except sa.orm.exc.DetachedInstanceError:
+                exposure = None
+            if exposure is None and self.exposure_id is not None:
+                exposure = session.scalars(sa.select(Exposure).where(Exposure.id == self.exposure_id)).first()
+
+            if exposure is not None:
+                upstreams.append(exposure)
+
+            # get the upstream images and associated products
+            for im in self.upstream_images:
+                upstreams.append(im)
+                if im.sources is not None:
+                    upstreams.append(im.sources)
+                if im.psf is not None:
+                    upstreams.append(im.psf)
+                if im.wcs is not None:
+                    upstreams.append(im.wcs)
+                if im.zp is not None:
+                    upstreams.append(im.zp)
+
+        return upstreams
+
+    def get_downstreams(self, session=None):
+        """Get all the objects that were created based on this image. """
+        # avoids circular import
+        from models.source_list import SourceList
+        from models.psf import PSF
+        from models.world_coordinates import WorldCoordinates
+        from models.zero_point import ZeroPoint
+
+        downstreams = []
+        with SmartSession(session) as session:
+            # get all psfs that are related to this image (regardless of provenance)
+            psfs = session.scalars(
+                sa.select(PSF).where(PSF.image_id == self.id)
+            ).all()
+            downstreams += psfs
+
+            # get all source lists that are related to this image (regardless of provenance)
+            sources = session.scalars(
+                sa.select(SourceList).where(SourceList.image_id == self.id)
+            ).all()
+            downstreams += sources
+
+            wcses = []
+            zps = []
+            for s in sources:
+                wcses += session.scalars(
+                    sa.select(WorldCoordinates).where(WorldCoordinates.source_list_id == s.id)
+                ).all()
+
+                zps += session.scalars(
+                    sa.select(ZeroPoint).where(ZeroPoint.source_list_id == s.id)
+                ).all()
+
+            # now look for other images that were created based on this one
+            # ref: https://docs.sqlalchemy.org/en/20/orm/join_conditions.html#self-referential-many-to-many
+            images = session.scalars(
+                sa.select(Image).join(
+                    image_upstreams_association_table, sa.and_(
+                        image_upstreams_association_table.c.upstream_id == self.id,
+                        image_upstreams_association_table.c.downstream_id == Image.id,
+                    )
+                ).order_by(Image.mjd).distinct()
+            ).all()
+            downstreams += images
+
+            return downstreams
+
     @property
     def data(self):
         """
@@ -1321,96 +1470,9 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners):
     def score(self, value):
         self._score = value
 
-    # This version exists in case a calling function
-    # wants to use its own session rather than the
-    # temporarily-created session in the psf property
-    def get_psf(self, session):
-        """Return the PSF object for this image.
-
-        Parameters
-        ----------
-          session: Session or SmartSession (optional)
-            The database session to use.
-
-        Returns
-        -------
-          PSF object, or None if there isn't one for this image.
-
-        """
-        if self._psf is None:
-            with SmartSession(session) as session:
-                q = session.query( PSF ).filter( PSF.image_id==self.id )
-                if q.count() > 0:
-                    self._psf = q.first()
-        return self._psf
-
-    @property
-    def psf(self):
-        """The PSF object for this image.  Will query the database if there's not one already in the object."""
-        if self._psf is None:
-            self._psf = self.get_psf()
-        return self._psf
-
-    @psf.setter
-    def psf(self, value):
-        self._psf = value
-
 
 if __name__ == '__main__':
     filename = '/home/guyn/Dropbox/python/SeeChange/data/DECam_examples/c4d_221104_074232_ori.fits.fz'
     e = Exposure(filename)
     im = Image.from_exposure(e, section_id=1)
 
-# this is an example for the recursive select emitted by the Image.bitflag hybrid property expression
-# if you set the recursion level to 1, this is the expression you are supposed to get
-# I wrote this first, then made it into a recursive function using the ImTable helper class
-# if you need some help figuring out what is going on in that class then this may be useful:
-
-# from sqlalchemy import func
-# from sqlalchemy.orm import aliased
-# from sqlalchemy.sql import coalesce
-
-# first_images = aliased(Image)
-# first_exposures = aliased(Exposure)
-# ref_images = aliased(Image)
-# ref_exposures = aliased(Exposure)
-# new_images = aliased(Image)
-# new_exposures = aliased(Exposure)
-# source_images = aliased(Image)
-# source_exposures = aliased(Exposure)
-#
-# stmt = sa.select(
-#     coalesce(first_images._bitflag, 0).op('|')(
-#         coalesce(first_exposures._bitflag, 0)
-#     ).op('|')(
-#         coalesce(bit_or(ref_images._bitflag), 0)
-#     ).op('|')(
-#         coalesce(bit_or(ref_exposures._bitflag), 0)
-#     ).op('|')(
-#         coalesce(bit_or(new_images._bitflag), 0)
-#     ).op('|')(
-#         coalesce(bit_or(new_exposures._bitflag), 0)
-#     ).op('|')(
-#         coalesce(bit_or(source_images._bitflag), 0)
-#     ).op('|')(
-#         coalesce(bit_or(source_exposures._bitflag), 0)
-#     )
-# ).select_from(Image).outerjoin(
-#     first_exposures, first_exposures.id == first_images.exposure_id
-# ).outerjoin(
-#     ref_images, ref_images.id == first_images.ref_image_id
-# ).outerjoin(
-#     ref_exposures, ref_exposures.id == ref_images.exposure_id
-# ).outerjoin(
-#     new_images, new_images.id == first_images.new_image_id
-# ).outerjoin(
-#     new_exposures, new_exposures.id == new_images.exposure_id
-# ).outerjoin(
-#     image_source_self_association_table, image_source_self_association_table.c.combined_id == first_images.id,
-# ).outerjoin(
-#     source_images, sa.and_(image_source_self_association_table.c.source_id == source_images.id)
-# ).outerjoin(
-#     source_exposures, source_exposures.id == source_images.exposure_id
-# ).group_by(
-#     first_images.id, first_exposures.id
-# ).where(Image.id == first_images.id).scalar_subquery()

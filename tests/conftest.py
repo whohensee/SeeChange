@@ -27,11 +27,13 @@ from models.provenance import CodeVersion, Provenance
 from models.exposure import Exposure
 from models.image import Image
 from models.datafile import DataFile
-from models.references import ReferenceEntry
+from models.references import Reference
 from models.instrument import Instrument, get_instrument_instance
 from models.decam import DECam
 from models.source_list import SourceList
 from models.psf import PSF
+from models.world_coordinates import WorldCoordinates
+from models.zero_point import ZeroPoint
 from pipeline.data_store import DataStore
 from pipeline.preprocessing import Preprocessor
 from pipeline.detection import Detector
@@ -188,6 +190,28 @@ def provenance_extra( provenance_base ):
         session.commit()
         session.refresh(p)
         pid = p.id
+
+    yield p
+
+    try:
+        with SmartSession() as session:
+            session.execute(sa.delete(Provenance).where(Provenance.id == pid))
+            session.commit()
+    except Exception as e:
+        warnings.warn(str(e))
+
+
+@pytest.fixture
+def provenance_ref_uncommitted( provenance_base ):
+    p = Provenance(
+        process="reference",
+        code_version=provenance_base.code_version,
+        parameters={"test_key": uuid.uuid4().hex},
+        upstreams=[],
+        is_testing=True,
+    )
+    p.update_id()
+    pid = p.id
 
     yield p
 
@@ -554,18 +578,21 @@ def ref_for_decam_example_image( provenance_base ):
 
 
 @pytest.fixture
-def reference_entry_decam_example(ref_for_decam_example_image):
-    ref_entry = ReferenceEntry()
+def reference_entry_decam_example(ref_for_decam_example_image, provenance_ref_uncommitted):
+    ref_entry = Reference()
     ref_entry.image = ref_for_decam_example_image
     ref_entry.validity_start = Time(50000, format='mjd', scale='utc').isot
     ref_entry.validity_end = Time(60500, format='mjd', scale='utc').isot
 
+    ref_entry.provenance = provenance_ref_uncommitted
+
     yield ref_entry
 
-    # with SmartSession() as session:
-    #     ref_entry = session.merge(ref_entry)
-    #     session.execute(sa.delete(ReferenceEntry).where(ReferenceEntry.id == ref_entry.id))
-    #     session.commit()
+    with SmartSession() as session:
+        ref_entry = session.merge(ref_entry)
+        session.delete(ref_entry)
+        session.commit()
+
 
 @pytest.fixture
 def decam_small_image(decam_example_raw_image):
@@ -685,8 +712,8 @@ for i in range(2, 10):
 
 
 @pytest.fixture
-def reference_entry(provenance_base, provenance_extra):
-    ref_entry = None
+def sim_reference(provenance_base, provenance_extra, provenance_ref_uncommitted):
+    ref = None
     filter = np.random.choice(list('grizY'))
     target = rnd_str(6)
     ra = np.random.uniform(0, 360)
@@ -711,47 +738,52 @@ def reference_entry(provenance_base, provenance_extra):
         im.save()
         images.append(im)
 
-    ref = Image.from_images(images)
-    ref.data = np.mean(np.array([im.data for im in images]), axis=0)
+    ref_image = Image.from_images(images)
+    ref_image.data = np.mean(np.array([im.data for im in images]), axis=0)
 
     provenance_extra.process = 'coaddition'
-    ref.provenance = provenance_extra
-    ref.save()
+    ref_image.provenance = provenance_extra
+    ref_image.save()
 
-    ref_entry = ReferenceEntry()
-    ref_entry.image = ref
-    ref_entry.validity_start = Time(50000, format='mjd', scale='utc').isot
-    ref_entry.validity_end = Time(58500, format='mjd', scale='utc').isot
-    ref_entry.section_id = 0
-    ref_entry.filter = filter
-    ref_entry.target = target
+    ref = Reference()
+    ref.image = ref_image
+    ref.provenance = provenance_ref_uncommitted
+    ref.provenance.upstreams = [ref_image.provenance]  # add the source list provenance and other data products
+    ref.provenance.update_id()
+    ref.validity_start = Time(50000, format='mjd', scale='utc').isot
+    ref.validity_end = Time(58500, format='mjd', scale='utc').isot
+    ref.section_id = 0
+    ref.filter = filter
+    ref.target = target
 
-    with SmartSession() as session:
-        ref_entry.image = session.merge( ref_entry.image )
-        session.add(ref_entry)
-        session.commit()
+    yield ref
 
-    yield ref_entry
+    if ref is not None:
+        with SmartSession() as session:
+            ref = session.merge(ref)
+            for im in ref.image.upstream_images:
+                im.exposure.delete_from_disk_and_database(session=session, commit=False)
+                im.delete_from_disk_and_database(session=session, commit=False)
+            if ref.image is not None:
+                ref.image.delete_from_disk_and_database(session=session, commit=False)
+            if ref.sources is not None:
+                ref.sources.delete_from_disk_and_database(session=session, commit=False)
+            if ref.psf is not None:
+                ref.psf.delete_from_disk_and_database(session=session, commit=False)
+            if ref.wcs is not None and ref.wcs.id is not None:
+                session.execute(sa.delete(WorldCoordinates).where(WorldCoordinates.id == ref.wcs.id))
+            if ref.zp is not None and ref.zp.id is not None:
+                session.execute(sa.delete(ZeroPoint).where(ZeroPoint.id == ref.zp.id))
+            if sa.inspect(ref).persistent:
+                session.delete(ref)
+            elif ref in session:
+                session.expunge(ref)
 
-    try:
-        if ref_entry is not None:
-            with SmartSession() as session:
-                ref_entry = session.merge(ref_entry)
-                ref = ref_entry.image
-                for im in ref.source_images:
-                    exp = im.exposure
-                    exp.delete_from_disk_and_database(session=session, commit=False)
-                    im.delete_from_disk_and_database(session=session, commit=False)
-                ref.delete_from_disk_and_database(session=session, commit=False)
-
-                session.commit()
-
-    except Exception as e:
-        warnings.warn(str(e))
+            session.commit()
 
 
 @pytest.fixture
-def sources(demo_image):
+def sim_sources(demo_image):
     num = 100
     x = np.random.uniform(0, demo_image.raw_data.shape[1], num)
     y = np.random.uniform(0, demo_image.raw_data.shape[0], num)

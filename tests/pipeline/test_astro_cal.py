@@ -1,4 +1,3 @@
-import pathlib
 import pytest
 import hashlib
 import uuid
@@ -8,13 +7,11 @@ import numpy as np
 from astropy.wcs import WCS
 from astropy.io import fits
 
-from util.exceptions import CatalogNotFoundError, BadMatchException
-from util import ldac
-from models.base import SmartSession, FileOnDiskMixin
+from util.exceptions import BadMatchException
+from models.base import SmartSession
 from models.image import Image
 from models.world_coordinates import WorldCoordinates
 from pipeline.astro_cal import AstroCalibrator
-from pipeline.catalog_tools import download_GaiaDR3, fetch_GaiaDR3_excerpt
 
 
 def test_solve_wcs_scamp_failures( gaiadr3_excerpt, example_ds_with_sources_and_psf ):

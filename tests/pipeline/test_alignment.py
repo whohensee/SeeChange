@@ -23,10 +23,11 @@ def test_warp_decam( decam_example_reduced_image_ds_with_zp, ref_for_decam_examp
         refds = det.run( refds )
         refds.sources.filepath = f'{refds.image.filepath}.sources.fits'
         refds.psf.filepath = refds.image.filepath
-        refds.save_and_commit( no_archive=True )
+        # refds.save_and_commit( no_archive=True )
+        refds.sources.save(no_archive=True)
         ast = AstroCalibrator()
         refds = ast.run( refds )
-        refds.save_and_commit( no_archive=True )
+        # refds.wcs.save( no_archive=True )
         phot = PhotCalibrator()
         refds = phot.run( refds )
 

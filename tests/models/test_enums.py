@@ -15,6 +15,7 @@ def test_enums_zero_values():
     assert 0 not in ImageTypeConverter.dict
     assert data_badness_dict[0] == 'Good'
 
+
 def test_converter_dict():
     # Probably should test them all, but test just these
     #  three and trust that if it works, then the inheritance
@@ -37,6 +38,7 @@ def test_converter_dict():
         14: 'ComTwiFlat',
         15: 'Fringe',
         16: 'Warped',
+        17: 'ComWarped',
     }
     assert FormatConverter.dict == {
         1: 'fits',
@@ -57,6 +59,7 @@ def test_converter_dict():
         16: 'fitsldac',
     }
     assert ImageFormatConverter.dict == { 1: 'fits', 2: 'hdf5' }
+
 
 def test_converter_convert():
     for cls in ( ImageFormatConverter, CutoutsFormatConverter, SourceListFormatConverter, ImageTypeConverter ):
