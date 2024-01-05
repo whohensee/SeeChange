@@ -18,7 +18,6 @@ from models.decam import DECam
 from models.exposure import Exposure
 
 
-
 def test_base_instrument_not_implemented():
     inst = Instrument()
 
@@ -30,6 +29,7 @@ def test_base_instrument_not_implemented():
 
     with pytest.raises(NotImplementedError):
         inst.get_filename_regex()
+
 
 def test_global_vs_sections_values():
     inst = DemoInstrument()
@@ -158,6 +158,7 @@ def test_instrument_offsets_and_filter_array_index():
     assert offN19[1] == pytest.approx( 10643, abs=1 )
     assert offS21[0] == pytest.approx( -7910, abs=1 )
     assert offS21[1] == pytest.approx( -4195, abs=1 )
+
 
 def test_instrument_inheritance_full_example():
     # define a new instrument class and make all the necessary overrides
@@ -291,11 +292,11 @@ def test_instrument_inheritance_full_example():
     assert im_data.sum() > 0
     assert abs(np.mean(im_data) - 10) < 0.1  # random numbers with Poisson distribution around lambda=10
 
+
 def test_demoim_search_notimplemented():
     inst = DemoInstrument()
     with pytest.raises( NotImplementedError ):
         inst.find_origin_exposures()
-
 
 
 # TODO: add more tests for e.g., loading FITS headers

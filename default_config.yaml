@@ -59,13 +59,23 @@ pipeline: {}
 preprocessing:
   use_sky_subtraction: False
 
-extraction: {}
+extraction:
+  measure_psf: true
+  threshold: 3.0
+  method: sextractor
 
 astro_cal:
   cross_match_catalog: GaiaDR3
+  solution_method: scamp
+  max_catalog_mag: [20.0]
+  mag_range_catalog: 4.0
+  min_catalog_stars: 50
 
 photo_cal:
   cross_match_catalog: GaiaDR3
+  max_catalog_mag: [20.0]
+  mag_range_catalog: 4.0
+  min_catalog_stars: 50
 
 subtraction:
   method: hotpants
@@ -82,7 +92,7 @@ measurement:
   aperture_radius: 3.0
   real_bogus_version: null
 
-# Specific configuration for specific instruments
+# Specific configuration for specific instruments.
 # Instruments should override the two defaults from
 # instrument_default; they may add additional
 # configuration that their code needs.

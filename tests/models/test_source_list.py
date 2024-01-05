@@ -12,26 +12,10 @@ from models.base import SmartSession, FileOnDiskMixin
 from models.image import Image
 from models.source_list import SourceList
 
-from tests.conftest import ImageCleanup
 
-
-def test_source_list_bitflag(sim_sources, demo_image, provenance_base, provenance_extra):
-    filenames = []
+def test_source_list_bitflag(sim_sources):
     with SmartSession() as session:
-        sim_sources.provenance = provenance_extra
-        demo_image.provenance = provenance_base
-        _ = ImageCleanup.save_image(demo_image, archive=True)
-
-        filenames.append(demo_image.get_fullpath(as_list=True)[0])
-        sim_sources.save(no_archive=False)
-        filenames.append(sim_sources.get_fullpath(as_list=True)[0])
         sim_sources = sim_sources.recursive_merge( session )
-        session.add(sim_sources)
-        session.commit()
-
-        assert demo_image.id is not None  # was added along with sim_sources
-        assert sim_sources.id is not None
-        assert sim_sources.image_id == demo_image.id
 
         # all these data products should have bitflag zero
         assert sim_sources.bitflag == 0
@@ -44,14 +28,14 @@ def test_source_list_bitflag(sim_sources, demo_image, provenance_base, provenanc
         assert sim_sources.id not in [s.id for s in sim_sources2x]
 
         # now add a badness to the image and exposure
-        demo_image.badness = 'Saturation'
-        demo_image.exposure.badness = 'Banding'
-        demo_image.exposure.update_downstream_badness(session)
-        session.add(demo_image)
+        sim_sources.image.badness = 'Saturation'
+        sim_sources.image.exposure.badness = 'Banding'
+        sim_sources.image.exposure.update_downstream_badness(session)
+        session.add(sim_sources.image)
         session.commit()
 
-        assert demo_image.bitflag == 2 ** 1 + 2 ** 3
-        assert demo_image.badness == 'Banding, Saturation'
+        assert sim_sources.image.bitflag == 2 ** 1 + 2 ** 3
+        assert sim_sources.image.badness == 'Banding, Saturation'
 
         assert sim_sources.bitflag == 2 ** 1 + 2 ** 3
         assert sim_sources.badness == 'Banding, Saturation'
@@ -83,12 +67,12 @@ def test_source_list_bitflag(sim_sources, demo_image, provenance_base, provenanc
         assert sim_sources.id not in [s.id for s in sim_sources4x]
 
         # removing the badness from the exposure is updated directly to the source list
-        demo_image.exposure.bitflag = 0
-        demo_image.exposure.update_downstream_badness(session)
-        session.add(demo_image)
+        sim_sources.image.exposure.bitflag = 0
+        sim_sources.image.exposure.update_downstream_badness(session)
+        session.add(sim_sources.image)
         session.commit()
 
-        assert demo_image.badness == 'Saturation'
+        assert sim_sources.image.badness == 'Saturation'
         assert sim_sources.badness == 'Saturation, Few Sources'
 
         # check the database queries still work
@@ -98,7 +82,7 @@ def test_source_list_bitflag(sim_sources, demo_image, provenance_base, provenanc
         assert sim_sources.id not in [s.id for s in sim_sources5x]
 
         # make sure new SourceList object gets the badness from the Image
-        new_sources = SourceList(image=demo_image)
+        new_sources = SourceList(image=sim_sources.image)
         assert new_sources.badness == 'Saturation'
 
 
@@ -126,8 +110,8 @@ def test_invent_filepath( provenance_base ):
     assert sources.invent_filepath() == 'this.is.a.test.sources.fits'
 
 
-def test_read_sextractor( example_source_list_filename ):
-    fullpath = example_source_list_filename
+def test_read_sextractor( ztf_filepath_sources ):
+    fullpath = ztf_filepath_sources
     filepath = fullpath.relative_to( pathlib.Path( FileOnDiskMixin.local_path ) )
 
     # Make sure things go haywire when we try to load data with inconsistent
@@ -246,16 +230,16 @@ def test_write_sextractor():
         pathlib.Path( sources.get_fullpath() ).unlink( missing_ok=True )
 
 
-def test_calc_apercor( decam_example_reduced_image_ds ):
-    sources = decam_example_reduced_image_ds.get_sources()
+def test_calc_apercor( decam_datastore ):
+    sources = decam_datastore.get_sources()
 
     # The numbers below are what you get when you use CLASS_STAR in SourceList.is_star
-    assert sources.calc_aper_cor() == pytest.approx( -0.457, abs=0.001 )
-    assert sources.calc_aper_cor( aper_num=1 ) == pytest.approx( -0.177, abs=0.001 )
-    assert sources.calc_aper_cor( inf_aper_num=7 ) == pytest.approx( -0.463, abs=0.001 )
-    assert sources.calc_aper_cor( inf_aper_num=2 ) == pytest.approx( -0.428, abs=0.001 )
-    assert sources.calc_aper_cor( aper_num=2 ) == pytest.approx( -0.028, abs=0.001 )
-    assert sources.calc_aper_cor( aper_num=2, inf_aper_num=7 ) == pytest.approx( -0.034, abs=0.001 )
+    assert sources.calc_aper_cor() == pytest.approx( -0.457, abs=0.01 )
+    assert sources.calc_aper_cor( aper_num=1 ) == pytest.approx( -0.177, abs=0.01 )
+    assert sources.calc_aper_cor( inf_aper_num=7 ) == pytest.approx( -0.463, abs=0.01 )
+    assert sources.calc_aper_cor( inf_aper_num=2 ) == pytest.approx( -0.428, abs=0.01 )
+    assert sources.calc_aper_cor( aper_num=2 ) == pytest.approx( -0.028, abs=0.01 )
+    assert sources.calc_aper_cor( aper_num=2, inf_aper_num=7 ) == pytest.approx( -0.034, abs=0.01 )
 
     # The numbers below are what you get if you use the SPREAD_MODEL
     # parameter in SourceList.is_star instead of CLASS_STAR

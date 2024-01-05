@@ -8,6 +8,7 @@ from astropy.table import Table
 
 import util.ldac
 
+
 def test_expected_failures():
     with pytest.raises( AttributeError, match="object has no attribute 'data'" ):
         util.ldac.convert_hdu_to_ldac( "string" )
@@ -20,8 +21,9 @@ def test_expected_failures():
     with pytest.raises( FileNotFoundError ):
         util.ldac.get_table_from_ldac( "this_file_does_not_exist" )
 
-def test_read_ldac( example_source_list_filename ):
-    fullpath = example_source_list_filename
+
+def test_read_ldac( ztf_filepath_sources ):
+    fullpath = ztf_filepath_sources
 
     tbl1, tbl2 = util.ldac.get_table_from_ldac( fullpath )
     assert isinstance( tbl1, fits.BinTableHDU )
@@ -51,6 +53,7 @@ def test_read_ldac( example_source_list_filename ):
     assert aper1.max() == pytest.approx( 335792.22, rel=1e-5 )
     assert aper1.mean() == pytest.approx( 9863.518, rel=1e-5 )
     assert aper1.std() == pytest.approx( 39851.023, rel=1e-4 )
+
 
 def test_save_ldac():
     fname = pathlib.Path( ''.join( np.random.choice( list('abcdefghijklmnopqrstuvwxyz'), 16 ) ) + '.fits' )

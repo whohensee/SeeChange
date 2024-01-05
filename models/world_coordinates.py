@@ -44,19 +44,21 @@ class WorldCoordinates(Base, AutoIDMixin, HasBitFlagBadness):
         doc="Text that containts FITS header cards (ASCII, \n-separated) with the header that defines this WCS"
     )
 
-    source_list_id = sa.Column(
+    sources_id = sa.Column(
         sa.ForeignKey('source_lists.id', ondelete='CASCADE', name='world_coordinates_source_list_id_fkey'),
         nullable=False,
         index=True,
         doc="ID of the source list this world coordinate system is associated with. "
     )
 
-    source_list = orm.relationship(
+    sources = orm.relationship(
         'SourceList',
+        cascade='save-update, merge, refresh-expire, expunge',
+        passive_deletes=True,
         doc="The source list this world coordinate system is associated with. "
     )
 
-    image = association_proxy( "source_list", "image" )
+    image = association_proxy( "sources", "image" )
 
     provenance_id = sa.Column(
         sa.ForeignKey('provenances.id', ondelete="CASCADE", name='world_coordinates_provenance_id_fkey'),

@@ -15,6 +15,7 @@ from util.config import Config
 # should this come from db.py instead?
 from models.base import SmartSession
 
+
 # put all the top-level pipeline parameters in the init of this class:
 class ParsPipeline(Parameters):
 

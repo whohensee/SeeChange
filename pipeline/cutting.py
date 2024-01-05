@@ -31,6 +31,10 @@ class Cutter:
     def __init__(self, **kwargs):
         self.pars = ParsCutter(**kwargs)
 
+        # this is useful for tests, where we can know if
+        # the object did any work or just loaded from DB or datastore
+        self.has_recalculated = False
+
     def run(self, *args, **kwargs):
         """
         Go over a list of sources and for each source position,
@@ -40,6 +44,7 @@ class Cutter:
 
         Returns a DataStore object with the products of the processing.
         """
+        self.has_recalculated = False
         ds, session = DataStore.from_args(*args, **kwargs)
 
         # get the provenance for this step:
@@ -49,7 +54,7 @@ class Cutter:
         cutout_list = ds.get_cutouts(prov, session=session)
 
         if cutout_list is None:  # must create a new list of Cutouts
-
+            self.has_recalculated = True
             # use the latest source list in the data store,
             # or load using the provenance given in the
             # data store's upstream_provs, or just use

@@ -15,15 +15,11 @@ from astropy.io import fits
 import astropy.units as u
 from astropy.coordinates import SkyCoord
 
-from models.base import Base, AutoIDMixin, SmartSession
+from models.base import Base, SmartSession, AutoIDMixin,_logger
 
-from models.base import Base, SmartSession, FileOnDiskMixin,_logger
-from models.enums_and_bitflags import CalibratorTypeConverter
-from models.provenance import Provenance
 from pipeline.catalog_tools import Bandpass
 from pipeline.utils import parse_dateobs, read_fits_image
-from util.config import Config
-import util.radec
+
 
 # dictionary of regex for filenames, pointing at instrument names
 INSTRUMENT_FILENAME_REGEX = None

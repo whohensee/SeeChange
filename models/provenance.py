@@ -100,6 +100,7 @@ class Provenance(Base):
         "CodeVersion",
         back_populates="provenances",
         cascade="save-update, merge, expunge, refresh-expire",
+        passive_deletes=True,
         lazy='selectin',
     )
 
@@ -116,15 +117,18 @@ class Provenance(Base):
         primaryjoin='provenances.c.id == provenance_upstreams.c.downstream_id',
         secondaryjoin='provenances.c.id == provenance_upstreams.c.upstream_id',
         passive_deletes=True,
+        cascade="save-update, merge, expunge, refresh-expire",
         lazy='selectin',  # should be able to get upstream_hashes without a session!
     )
 
-    CodeVersion.provenances = relationship(
+    downstreams = relationship(
         "Provenance",
-        back_populates="code_version",
-        cascade="save-update, merge, expunge, refresh-expire",
-        foreign_keys="Provenance.code_version_id",
+        secondary=provenance_self_association_table,
+        primaryjoin='provenances.c.id == provenance_upstreams.c.upstream_id',
+        secondaryjoin='provenances.c.id == provenance_upstreams.c.downstream_id',
         passive_deletes=True,
+        cascade="save-update, merge, expunge, refresh-expire, delete",
+        overlaps="upstreams",
     )
 
     is_bad = sa.Column(
@@ -176,6 +180,20 @@ class Provenance(Base):
     def upstream_hashes(self):
         return self.upstream_ids  # hash and ID are the same now
 
+    @property
+    def downstream_ids(self):
+        if self.downstreams is None:
+            return []
+        else:
+            ids = set([u.id for u in self.downstreams])
+            ids = list(ids)
+            ids.sort()
+            return ids
+
+    @property
+    def downstream_hashes(self):
+        return self.downstream_ids  # hash and ID are the same now
+
     def __init__(self, **kwargs):
         """
         Create a provenance object.
@@ -221,13 +239,12 @@ class Provenance(Base):
 
         self.parameters = kwargs.get('parameters', {})
         upstreams = kwargs.get('upstreams', [])
-        if not isinstance(upstreams, list):
+        if upstreams is None:
+            self.upstreams = []
+        elif not isinstance(upstreams, list):
             self.upstreams = [upstreams]
-        if len(upstreams) > 0:
-            if isinstance(upstreams[0], Provenance):
-                self.upstreams = upstreams
-            else:
-                raise ValueError('upstreams must be a list of Provenance objects')
+        else:
+            self.upstreams = upstreams
 
     def __repr__(self):
         return (
@@ -238,6 +255,28 @@ class Provenance(Base):
             f'parameters={self.parameters}, '
             f'upstreams={[h[:6] for h in self.upstream_hashes]})>'
         )
+
+    def __setattr__(self, key, value):
+        if key in ['upstreams', 'downstreams']:
+            if value is None:
+                super().__setattr__(key, [])
+            elif isinstance(value, list):
+                if not all([isinstance(u, Provenance) for u in value]):
+                    raise ValueError(f'{key} must be a list of Provenance objects')
+
+                # make sure no duplicate upstreams are added
+                hashes = set([u.id for u in value])
+                new_list = []
+                for p in value:
+                    if p.id in hashes:
+                        new_list.append(p)
+                        hashes.remove(p.id)
+
+                super().__setattr__(key, new_list)
+            else:
+                raise ValueError(f'{key} must be a list of Provenance objects')
+        else:
+            super().__setattr__(key, value)
 
     def update_id(self):
         """
@@ -327,3 +366,10 @@ def insert_new_dataset(mapper, connection, target):
     target.update_id()
 
 
+CodeVersion.provenances = relationship(
+    "Provenance",
+    back_populates="code_version",
+    cascade="save-update, merge, expunge, refresh-expire, delete, delete-orphan",
+    foreign_keys="Provenance.code_version_id",
+    passive_deletes=True,
+)

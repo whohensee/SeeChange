@@ -2,28 +2,32 @@ import pytest
 import pathlib
 
 import numpy as np
+import sqlalchemy as sa
 from astropy.io import fits
 
 from models.base import FileOnDiskMixin, SmartSession
 from models.image import Image
-from pipeline.preprocessing import Preprocessor
 
 
-def test_preprocessing( decam_example_exposure, decam_default_calibrators ):
+def test_preprocessing(provenance_decam_prep, decam_exposure, test_config, preprocessor, decam_default_calibrators):
     # The decam_default_calibrators fixture is included so that
     # _get_default_calibrators won't be called as a side effect of calls
     # to Preprocessor.run().  (To avoid committing.)
+    ds = preprocessor.run( decam_exposure, 'N1' )
+    assert preprocessor.has_recalculated
 
-    preppor = Preprocessor()
-    ds = preppor.run( decam_example_exposure, 'N1' )
+    # TODO: this might not work, because for some filters (g) the fringe correction doesn't happen
+    # check that running the same processing on the same datastore is a no-op
+    ds = preprocessor.run( ds )
+    assert not preprocessor.has_recalculated
 
     # Check some Preprocesor internals
-    assert preppor._calibset == 'externally_supplied'
-    assert preppor._flattype == 'externally_supplied'
-    assert preppor._stepstodo == [ 'overscan', 'linearity', 'flat', 'fringe' ]
-    assert preppor._ds.exposure.filter[:1] == 'g'
-    assert preppor._ds.section_id == 'N1'
-    assert set( preppor.stepfiles.keys() ) == { 'flat', 'linearity' }
+    assert preprocessor._calibset == 'externally_supplied'
+    assert preprocessor._flattype == 'externally_supplied'
+    assert preprocessor._stepstodo == [ 'overscan', 'linearity', 'flat', 'fringe' ]
+    assert preprocessor._ds.exposure.filter[:1] == 'g'
+    assert preprocessor._ds.section_id == 'N1'
+    assert set( preprocessor.stepfiles.keys() ) == { 'flat', 'linearity' }
 
     # Make sure that the BSCALE and BZERO keywords got stripped
     #  from the raw image header.  (If not, when the file gets
@@ -56,7 +60,10 @@ def test_preprocessing( decam_example_exposure, decam_default_calibrators ):
     try:
         ds.save_and_commit()
         basepath = pathlib.Path( FileOnDiskMixin.local_path ) / ds.image.filepath
-        archpath = pathlib.Path( "/archive_storage/base/test" )/ ds.image.filepath
+        archpath = pathlib.Path(test_config.value('archive.local_read_dir'))
+        archpath /= pathlib.Path(test_config.value('archive.path_base'))
+        archpath /= ds.image.filepath
+
         for suffix, compimage in zip( [ '.image.fits', '.weight.fits', '.flags.fits' ],
                                       [ ds.image.data, ds.image._weight, ds.image._flags ] ):
             path = basepath.parent / f'{basepath.name}{suffix}'
@@ -81,14 +88,17 @@ def test_preprocessing( decam_example_exposure, decam_default_calibrators ):
     # (Look at image header once we have HISTORY adding in there.)
 
     # Test some overriding
+    # clear these caches
+    preprocessor.instrument = None
+    preprocessor.stepfilesids = {}
+    preprocessor.stepfiles = {}
 
-    preppor = Preprocessor()
-    ds = preppor.run( decam_example_exposure, 'N1', steps=['overscan','linearity'] )
-    assert preppor._calibset == 'externally_supplied'
-    assert preppor._flattype == 'externally_supplied'
-    assert preppor._stepstodo == [ 'overscan', 'linearity' ]
-    assert preppor._ds.exposure.filter[:1] == 'g'
-    assert preppor._ds.section_id == 'N1'
-    assert set( preppor.stepfiles.keys() ) == { 'linearity' }
-
+    ds = preprocessor.run( decam_exposure, 'N1', steps=['overscan', 'linearity'] )
+    assert preprocessor.has_recalculated
+    assert preprocessor._calibset == 'externally_supplied'
+    assert preprocessor._flattype == 'externally_supplied'
+    assert preprocessor._stepstodo == [ 'overscan', 'linearity' ]
+    assert preprocessor._ds.exposure.filter[:1] == 'g'
+    assert preprocessor._ds.section_id == 'N1'
+    assert set( preprocessor.stepfiles.keys() ) == { 'linearity' }
 

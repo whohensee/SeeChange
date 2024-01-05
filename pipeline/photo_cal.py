@@ -73,6 +73,10 @@ class PhotCalibrator:
     def __init__(self, **kwargs):
         self.pars = ParsPhotCalibrator(**kwargs)
 
+        # this is useful for tests, where we can know if
+        # the object did any work or just loaded from DB or datastore
+        self.has_recalculated = False
+
     def _solve_zp( self, image, sources, wcs, catexp, min_matches=10, match_radius=1. ):
         """Get the instrument zeropoint using a catalog excerpt.
 
@@ -190,6 +194,7 @@ class PhotCalibrator:
         zpvars = transformed_magerr**2 + ( 1.0857362 * sourcefluxerr / sourceflux )**2
 
         # Save these values so that tests outside can pull them and interrogate them
+        self.individual_mags = transformed_mag
         self.individual_zps = zps
         self.individual_zpvars = zpvars
 
@@ -222,6 +227,7 @@ class PhotCalibrator:
         will add a ZeroPoint object to the .zp field of the DataStore.
 
         """
+        self.has_recalculated = False
         ds, session = DataStore.from_args(*args, **kwargs)
 
         # get the provenance for this step:
@@ -231,7 +237,7 @@ class PhotCalibrator:
         zp = ds.get_zp(prov, session=session)
 
         if zp is None:  # must create a new ZeroPoint object
-
+            self.has_recalculated = True
             if self.pars.cross_match_catalog != 'GaiaDR3':
                 raise NotImplementedError( f"Currently only know how to calibrate to GaiaDR3, not "
                                            f"{self.pars.cross_match_catalog}" )
@@ -270,7 +276,7 @@ class PhotCalibrator:
                     apercors.append( sources.calc_aper_cor( aper_num=i ) )
 
             # Make the ZeroPoint object
-            ds.zp = ZeroPoint( source_list=ds.sources, provenance=prov, zp=zpval, dzp=dzpval,
+            ds.zp = ZeroPoint( sources=ds.sources, provenance=prov, zp=zpval, dzp=dzpval,
                                aper_cor_radii=sources.aper_rads, aper_cors=apercors )
 
             ds.image.zero_point_estimate = ds.zp.zp  # TODO: should we only write if the property is None?

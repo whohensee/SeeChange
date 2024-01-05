@@ -790,10 +790,12 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
             # assign the values from the new image
             setattr(output, att, new_value)
 
-        output.upstream_images = [ref_image, new_image]
-        output.ref_image_index = 0
-        output.new_image_index = 1
-
+        if ref_image.mjd < new_image.mjd:
+            output.upstream_images = [ref_image, new_image]
+        else:
+            output.upstream_images = [new_image, ref_image]
+        output.ref_image_index = output.upstream_images.index(ref_image)
+        output.new_image_index = output.upstream_images.index(new_image)
         output._upstream_bitflag = 0
         output._upstream_bitflag |= ref_image.bitflag
         output._upstream_bitflag |= new_image.bitflag
@@ -859,7 +861,7 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
         prov_hash = inst_name = im_type = date = time = filter = ra = dec = dec_int_pm = ''
         section_id = section_id_int = ra_int = ra_int_h = ra_frac = dec_int = dec_frac = 0
 
-        if self.provenance is not None:
+        if self.provenance is not None and self.provenance.id is not None:
             prov_hash = self.provenance.id
         if self.instrument_object is not None:
             inst_name = self.instrument_object.get_short_instrument_name()
@@ -892,7 +894,7 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
             dec = self.dec
             dec_int, dec_frac = str(float(dec)).split('.')
             dec_int = int(dec_int)
-            dec_int_pm = f'p{dec_int:02d}' if dec_int >= 0 else f'm{dec_int:02d}'
+            dec_int_pm = f'p{dec_int:02d}' if dec_int >= 0 else f'm{-dec_int:02d}'
             dec_frac = int(dec_frac)
 
         cfg = config.Config.get()
@@ -922,6 +924,8 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
 
         # TODO: which elements of the naming convention are really necessary?
         #  and what is a good way to make sure the filename actually depends on them?
+        self.filepath = filename
+
         return filename
 
     def save(self, filename=None, only_image=False, just_update_header=True, **kwargs ):
@@ -984,7 +988,7 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
         if filename is not None:
             self.filepath = filename
         if self.filepath is None:
-            self.filepath = self.invent_filepath()
+            self.invent_filepath()
 
         cfg = config.Config.get()
         single_file = cfg.value('storage.images.single_file', default=False)
@@ -1081,7 +1085,7 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
             self._score = read_fits_image(filename, ext='score')
             # TODO: add more if needed!
 
-        else:  # save each data array to a separate file
+        else:  # load each data array from a separate file
             if self.filepath_extensions is None:
                 self._data, self._raw_header = read_fits_image( self.get_fullpath(), output='both' )
             else:
@@ -1120,7 +1124,7 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
         This happens when the objects are used to produce, e.g., a coadd or
         a subtraction image, but they would not necessarily be loaded automatically from the DB.
         To load those products (assuming all were previously committed with their own provenances)
-        use the load_upstream_products() method.
+        use the load_upstream_products() method on each of the upstream images.
 
         IMPORTANT RESTRICTION:
         When putting images in the upstream of a combined image (coadded or subtracted),
@@ -1252,14 +1256,14 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
 
                 wcs_results = session.scalars(
                     sa.select(WorldCoordinates).where(
-                        WorldCoordinates.source_list_id.in_(sources_ids),
+                        WorldCoordinates.sources_id.in_(sources_ids),
                         WorldCoordinates.provenance_id.in_(prov_ids),
                     )
                 ).all()
 
                 zp_results = session.scalars(
                     sa.select(ZeroPoint).where(
-                        ZeroPoint.source_list_id.in_(sources_ids),
+                        ZeroPoint.sources_id.in_(sources_ids),
                         ZeroPoint.provenance_id.in_(prov_ids),
                     )
                 ).all()
@@ -1370,13 +1374,14 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
             zps = []
             for s in sources:
                 wcses += session.scalars(
-                    sa.select(WorldCoordinates).where(WorldCoordinates.source_list_id == s.id)
+                    sa.select(WorldCoordinates).where(WorldCoordinates.sources_id == s.id)
                 ).all()
 
                 zps += session.scalars(
-                    sa.select(ZeroPoint).where(ZeroPoint.source_list_id == s.id)
+                    sa.select(ZeroPoint).where(ZeroPoint.sources_id == s.id)
                 ).all()
 
+            # TODO: replace with a relationship to downstream_images (see issue #151)
             # now look for other images that were created based on this one
             # ref: https://docs.sqlalchemy.org/en/20/orm/join_conditions.html#self-referential-many-to-many
             images = session.scalars(

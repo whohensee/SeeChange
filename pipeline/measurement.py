@@ -45,6 +45,10 @@ class Measurer:
     def __init__(self, **kwargs):
         self.pars = ParsMeasurer(**kwargs)
 
+        # this is useful for tests, where we can know if
+        # the object did any work or just loaded from DB or datastore
+        self.has_recalculated = False
+
     def run(self, *args, **kwargs):
         """
         Go over the cutouts from an image and measure all sorts of things
@@ -52,6 +56,7 @@ class Measurer:
 
         Returns a DataStore object with the products of the processing.
         """
+        self.has_recalculated = False
         ds, session = DataStore.from_args(*args, **kwargs)
 
         # get the provenance for this step:
@@ -61,7 +66,7 @@ class Measurer:
         measurements = ds.get_measurements(prov, session=session)
 
         if measurements is None:  # must create a new list of Measurements
-
+            self.has_recalculated = True
             # use the latest source list in the data store,
             # or load using the provenance given in the
             # data store's upstream_provs, or just use

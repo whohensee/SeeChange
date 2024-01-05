@@ -1,6 +1,6 @@
 import os
 import re
-import logging
+import shutil
 import pathlib
 import hashlib
 import pytest
@@ -8,31 +8,139 @@ import pytest
 import numpy as np
 import sqlalchemy as sa
 
+from astropy.io import fits
+
 from models.base import SmartSession, FileOnDiskMixin, _logger
 from models.exposure import Exposure
 from models.instrument import get_instrument_instance
 from models.datafile import DataFile
 from models.calibratorfile import CalibratorFile
 from models.image import Image
+from models.instrument import Instrument
 from models.decam import DECam
-import util.config as config
+import util.radec
+
+from tests.conftest import CODE_ROOT
 
 
-@pytest.fixture(scope='module')
-def decam_reduced_origin_exposures():
-    decam = DECam()
-    yield decam.find_origin_exposures( minmjd=60159.15625, maxmjd=60159.16667,
-                                       proposals='2023A-716082',
-                                       skip_exposures_in_database=False,
-                                       proc_type='instcal' )
+def test_decam_exposure(decam_filename):
+    assert os.path.isfile(decam_filename)
 
-@pytest.fixture(scope='module')
-def decam_raw_origin_exposures():
-    decam = DECam()
-    yield decam.find_origin_exposures( minmjd=60159.15625, maxmjd=60159.16667,
-                                       proposals='2023A-716082',
-                                       skip_exposures_in_database=False,
-                                       proc_type='raw' )
+    # verify we don't already have an Exposure like this on DB
+    decam_example_file_short = decam_filename[len(CODE_ROOT + '/data/'):]
+    with SmartSession() as session:
+        session.execute(sa.delete(Exposure).where(Exposure.filepath == decam_example_file_short))
+        session.commit()
+
+    e = Exposure(filepath=decam_filename)
+    e.save()  # make sure to save it to archive so it has an MD5 sum
+    assert e.instrument == 'DECam'
+    assert isinstance(e.instrument_object, DECam)
+    assert e.telescope == 'CTIO 4.0-m telescope'
+    assert e.mjd == 59887.32121458
+    assert e.end_mjd == 59887.32232569111
+    assert e.ra == 116.32024583333332
+    assert e.dec == -26.25
+    assert e.exp_time == 96.0
+    assert e.filepath == 'c4d_221104_074232_ori.fits.fz'
+    assert e.filter == 'g DECam SDSS c0001 4720.0 1520.0'
+    assert not e.from_db
+    assert e.header == {}
+    assert e.id is None
+    assert e.target == 'DECaPS-West'
+    assert e.project == '2022A-724693'
+
+    # check that we can lazy load the header from file
+    assert len(e.raw_header) == 150
+    assert e.raw_header['NAXIS'] == 0
+
+    with pytest.raises(ValueError, match=re.escape('The section_id must be a string. ')):
+        _ = e.data[0]
+
+    assert isinstance(e.data['N4'], np.ndarray)
+    assert e.data['N4'].shape == (4146, 2160)
+    assert e.data['N4'].dtype == 'uint16'
+
+    with pytest.raises(ValueError, match=re.escape('The section_id must be a string. ')):
+        _ = e.section_headers[0]
+
+    assert len(e.section_headers['N4']) == 100
+    assert e.section_headers['N4']['NAXIS'] == 2
+    assert e.section_headers['N4']['NAXIS1'] == 2160
+    assert e.section_headers['N4']['NAXIS2'] == 4146
+
+    try:
+        exp_id = None
+        with SmartSession() as session:
+            e = e.recursive_merge( session )
+            session.add(e)
+            session.commit()
+            exp_id = e.id
+            assert exp_id is not None
+
+        with SmartSession() as session:
+            e2 = session.scalars(sa.select(Exposure).where(Exposure.id == exp_id)).first()
+            assert e2 is not None
+            assert e2.id == exp_id
+            assert e2.from_db
+
+    finally:
+        if exp_id is not None:
+            with SmartSession() as session:
+                e = e.recursive_merge( session )
+                session.delete(e)
+                session.commit()
+
+
+def test_image_from_decam_exposure(decam_filename, provenance_base, data_dir):
+    with fits.open( decam_filename, memmap=False ) as ifp:
+        hdr = ifp[0].header
+    exphdrinfo = Instrument.extract_header_info( hdr, [ 'mjd', 'exp_time', 'filter', 'project', 'target' ] )
+    ra = util.radec.parse_sexigesimal_degrees( hdr['RA'], hours=True )
+    dec = util.radec.parse_sexigesimal_degrees( hdr['DEC'] )
+    e = Exposure( ra=ra, dec=dec, instrument='DECam', format='fits', **exphdrinfo,
+                  filepath=os.path.join(data_dir, pathlib.Path(decam_filename).name ))
+    sec_id = 'N4'
+    im = Image.from_exposure(e, section_id=sec_id)  # load the first CCD
+
+    assert e.instrument == 'DECam'
+    assert e.telescope == 'CTIO 4.0-m telescope'
+    assert not im.from_db
+    # should not be the same as the exposure!
+    # assert im.ra == 116.32024583333332
+    # assert im.dec == -26.25
+    assert im.ra != e.ra
+    assert im.dec != e.dec
+    assert im.ra == 116.32126671843677
+    assert im.dec == -26.337508447652503
+    assert im.mjd == 59887.32121458
+    assert im.end_mjd == 59887.32232569111
+    assert im.exp_time == 96.0
+    assert im.filter == 'g DECam SDSS c0001 4720.0 1520.0'
+    assert im.target == 'DECaPS-West'
+    assert im.project == '2022A-724693'
+    assert im.section_id == sec_id
+
+    assert im.id is None  # not yet on the DB
+    assert im.filepath is None  # no file yet!
+
+    assert len(im.raw_header) == 98
+    assert im.raw_header['NAXIS'] == 2
+    assert im.raw_header['NAXIS1'] == 2160
+    assert im.raw_header['NAXIS2'] == 4146
+    assert 'BSCALE' not in im.raw_header
+    assert 'BZERO' not in im.raw_header
+
+    # check we have the raw data copied into temporary attribute
+    assert im.raw_data is not None
+    assert isinstance(im.raw_data, np.ndarray)
+    assert im.raw_data.shape == (4146, 2160)
+
+    # just for this test we will do preprocessing just by reducing the median
+    im.data = np.float32(im.raw_data - np.median(im.raw_data))
+
+    # TODO: check we can save the image using the filename conventions
+
 
 # Note that these tests are probing the internal state of the opaque
 # DECamOriginExposures objects.  If you're looking at this test for
@@ -42,10 +150,8 @@ def decam_raw_origin_exposures():
 def test_decam_search_noirlab( decam_reduced_origin_exposures ):
     origloglevel = _logger.getEffectiveLevel()
     try:
-        # Make sure we'll show the things sent to the noirlab API
-        # so that we have a hope of figuring out what went wrong
-        # if something does go wrong.
-        _logger.setLevel( logging.DEBUG )
+        # uncomment below to show the things sent to the noirlab API if something goes wrong.
+        # _logger.setLevel( logging.DEBUG )
 
         decam = DECam()
 
@@ -82,14 +188,18 @@ def test_decam_search_noirlab( decam_reduced_origin_exposures ):
     finally:
         _logger.setLevel( origloglevel )
 
-def test_decam_download_origin_exposure( decam_reduced_origin_exposures ):
-    localpath = FileOnDiskMixin.local_path
-    assert all( [ row.proc_type=='instcal' for i,row in decam_reduced_origin_exposures._frame.iterrows() ] )
+
+def test_decam_download_origin_exposure( decam_reduced_origin_exposures, cache_dir ):
+    assert all( [ row.proc_type == 'instcal' for i, row in decam_reduced_origin_exposures._frame.iterrows() ] )
     try:
         # First try downloading the reduced exposures themselves
-        downloaded = decam_reduced_origin_exposures.download_exposures( outdir=localpath, indexes=[ 1, 3 ],
-                                                                        onlyexposures=True, 
-                                                                        clobber=False, existing_ok=True )
+        downloaded = decam_reduced_origin_exposures.download_exposures(
+            outdir=os.path.join(cache_dir, 'DECam'),
+            indexes=[ 1, 3 ],
+            onlyexposures=True,
+            clobber=False,
+            existing_ok=True,
+        )
         assert len(downloaded) == 2
         for pathdict, dex in zip( downloaded, [ 1, 3 ] ):
             assert set( pathdict.keys() ) == { 'exposure' }
@@ -99,9 +209,13 @@ def test_decam_download_origin_exposure( decam_reduced_origin_exposures ):
             assert md5.hexdigest() == decam_reduced_origin_exposures._frame.loc[ dex, 'image' ].md5sum
 
         # Now try downloading exposures, weights, and dataquality masks
-        downloaded = decam_reduced_origin_exposures.download_exposures( outdir=localpath, indexes=[ 1, 3 ],
-                                                                        onlyexposures=False, 
-                                                                        clobber=False, existing_ok=True )
+        downloaded = decam_reduced_origin_exposures.download_exposures(
+            outdir=os.path.join(cache_dir, 'DECam'),
+            indexes=[ 1, 3 ],
+            onlyexposures=False,
+            clobber=False,
+            existing_ok=True,
+        )
         assert len(downloaded) == 2
         for pathdict, dex in zip( downloaded, [ 1, 3 ] ):
             assert set( pathdict.keys() ) == { 'exposure', 'wtmap', 'dqmask' }
@@ -118,19 +232,39 @@ def test_decam_download_origin_exposure( decam_reduced_origin_exposures ):
         # Don't clean up for efficiency of rerunning tests.
         pass
 
-def test_decam_download_and_commit_exposure( code_version, decam_raw_origin_exposures ):
-    cfg = config.Config.get()
 
+def test_decam_download_and_commit_exposure(code_version, decam_raw_origin_exposures, cache_dir, data_dir, test_config):
     eids = []
     try:
         with SmartSession() as session:
             expdexes = [ 1, 2 ]
+
+            # get these downloaded first, to get the filenames to check against the cache
+            downloaded = decam_raw_origin_exposures.download_exposures(
+                outdir=os.path.join(cache_dir, 'DECam'),
+                indexes=expdexes,
+                onlyexposures=True,
+                clobber=False,
+                existing_ok=True,
+            )
+            for pathdict in downloaded:
+                cachedpath = pathdict['exposure']
+                assert os.path.isfile( cachedpath )
+                shutil.copy2( cachedpath, os.path.join( data_dir, os.path.basename( cachedpath ) ) )
+
             exposures = decam_raw_origin_exposures.download_and_commit_exposures( indexes=expdexes, clobber=False,
                                                                               existing_ok=True, delete_downloads=False,
                                                                               session=session )
             for i, exposure in zip( expdexes, exposures ):
                 eids.append( exposure.id )
                 fname = pathlib.Path( decam_raw_origin_exposures._frame.iloc[i].archive_filename ).name
+
+                # cache the files
+                os.makedirs( os.path.join( cache_dir, 'DECam' ), exist_ok=True )
+                if not os.path.isfile( os.path.join( cache_dir, 'DECam', fname ) ):
+                    shutil.copy2( os.path.join( data_dir, fname ),
+                                os.path.join( cache_dir, 'DECam', fname ) )
+
                 match = re.search( r'^c4d_(?P<yymmdd>\d{6})_(?P<hhmmss>\d{6})_ori.fits', fname )
                 assert match is not None
                 # Todo : add the subdirectory to dbfname once that is implemented
@@ -140,7 +274,7 @@ def test_decam_download_and_commit_exposure( code_version, decam_raw_origin_expo
                 assert ( pathlib.Path( exposure.get_fullpath( download=False ) ) ==
                          pathlib.Path( FileOnDiskMixin.local_path ) / exposure.filepath )
                 assert pathlib.Path( exposure.get_fullpath( download=False ) ).is_file()
-                archivebase = f"{os.getenv('SEECHANGE_TEST_ARCHIVE_DIR')}/{cfg.value('archive.path_base')}"
+                archivebase = f"{test_config.value('archive.local_read_dir')}/{test_config.value('archive.path_base')}"
 
                 assert ( pathlib.Path( archivebase ) / exposure.filepath ).is_file()
                 # Perhaps do m5dsums to verify that the local and archive files are the same?
@@ -160,18 +294,16 @@ def test_decam_download_and_commit_exposure( code_version, decam_raw_origin_expo
         with SmartSession() as session:
             exposures = session.query( Exposure ).filter( Exposure.id.in_( eids ) )
             for exposure in exposures:
-                for base in [ pathlib.Path( FileOnDiskMixin.local_path ),
-                              pathlib.Path( '/archive_storage/base/test' ) ]:
-                    path = base / exposure.filepath
-                    if path.is_file():
-                        path.unlink()
-            session.execute( sa.delete( Exposure ).where( Exposure.id.in_( eids ) ) )
+                exposure.delete_from_disk_and_database( session=session, commit=False )
             session.commit()
-            # Not deleteing the original downloaded exposures so that rerunning
-            #  tests will be fast (as they'll already be there).
-            # Reinitialize the test environment (including cleaning out
-            #  non-git-tracked files from data) to force verification of
-            #  downloads; this will always happen on github actions.
+
+            # remove downloaded files from data_dir (a cached version should remain)
+            if 'downloaded' in locals():
+                for d in downloaded:
+                    path = os.path.join(data_dir, d['exposure'].name)
+                    if os.path.isfile(path):
+                        os.unlink(path)
+
 
 @pytest.mark.skipif( os.getenv('RUN_SLOW_TESTS') is None, reason="Set RUN_SLOW_TESTS to run this test" )
 def test_get_default_calibrators( decam_default_calibrators ):
@@ -211,9 +343,10 @@ def test_get_default_calibrators( decam_default_calibrators ):
                             p = ( pathlib.Path( FileOnDiskMixin.local_path ) / cf.image.filepath )
                             assert p.is_file()
 
-def test_linearity( decam_example_raw_image ):
+
+def test_linearity( decam_raw_image, decam_default_calibrators ):
     decam = get_instrument_instance( "DECam" )
-    im = decam_example_raw_image
+    im = decam_raw_image
     origdata = im.data
     try:
         with SmartSession() as session:
@@ -234,12 +367,13 @@ def test_linearity( decam_example_raw_image ):
             w = np.where( im.data > 10000 )
             assert np.all( newdata[w] <= im.data[w] )
 
-            # TODO -- figure out more ways to really test if this was done right'
-            # (Could make this a regression test by putting in empirically what
-            # we get, but it'd be nice to actually make sure it really did the
-            # right thing.)
+            # TODO -- figure out more ways to really test if this was done right
+            #  (Could make this a regression test by putting in empirically what
+            #  we get, but it'd be nice to actually make sure it really did the
+            #  right thing.)
     finally:
         im.data = origdata
+
 
 def test_preprocessing_calibrator_files( decam_default_calibrators ):
     decam = get_instrument_instance( "DECam" )
@@ -279,10 +413,12 @@ def test_preprocessing_calibrator_files( decam_default_calibrators ):
         info = decam.preprocessing_calibrator_files( 'externally_supplied', 'externally_supplied',
                                                      'N1', filt, 60000. )
 
-def test_overscan_sections( decam_example_raw_image ):
+
+def test_overscan_sections( decam_raw_image, data_dir,  ):
     decam = get_instrument_instance( "DECam" )
+
     # Need the full header, not what's stored in the database
-    ovsecs = decam.overscan_sections( decam_example_raw_image.raw_header )
+    ovsecs = decam.overscan_sections( decam_raw_image.raw_header )
     assert ovsecs == [ { 'secname': 'A',
                          'biassec' : { 'x0': 6, 'x1': 56, 'y0': 0, 'y1': 4096 },
                          'datasec' : { 'x0': 56, 'x1': 1080, 'y0': 0, 'y1': 4096 }
@@ -292,10 +428,12 @@ def test_overscan_sections( decam_example_raw_image ):
                          'datasec': { 'x0': 1080, 'x1': 2104, 'y0': 0, 'y1': 4096 }
                         } ]
 
-def test_overscan_and_data_sections( decam_example_raw_image ):
+
+def test_overscan_and_data_sections( decam_raw_image, data_dir ):
     decam = get_instrument_instance( "DECam" )
+
     # Need the full header, not what's stored in the database
-    ovsecs = decam.overscan_and_data_sections( decam_example_raw_image.raw_header )
+    ovsecs = decam.overscan_and_data_sections( decam_raw_image.raw_header )
     assert ovsecs == [ { 'secname': 'A',
                          'biassec' : { 'x0': 6, 'x1': 56, 'y0': 0, 'y1': 4096 },
                          'datasec' : { 'x0': 56, 'x1': 1080, 'y0': 0, 'y1': 4096 },
@@ -307,7 +445,8 @@ def test_overscan_and_data_sections( decam_example_raw_image ):
                          'destsec': { 'x0': 1024, 'x1': 2048, 'y0': 0, 'y1': 4096 }
                         } ]
 
-def test_overscan( decam_example_raw_image ):
+
+def test_overscan( decam_raw_image, data_dir ):
     decam = get_instrument_instance( "DECam" )
 
     # Make sure it fails if it gets bad arguments
@@ -318,10 +457,10 @@ def test_overscan( decam_example_raw_image ):
     with pytest.raises( RuntimeError, match='overscan_and_trim: pass either an Image as one argument' ):
         _ = decam.overscan_and_trim( 1, 2, 3 )
     with pytest.raises( TypeError, match="data isn't a numpy array" ):
-        _ = decam.overscan_and_trim( decam_example_raw_image.raw_header, 42 )
+        _ = decam.overscan_and_trim( decam_raw_image.raw_header, 42 )
 
-    rawdata = decam_example_raw_image.raw_data
-    trimmeddata = decam.overscan_and_trim( decam_example_raw_image.raw_header, rawdata )
+    rawdata = decam_raw_image.raw_data
+    trimmeddata = decam.overscan_and_trim( decam_raw_image.raw_header, rawdata )
 
     assert trimmeddata.shape == ( 4096, 2048 )
 

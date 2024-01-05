@@ -4,6 +4,7 @@ import random
 
 from util.util import listify, ensure_file_does_not_exist
 
+
 def test_listify():
     assert listify( None ) is None
     assert listify( ( None, ) ) == [ None ]
@@ -23,6 +24,7 @@ def test_listify():
         l = listify( [ 1, 2, 3], require_string=True )
     with pytest.raises( TypeError ):
         l = listify( [ "a", 1 ], require_string=True )
+
 
 def test_ensure_file_does_not_exist():
     fname = ''.join( random.choices( 'abcdefghijklmnopqrstuvwxyz', k=10 ) )

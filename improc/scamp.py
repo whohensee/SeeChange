@@ -48,10 +48,10 @@ def _solve_wcs_scamp( sources, catalog, crossid_rad=2.,
         scamp must be able to match at least this many objects
         for the match to be considered good.
 
-      min_arcsec_residual: float, default 0.15
+      max_arcsec_residual: float, default 0.15
         maximum residual in arcseconds, along both RA and Dec
         (i.e. not a radial residual), for the WCS solution to be
-        considered succesful.
+        considered successful.
 
       magkey: str, default MAG
         The keyword to use for magnitudes in the catalog file.

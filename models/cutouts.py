@@ -6,6 +6,7 @@ from sqlalchemy.ext.hybrid import hybrid_property
 from models.base import Base, SeeChangeBase, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed
 from models.enums_and_bitflags import CutoutsFormatConverter
 
+
 class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed):
 
     __tablename__ = 'cutouts'
@@ -31,14 +32,14 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed):
     def format(self, value):
         self._format = CutoutsFormatConverter.convert(value)
 
-    source_list_id = sa.Column(
+    sources_id = sa.Column(
         sa.ForeignKey('source_lists.id', name='cutouts_source_list_id_fkey'),
         nullable=False,
         index=True,
         doc="ID of the source list this cutout is associated with. "
     )
 
-    source_list = orm.relationship(
+    sources = orm.relationship(
         'SourceList',
         doc="The source list this cutout is associated with. "
     )

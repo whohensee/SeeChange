@@ -212,7 +212,7 @@ class Reference(Base, AutoIDMixin):
             if self.sources is not None:
                 wcses = session.scalars(
                     sa.select(WorldCoordinates).where(
-                        WorldCoordinates.source_list_id == self.sources.id,
+                        WorldCoordinates.sources_id == self.sources.id,
                         WorldCoordinates.provenance_id.in_(prov_ids),
                     )
                 ).all()
@@ -226,7 +226,7 @@ class Reference(Base, AutoIDMixin):
 
                 zps = session.scalars(
                     sa.select(ZeroPoint).where(
-                        ZeroPoint.source_list_id == self.sources.id,
+                        ZeroPoint.sources_id == self.sources.id,
                         ZeroPoint.provenance_id.in_(prov_ids),
                     )
                 ).all()

@@ -30,6 +30,10 @@ class Subtractor:
     def __init__(self, **kwargs):
         self.pars = ParsSubtractor(**kwargs)
 
+        # this is useful for tests, where we can know if
+        # the object did any work or just loaded from DB or datastore
+        self.has_recalculated = False
+
         # TODO: add a reference cache here.
 
     def run(self, *args, **kwargs):
@@ -39,6 +43,7 @@ class Subtractor:
 
         Returns a DataStore object with the products of the processing.
         """
+        self.has_recalculated = False
         ds, session = DataStore.from_args(*args, **kwargs)
 
         # get the provenance for this step:
@@ -46,6 +51,7 @@ class Subtractor:
         sub_image = ds.get_subtraction(prov, session=session)
 
         if sub_image is None:
+            self.has_recalculated = True
             # use the latest image in the data store,
             # or load using the provenance given in the
             # data store's upstream_provs, or just use
@@ -62,7 +68,7 @@ class Subtractor:
                 )
             sub_image = Image.from_ref_and_new(ref.image, image)
             # TODO: implement the subtraction algorithm here
-            #  I put in a really stupid workaround becuase for some reason
+            #  I put in a really stupid workaround because for some reason
             #  the reference FITS file and the exposure FITS file are not
             #  aligned or shaped the same (there's a 90 degree rotation
             #  and some extra rows and columns that need to be trimmed).

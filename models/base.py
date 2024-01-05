@@ -5,9 +5,13 @@ import types
 import hashlib
 import pathlib
 import logging
+import json
+import shutil
+import datetime
 from uuid import UUID
 
 from contextlib import contextmanager
+import numpy as np
 
 from astropy.coordinates import SkyCoord
 
@@ -41,7 +45,7 @@ if len(_logger.handlers) == 0:
     _logger.addHandler( _logout )
     _formatter = logging.Formatter( f"[%(asctime)s - %(levelname)s] - %(message)s", datefmt="%Y-%m-%d %H:%M:%S" )
     _logout.setFormatter( _formatter )
-_logout.setLevel( logging.DEBUG )
+# _logout.setLevel( logging.DEBUG )
 
 # this is the root SeeChange folder
 CODE_ROOT = os.path.abspath(os.path.join(__file__, os.pardir, os.pardir))
@@ -109,6 +113,61 @@ def SmartSession(*args):
         yield session
 
 
+def get_all_database_objects(display=False, session=None):
+    """Find all the objects and their associated IDs in the database.
+
+    WARNING: this is only meant to be used on test databases.
+    Calling this on a production database would be very slow!
+
+    Parameters
+    ----------
+    display: bool (optional)
+        If True, print the results to stdout.
+    session: sqlalchemy.orm.session.Session (optional)
+        The session to use. If None, a new session will be created.
+
+    Returns
+    -------
+    dict
+        A dictionary with the object class names as keys and the IDs list as values.
+
+    """
+    from models.provenance import Provenance, CodeVersion, CodeHash
+    from models.datafile import DataFile
+    from models.exposure import Exposure
+    from models.image import Image
+    from models.source_list import SourceList
+    from models.psf import PSF
+    from models.world_coordinates import WorldCoordinates
+    from models.zero_point import ZeroPoint
+    from models.cutouts import Cutouts
+    from models.measurements import Measurements
+    from models.calibratorfile import CalibratorFile
+    from models.catalog_excerpt import CatalogExcerpt
+    from models.reference import Reference
+    from models.instrument import SensorSection
+
+    models = [
+        CodeHash, CodeVersion, Provenance, DataFile, Exposure, Image,
+        SourceList, PSF, WorldCoordinates, ZeroPoint, Cutouts, Measurements,
+        CalibratorFile, CatalogExcerpt, Reference, SensorSection
+    ]
+
+    output = {}
+    with SmartSession(session) as session:
+        for model in models:
+            object_ids = session.scalars(sa.select(model.id)).all()
+            output[model] = object_ids
+
+            if display:
+                print(f"{model.__name__:16s}: ", end='')
+                for obj_id in object_ids:
+                    print(obj_id, end=', ')
+                print()
+
+    return output
+
+
 def safe_merge(session, obj):
     """
     Only merge the object if it has a valid ID,
@@ -135,8 +194,11 @@ def safe_merge(session, obj):
     if obj.id is None:
         return obj
 
-    if obj in session:
-        return obj
+    # if obj in session:
+    #     return obj
+    #
+    # if obj.id in [item.id for item in session.new | session.dirty | session.deleted if isinstance(item, type(obj))]:
+    #     return obj
 
     return session.merge(obj)
 
@@ -225,10 +287,9 @@ class SeeChangeBase:
         if done_list is None:
             done_list = set()
 
-        if self in done_list:
-            return self
-
         obj = safe_merge(session, self)
+        if obj in done_list:
+            return obj
         done_list.add(obj)
 
         attributes = [
@@ -268,6 +329,219 @@ class SeeChangeBase:
         """Get all data products that were created directly from this object (non-recursive)."""
         raise NotImplementedError('get_downstreams not implemented for this class')
 
+    def to_dict(self):
+        """Translate all the SQLAlchemy columns into a dictionary.
+
+        This can be used, e.g., to cache a row from DB to a file.
+        This will include foreign keys, which are not guaranteed
+        to remain the same when loading into a new database,
+        so all the relationships the object has should be
+        reconstructed manually when loading it from the dictionary.
+
+        This will not include any of the attributes of the object
+        that are not saved into the database, but those have to
+        be lazy loaded anyway, as they are not persisted.
+
+        Will convert non-standard data types:
+        UUID will be converted to string (using the .hex attribute).
+        Numpy arrays are replaced by lists.
+
+        To reload, use the from_dict() method:
+        reloaded_object = MyClass.from_dict( output_dict )
+        This will reconstruct the object, including the non-standard
+        data types like the UUID.
+        """
+        output = {}
+        for key in sa.inspect(self).mapper.columns.keys():
+            value = getattr(self, key)
+            if key == 'md5sum' and value is not None:
+                if isinstance(value, UUID):
+                    value = value.hex
+            if key == 'md5sum_extensions' and value is not None:
+                if isinstance(value, list):
+                    value = [v.hex if isinstance(v, UUID) else v for v in value]
+
+            if key == 'aper_rads' and isinstance(value, np.ndarray):
+                value = list(value)
+            if key == 'aper_cors' and isinstance(value, np.ndarray):
+                value = list(value)
+            if key == 'aper_cor_radii' and isinstance(value, np.ndarray):
+                value = list(value)
+
+            if key in ['modified', 'created_at'] and isinstance(value, datetime.datetime):
+                value = value.isoformat()
+
+            if isinstance(value, (datetime.datetime, np.ndarray)):
+                raise TypeError('Found some columns we non-standard types. Please parse all columns! ')
+
+            output[key] = value
+
+        return output
+
+    @classmethod
+    def from_dict(cls, dictionary):
+        """Convert a dictionary into a new object. """
+        dictionary.pop('modified')  # we do not want to recreate the object with an old "modified" time
+
+        md5sum = dictionary.get('md5sum', None)
+        if md5sum is not None:
+            dictionary['md5sum'] = UUID(md5sum)
+
+        md5sum_extensions = dictionary.get('md5sum_extensions', None)
+        if md5sum_extensions is not None:
+            new_extensions = [UUID(md5) for md5 in md5sum_extensions if md5 is not None]
+            dictionary['md5sum_extensions'] = new_extensions
+
+        aper_rads = dictionary.get('aper_rads', None)
+        if aper_rads is not None:
+            dictionary['aper_rads'] = np.array(aper_rads)
+
+        aper_cors = dictionary.get('aper_cors', None)
+        if aper_cors is not None:
+            dictionary['aper_cors'] = np.array(aper_cors)
+
+        aper_cor_radii = dictionary.get('aper_cor_radii', None)
+        if aper_cor_radii is not None:
+            dictionary['aper_cor_radii'] = np.array(aper_cor_radii)
+
+        created_at = dictionary.get('created_at', None)
+        if created_at is not None:
+            dictionary['created_at'] = datetime.datetime.fromisoformat(created_at)
+
+        return cls(**dictionary)
+
+    def to_json(self, filename):
+        """Translate a row object's column values to a JSON file.
+
+        See the description of to_dict() for more details.
+
+        Parameters
+        ----------
+        filename: str or path
+            The path to the output JSON file.
+        """
+        with open(filename, 'w') as fp:
+            json.dump(self.to_dict(), fp, indent=2)
+
+    def copy_to_cache(self, cache_dir, filepath=None):
+        """Save a copy of the object (and associated files) into a cache directory.
+
+        If the object is a FileOnDiskMixin, then the file(s) pointed by get_fullpath()
+        will be copied to the cache directory with their original names,
+        unless filepath is specified, in which case the cached files will
+        have a different name than the files in the data folder (and the database filepath).
+        The filepath (with optional first extension) will be used to create a JSON file
+        which holds the object's column attributes (i.e., only those that are
+        database persistent).
+
+        If caching a non-FileOnDiskMixin object, the filepath argument must be given,
+        because it is used to name the JSON file.
+
+        Parameters
+        ----------
+        cache_dir: str or path
+            The path to the cache directory.
+        filepath: str or path (optional)
+            Must be given if the object is not a FileOnDiskMixin.
+            If it is a FileOnDiskMixin, it will be used to name
+            the data files and the JSON file in the cache folder.
+
+        Returns
+        -------
+        str
+            The full path to the output json file.
+        """
+        json_filepath = filepath
+        if not isinstance(self, FileOnDiskMixin):
+            if filepath is None:
+                raise ValueError("filepath must be given when caching a non FileOnDiskMixin object")
+
+        else:
+            if filepath is None:  # use the FileOnDiskMixin filepath as default
+                filepath = self.filepath  # use this filepath for the data files
+                json_filepath = self.filepath  # use the same filepath for the json file too
+                if self.filepath_extensions is not None and len(self.filepath_extensions) > 0:
+                    json_filepath += self.filepath_extensions[0]  # only append this extension to the json filename
+
+            for i, source_f in enumerate(self.get_fullpath(as_list=True)):
+                if source_f is None:
+                    continue
+                target_f = os.path.join(cache_dir, filepath)
+                if self.filepath_extensions is not None and i < len(self.filepath_extensions):
+                    target_f += self.filepath_extensions[i]
+                _logger.debug(f"Copying {source_f} to {target_f}")
+                os.makedirs(os.path.dirname(target_f), exist_ok=True)
+                shutil.copy2(source_f, target_f)
+
+        # attach the cache_dir and the .json extension if needed
+        json_filepath = os.path.join(cache_dir, json_filepath)
+        if not json_filepath.endswith('.json'):
+            json_filepath += '.json'
+        self.to_json(json_filepath)
+
+        return json_filepath
+
+    @classmethod
+    def copy_from_cache(cls, cache_dir, filepath):
+        """Copy and reconstruct an object from the cache directory.
+
+        Will need the JSON file that contains all the column attributes of the file.
+        Once those are successfully loaded, and if the object is a FileOnDiskMixin,
+        it will be able to figure out where all the associated files are saved
+        based on the filepath and extensions in the JSON file.
+        Those files will be copied into the current data directory
+        (i.e., that pointed to by FileOnDiskMixin.local_path).
+        The reconstructed object should be correctly associated
+        with its files but will not necessarily have the correct
+        relationships to other objects.
+
+        Parameters
+        ----------
+        cache_dir: str or path
+            The path to the cache directory.
+        filepath: str or path
+            The name of the JSON file that holds the column attributes.
+
+        Returns
+        -------
+        output: SeeChangeBase
+            The reconstructed object, of the same type as the class.
+        """
+        # allow user to give an absolute path, so long as it is in the cache dir
+        if filepath.startswith(cache_dir):
+            filepath = filepath[len(cache_dir) + 1:]
+
+        # allow the user to give the filepath with or without the .json extension
+        if filepath.endswith('.json'):
+            filepath = filepath[:-5]
+
+        full_path = os.path.join(cache_dir, filepath)
+        with open(full_path + '.json', 'r') as fp:
+            json_dict = json.load(fp)
+
+        output = cls.from_dict(json_dict)
+
+        # copy any associated files
+        if isinstance(output, FileOnDiskMixin):
+            # if fullpath ends in filepath_extensions[0]
+            if (
+                    output.filepath_extensions is not None and
+                    output.filepath_extensions[0] is not None and
+                    full_path.endswith(output.filepath_extensions[0])
+            ):
+                full_path = full_path[:-len(output.filepath_extensions[0])]
+
+            for i, target_f in enumerate(output.get_fullpath(as_list=True)):
+                if target_f is None:
+                    continue
+                source_f = os.path.join(cache_dir, full_path)
+                if output.filepath_extensions is not None and i < len(output.filepath_extensions):
+                    source_f += output.filepath_extensions[i]
+                _logger.debug(f"Copying {source_f} to {target_f}")
+                os.makedirs(os.path.dirname(target_f), exist_ok=True)
+                shutil.copyfile(source_f, target_f)
+
+        return output
 
 Base = declarative_base(cls=SeeChangeBase)
 
@@ -323,7 +597,7 @@ class FileOnDiskMixin:
     Any object that implements this mixin must call this class' "save"
     method in order to save the data to disk.  (This may be through
     super() if the subclass has to do custom things.)  The save method
-    of this class will save the to the local filestore (undreneath
+    of this class will save to the local filestore (underneath
     path.data_root), and also save it to the archive.  Once a file is
     saved on the archive, the md5sum (or md5sum_extensions) field in the
     database record is updated.  (If the file has not been saved to the
@@ -355,21 +629,33 @@ class FileOnDiskMixin:
     the config system the first time the class is loaded.
 
     """
+    local_path = None
+    temp_path = None
 
-    cfg = config.Config.get()
-    local_path = cfg.value('path.data_root', None)
-    if local_path is None:
-        local_path = cfg.value('path.data_temp', None)
-    if local_path is None:
-        local_path = os.path.join(CODE_ROOT, 'data')
-    if not os.path.isdir(local_path):
-        os.makedirs(local_path, exist_ok=True)
+    @classmethod
+    def configure_paths(cls):
+        cfg = config.Config.get()
+        cls.local_path = cfg.value('path.data_root', None)
 
-    temp_path = cfg.value( 'path.data_temp', None )
-    if temp_path is None:
-        temp_path = os.path.join( CODE_ROOT, 'data' )
-    if not os.path.isdir( temp_path ):
-        os.makedirs( temp_path, exist_ok=True )
+        if cls.local_path is None:
+            cls.local_path = cfg.value('path.data_temp', None)
+        if cls.local_path is None:
+            cls.local_path = os.path.join(CODE_ROOT, 'data')
+
+        if not os.path.isabs(cls.local_path):
+            cls.local_path = os.path.join(CODE_ROOT, cls.local_path)
+        if not os.path.isdir(cls.local_path):
+            os.makedirs(cls.local_path, exist_ok=True)
+
+        # use this to store temporary files (scratch files)
+        cls.temp_path = cfg.value('path.data_temp', None)
+        if cls.temp_path is None:
+            cls.temp_path = os.path.join(CODE_ROOT, 'data')
+
+        if not os.path.isabs(cls.temp_path):
+            cls.temp_path = os.path.join(CODE_ROOT, cls.temp_path)
+        if not os.path.isdir(cls.temp_path):
+            os.makedirs(cls.temp_path, exist_ok=True)
 
     @classmethod
     def safe_mkdir(cls, path):
@@ -1018,18 +1304,30 @@ class FileOnDiskMixin:
 
         # make sure these are set to null just in case we fail
         # to commit later on, we will at least know something is wrong
+
         self.md5sum = None
         self.md5sum_extensions = None
         self.filepath_extensions = None
         self.filepath = None
 
         with SmartSession(session) as session:
-            if sa.inspect(self).persistent:
+            info = sa.inspect(self)
+            need_commit = False
+            if info.persistent:
                 session.delete(self)
-                if commit:
-                    session.commit()
-            elif self in session:
-                session.expunge(self)
+                need_commit = True
+            elif info.detached:
+                session.execute(sa.delete(self.__class__).where(self.__class__.id == self.id))
+                need_commit = True
+
+            if commit and need_commit:
+                session.commit()
+            # if self in session:
+            #     session.expunge(self)
+
+
+# load the default paths from the config
+FileOnDiskMixin.configure_paths()
 
 
 def safe_mkdir(path):
@@ -1155,7 +1453,6 @@ class FourCorners:
 
         return ( [  ras[dex00],  ras[dex01],  ras[dex10],  ras[dex11] ],
                  [ decs[dex00], decs[dex01], decs[dex10], decs[dex11] ] )
-
 
     @hybrid_method
     def containing( self, ra, dec ):

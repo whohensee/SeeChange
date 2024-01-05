@@ -370,6 +370,7 @@ class Exposure(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagB
         if self.instrument is None:
             self.instrument = guess_instrument(self.filepath)
 
+        # this can happen if the instrument is not given, but the filepath is
         if self.provenance is None:
             self.make_provenance()  # a default provenance for exposures
 

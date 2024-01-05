@@ -3,6 +3,7 @@ from sqlalchemy import orm
 
 from models.base import Base, SeeChangeBase, AutoIDMixin, FileOnDiskMixin
 
+
 class DataFile( Base, AutoIDMixin, FileOnDiskMixin ):
     """Miscellaneous data files."""
 
@@ -39,3 +40,11 @@ class DataFile( Base, AutoIDMixin, FileOnDiskMixin ):
     def init_on_load( self ):
         Base.init_on_load( self )
         FileOnDiskMixin.init_on_load( self )
+
+    def __repr__(self):
+        return (
+            f'<DataFile('
+            f'id={self.id}, '
+            f'filepath={self.filepath}, '
+            f'>'
+        )

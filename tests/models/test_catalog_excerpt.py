@@ -1,14 +1,4 @@
 import pytest
-import pathlib
-
-from models.base import FileOnDiskMixin
-from models.catalog_excerpt import CatalogExcerpt
-
-@pytest.fixture( scope="module" )
-def catexp():
-    filepath = pathlib.Path( FileOnDiskMixin.local_path ) / "test_data/Gaia_DR3_151.0926_1.8312_17.0_19.0.fits"
-
-    yield CatalogExcerpt.create_from_file( filepath, 'GaiaDR3' )
 
 
 def test_create_from_file( catexp ):
@@ -34,6 +24,7 @@ def test_create_from_file( catexp ):
     assert catexp.data['MAG_RP'][21] == pytest.approx( 16.59, abs=0.01 )
     assert catexp.data['MAG_BP'][0] == pytest.approx( 18.57, abs=0.01 )
     assert catexp.data['MAG_BP'][21] == pytest.approx( 18.30, abs=0.01 )
+
 
 def test_object_ras_decs( catexp ):
     assert len( catexp.object_ras) == catexp.num_items

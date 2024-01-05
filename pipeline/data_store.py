@@ -2,7 +2,7 @@ import sqlalchemy as sa
 
 from pipeline.utils import get_latest_provenance, parse_session
 
-from models.base import SmartSession, FileOnDiskMixin, safe_merge, _logger
+from models.base import SmartSession, FileOnDiskMixin, _logger
 from models.provenance import CodeVersion, Provenance
 from models.exposure import Exposure
 from models.image import Image, image_upstreams_association_table
@@ -10,7 +10,7 @@ from models.source_list import SourceList
 from models.psf import PSF
 from models.world_coordinates import WorldCoordinates
 from models.zero_point import ZeroPoint
-from models.references import Reference
+from models.reference import Reference
 from models.cutouts import Cutouts
 from models.measurements import Measurements
 
@@ -78,7 +78,7 @@ class DataStore:
         """
         # these are data products that can be cached in the store
         self._exposure = None  # single image, entire focal plane
-        self._section = None # SensorSection
+        self._section = None  # SensorSection
 
         self._init_data_products()
 
@@ -142,6 +142,7 @@ class DataStore:
             - DataStore: makes a copy of the other DataStore's __dict__
             - exposure_id, section_id: give two integers or integer and string
             - Exposure, section_id: an Exposure object, and an integer or string
+            - Image: an Image object.
             - image_id: give a single integer
 
         kwargs: dict
@@ -184,6 +185,8 @@ class DataStore:
             self.exposure_id = self.exposure.id
         elif arg_types == [int]:
             self.image_id = args[0]
+        elif arg_types == [Image]:
+            self.image = args[0]
         # TODO: add more options here
         #  example: get a string filename to parse a specific file on disk
         else:
@@ -200,6 +203,16 @@ class DataStore:
                 if not isinstance(val, int):
                     raise ValueError(f'{key} must be an integer, got {type(val)}')
                 setattr(self, key, val)
+
+            if key == 'exposure':
+                if not isinstance(val, Exposure):
+                    raise ValueError(f'exposure must be an Exposure object, got {type(val)}')
+                self.exposure = val
+
+            if key == 'image':
+                if not isinstance(val, Image):
+                    raise ValueError(f'image must be an Image object, got {type(val)}')
+                self.image = val
 
             # check for provenances
             if key in ['prov', 'provenances', 'upstream_provs', 'upstream_provenances']:
@@ -273,10 +286,10 @@ class DataStore:
 
         super().__setattr__(key, value)
 
-    def __getattr__(self, key):
+    def __getattribute__(self, key):
         value = super().__getattribute__(key)
         if key == 'image' and value is not None:
-            self.apped_image_products(value)
+            self.append_image_products(value)
 
         return value
 
@@ -375,11 +388,11 @@ class DataStore:
                 upstreams=upstreams,
             )
             prov.update_id()
-            prov = session.merge( prov )
+            prov = prov.recursive_merge(session)
 
         return prov
 
-    def _get_provanance_for_an_upstream(self, process, session=None):
+    def _get_provenance_for_an_upstream(self, process, session=None):
         """
         Get the provenance for a given process, without knowing
         the parameters or code version.
@@ -509,6 +522,14 @@ class DataStore:
                 if self.image is not None:
                     if self.image.provenance is None:
                         raise ValueError('Image has no provenance!')
+                    if provenance is not None and provenance.id != self.image.provenance.id:
+                        self.image = None
+                        self.sources = None
+                        self.psf = None
+                        self.wcs = None
+                        self.zp = None
+
+                if provenance is None and self.image is not None:
                     if self.upstream_provs is not None:
                         provenances = [p for p in self.upstream_provs if p.process == process_name]
                     else:
@@ -520,11 +541,15 @@ class DataStore:
                         # a mismatch of provenance and cached image:
                         if self.image.provenance.id != provenances[0].id:
                             self.image = None  # this must be an old image, get a new one
+                            self.sources = None
+                            self.psf = None
+                            self.wcs = None
+                            self.zp = None
 
             if self.image is None:  # load from DB
                 # this happens when the image is required as an upstream for another process (but isn't in memory)
                 if provenance is None:  # check if in upstream_provs/database
-                    provenance = self._get_provanance_for_an_upstream(process_name, session=session)
+                    provenance = self._get_provenance_for_an_upstream(process_name, session=session)
 
                 if provenance is not None:  # if we can't find a provenance, then we don't need to load from DB
                     with SmartSession(session) as session:
@@ -548,19 +573,19 @@ class DataStore:
 
         return self.image  # could return none if no image was found
 
-    def apped_image_products(self):
+    def append_image_products(self, image):
         """Append the image products to the image object.
         This is a convenience function to be used by the
         pipeline applications, to make sure the image
         object has all the data products it needs.
         """
-        self.image.sources = self.sources
-        self.image.psf = self.psf
-        self.image.wcs = self.wcs
-        self.image.zp = self.zp
-        self.image.detections = self.detections
-        self.image.cutouts = self.cutouts
-        self.image.measurements = self.measurements
+        image.sources = self.sources
+        image.psf = self.psf
+        image.wcs = self.wcs
+        image.zp = self.zp
+        image.detections = self.detections
+        image.cutouts = self.cutouts
+        image.measurements = self.measurements
 
     def get_sources(self, provenance=None, session=None):
         """
@@ -594,7 +619,12 @@ class DataStore:
             # make sure the sources object has the correct provenance
             if self.sources.provenance is None:
                 raise ValueError('SourceList has no provenance!')
+            if provenance is not None and provenance.id != self.sources.provenance.id:
+                self.sources = None
+                self.wcs = None
+                self.zp = None
 
+        if provenance is None and self.sources is not None:
             if self.upstream_provs is not None:
                 provenances = [p for p in self.upstream_provs if p.process == process_name]
             else:
@@ -605,12 +635,14 @@ class DataStore:
                 # a mismatch of given provenance and self.sources' provenance:
                 if self.sources.provenance.id != provenances[0].id:
                     self.sources = None  # this must be an old sources object, get a new one
+                    self.wcs = None
+                    self.zp = None
 
         # not in memory, look for it on the DB
         if self.sources is None:
             # this happens when the source list is required as an upstream for another process (but isn't in memory)
             if provenance is None:  # check if in upstream_provs/database
-                provenance = self._get_provanance_for_an_upstream(process_name, session )
+                provenance = self._get_provenance_for_an_upstream(process_name, session )
 
             if provenance is not None:  # if we can't find a provenance, then we don't need to load from DB
                 with SmartSession(session, self.session) as session:
@@ -650,6 +682,12 @@ class DataStore:
         if self.psf is not None:
             if self.psf.provenance is None:
                 raise ValueError( 'PSF has no provenance!' )
+            if provenance is not None and provenance.id != self.psf.provenance.id:
+                self.psf = None
+                self.wcs = None
+                self.zp = None
+
+        if provenance is None and self.psf is not None:
             if self.upstream_provs is not None:
                 provenances = [ p for p in self.upstream_provs if p.process == process_name ]
             else:
@@ -660,6 +698,8 @@ class DataStore:
                 # Check for a mismatch of given provenance and self.psf's provenance
                 if self.psf.provenance.id != provenances[0].id:
                     self.psf = None
+                    self.wcs = None
+                    self.zp = None
 
         # Didn't have the right psf in memory, look for it in the DB
         if self.psf is None:
@@ -710,6 +750,10 @@ class DataStore:
         if self.wcs is not None:
             if self.wcs.provenance is None:
                 raise ValueError('WorldCoordinates has no provenance!')
+            if provenance is not None and provenance.id != self.wcs.provenance.id:
+                self.wcs = None
+
+        if provenance is None and self.wcs is not None:
             if self.upstream_provs is not None:
                 provenances = [p for p in self.upstream_provs if p.process == process_name]
             else:
@@ -726,13 +770,13 @@ class DataStore:
             with SmartSession(session, self.session) as session:
                 # this happens when the wcs is required as an upstream for another process (but isn't in memory)
                 if provenance is None:  # check if in upstream_provs/database
-                    provenance = self._get_provanance_for_an_upstream(process_name, session=session)
+                    provenance = self._get_provenance_for_an_upstream(process_name, session=session)
 
                 if provenance is not None:  # if None, it means we can't find it on the DB
                     sources = self.get_sources(session=session)
                     self.wcs = session.scalars(
                         sa.select(WorldCoordinates).where(
-                            WorldCoordinates.source_list_id == sources.id,
+                            WorldCoordinates.sources_id == sources.id,
                             WorldCoordinates.provenance.has(id=provenance.id),
                         )
                     ).first()
@@ -768,7 +812,10 @@ class DataStore:
         if self.zp is not None:
             if self.zp.provenance is None:
                 raise ValueError('ZeroPoint has no provenance!')
+            if provenance is not None and provenance.id != self.zp.provenance.id:
+                self.zp = None
 
+        if provenance is None and self.zp is not None:
             if self.upstream_provs is not None:
                 provenances = [p for p in self.upstream_provs if p.process == process_name]
             else:
@@ -787,12 +834,12 @@ class DataStore:
                 # TODO: do we also need the astrometric solution (to query for the ZP)?
                 # this happens when the wcs is required as an upstream for another process (but isn't in memory)
                 if provenance is None:  # check if in upstream_provs/database
-                    provenance = self._get_provanance_for_an_upstream(process_name, session=session)
+                    provenance = self._get_provenance_for_an_upstream(process_name, session=session)
 
                 if provenance is not None:  # if None, it means we can't find it on the DB
                     self.zp = session.scalars(
                         sa.select(ZeroPoint).where(
-                            ZeroPoint.source_list_id == sources.id,
+                            ZeroPoint.sources_id == sources.id,
                             ZeroPoint.provenance.has(id=provenance.id),
                         )
                     ).first()
@@ -802,6 +849,7 @@ class DataStore:
     def get_reference(self, provenance=None, session=None):
         """
         Get the reference for this image.
+        TODO: get rid of provenance for this function??
 
         Parameters
         ----------
@@ -823,10 +871,22 @@ class DataStore:
             The reference image for this image, or None if no reference is found.
 
         """
-        if self.ref_image is None:
-            with SmartSession(session, self.session) as session:
-                image = self.get_image(session=session)
+        with SmartSession(session, self.session) as session:
+            image = self.get_image(session=session)
 
+            if self.reference is not None:
+                if not (
+                        (self.reference.validity_start is not None or
+                         self.reference.validity_start <= image.observation_time) and
+                        (self.reference.validity_end is not None or
+                         self.reference.validity_end >= image.observation_time) and
+                        self.reference.filter == image.filter and
+                        self.reference.target == image.target and
+                        self.reference.is_bad is False
+                ):
+                    self.reference = None
+
+            if self.reference is None:
                 ref = session.scalars(
                     sa.select(Reference).where(
                         sa.or_(
@@ -880,6 +940,10 @@ class DataStore:
         if self.sub_image is not None:
             if self.sub_image.provenance is None:
                 raise ValueError('Subtraction image has no provenance!')
+            if provenance is not None and provenance.id != self.sub_image.provenance.id:
+                self.sub_image = None
+
+        if provenance is None and self.sub_image is not None:
             if self.upstream_provs is not None:
                 provenances = [p for p in self.upstream_provs if p.process == process_name]
             else:
@@ -899,16 +963,9 @@ class DataStore:
 
                 # this happens when the subtraction is required as an upstream for another process (but isn't in memory)
                 if provenance is None:  # check if in upstream_provs/database
-                    provenance = self._get_provanance_for_an_upstream(process_name, session=session)
+                    provenance = self._get_provenance_for_an_upstream(process_name, session=session)
 
                 if provenance is not None:  # if None, it means we can't find it on the DB
-                    # self.sub_image = session.scalars(
-                    #     sa.select(Image).where(
-                    #         Image.ref_image_id == ref.image_id,
-                    #         Image.new_image_id == image.id,
-                    #         Image.provenance.has(id=provenance.id),
-                    #     )
-                    # ).first()
                     aliased_table = sa.orm.aliased(image_upstreams_association_table)
                     self.sub_image = session.scalars(
                         sa.select(Image).join(
@@ -960,7 +1017,10 @@ class DataStore:
             # make sure the wcs has the correct provenance
             if self.detections.provenance is None:
                 raise ValueError('SourceList has no provenance!')
+            if provenance is not None and provenance.id != self.detections.provenance.id:
+                self.detections = None
 
+        if provenance is None and self.detections is not None:
             if self.upstream_provs is not None:
                 provenances = [p for p in self.upstream_provs if p.process == process_name]
             else:
@@ -978,7 +1038,7 @@ class DataStore:
 
                 # this happens when the wcs is required as an upstream for another process (but isn't in memory)
                 if provenance is None:  # check if in upstream_provs/database
-                    provenance = self._get_provanance_for_an_upstream(process_name, session=session)
+                    provenance = self._get_provenance_for_an_upstream(process_name, session=session)
 
                 if provenance is not None:  # if None, it means we can't find it on the DB
                     self.detections = session.scalars(
@@ -1020,7 +1080,10 @@ class DataStore:
         if self.cutouts is not None:
             if any([c.provenance is None for c in self.cutouts]):
                 raise ValueError('One of the Cutouts has no provenance!')
+            if provenance is not None and any([c.provenance.id != provenance.id for c in self.cutouts]):
+                self.cutouts = None
 
+        if provenance is None and self.cutouts is not None:
             if self.upstream_provs is not None:
                 provenances = [p for p in self.upstream_provs if p.process == process_name]
             else:
@@ -1039,7 +1102,7 @@ class DataStore:
 
                 # this happens when the cutouts are required as an upstream for another process (but aren't in memory)
                 if provenance is None:
-                    provenance = self._get_provanance_for_an_upstream(process_name, session=session)
+                    provenance = self._get_provenance_for_an_upstream(process_name, session=session)
 
                 if provenance is not None:  # if None, it means we can't find it on the DB
                     self.cutouts = session.scalars(
@@ -1080,7 +1143,10 @@ class DataStore:
         if self.measurements is not None:
             if any([m.provenance is None for m in self.measurements]):
                 raise ValueError('One of the Measurements has no provenance!')
+            if provenance is not None and any([m.provenance.id != provenance.id for m in self.measurements]):
+                self.measurements = None
 
+        if provenance is None and self.measurements is not None:
             if self.upstream_provs is not None:
                 provenances = [p for p in self.upstream_provs if p.process == process_name]
             else:
@@ -1100,7 +1166,7 @@ class DataStore:
 
                 # this happens when the measurements are required as an upstream (but aren't in memory)
                 if provenance is None:
-                    provenance = self._get_provanance_for_an_upstream(process_name, session=session)
+                    provenance = self._get_provenance_for_an_upstream(process_name, session=session)
 
                 if provenance is not None:  # if None, it means we can't find it on the DB
                     self.measurements = session.scalars(
@@ -1120,12 +1186,14 @@ class DataStore:
         objects, including lists (e.g., Cutouts will be concatenated,
         no nested). Any None values will be removed.
 
+        This list does not include the reference image.
+
         Parameters
         ----------
         output: str, optional
             The output format. Can be 'dict' or 'list'.
             Default is 'dict'.
-        omit_Exposure: bool, default False
+        omit_exposure: bool, default False
             If True, does not include the exposure in the list of data products
 
         Returns
@@ -1238,9 +1306,9 @@ class DataStore:
                     if isinstance(obj, FileOnDiskMixin):
                         mustsave = True
                         # TODO : if some extensions have a None md5sum and others don't,
-                        # right now we'll re-save everything.  Improve this to only
-                        # save the necessary extensions.  (In practice, this should
-                        # hardly ever come up.)
+                        #  right now we'll re-save everything.  Improve this to only
+                        #  save the necessary extensions.  (In practice, this should
+                        #  hardly ever come up.)
                         if ( ( not force_save_everything )
                              and
                              ( ( obj.md5sum is not None )
@@ -1273,8 +1341,9 @@ class DataStore:
                                            f'a md5sum in the database' )
 
                     obj = obj.recursive_merge(session)
-                    session.add(obj)
-
+                    session.flush()
+                    if obj not in session:
+                        session.add(obj)
                 session.commit()
 
                 # This may well have updated some ids, as objects got added to the database
@@ -1295,6 +1364,7 @@ class DataStore:
         NOTE: does *not* delete the exposure.  (There may well be other
         data stores out there with different images from the same
         exposure.)
+        This does not delete the reference either.
 
         Parameters
         ----------
@@ -1309,12 +1379,15 @@ class DataStore:
         with SmartSession( session, self.session ) as session:
             autoflush_state = session.autoflush
             try:
+                obj_list = self.get_all_data_products(output='list', omit_exposure=True)
+                for obj in obj_list:  # first make sure all are merged
+                    obj = obj.recursive_merge(session)
+                # no flush to prevent some foreign keys from being voided before all objects are deleted
                 session.autoflush = False
-                for obj in self.get_all_data_products(output='list', omit_exposure=True):
-                    obj = safe_merge(session, obj)
+                for obj in obj_list:  # now do the deleting without flushing
                     if isinstance(obj, FileOnDiskMixin):
                         obj.delete_from_disk_and_database(session=session, commit=False)
-                    if sa.inspect(obj).persistent:
+                    if obj in session and sa.inspect(obj).persistent:
                         session.delete(obj)
                 session.commit()
             finally:

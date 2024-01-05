@@ -6,13 +6,16 @@ from matplotlib import pyplot
 
 from photutils.aperture import CircularAperture, aperture_photometry
 
-from models.base import _logger
+from models.base import CODE_ROOT, _logger
 from improc.sextrsky import sextrsky
 
 
 @pytest.mark.skipif( os.getenv('INTERACTIVE') is None, reason='Set INTERACTIVE to run this test' )
-def test_compare_sextr_photutils( decam_example_reduced_image_ds ):
-    ds = decam_example_reduced_image_ds
+def test_compare_sextr_photutils( decam_datastore ):
+    plot_dir = os.path.join(CODE_ROOT, 'tests/plots/sextractor_comparison')
+    os.makedirs( plot_dir, exist_ok=True)
+
+    ds = decam_datastore
     image = ds.get_image()
     sources = ds.get_sources()
     mask = np.full( image.flags.shape, False )
@@ -21,7 +24,7 @@ def test_compare_sextr_photutils( decam_example_reduced_image_ds ):
 
     # Write a region file for each aperture
     for aperrad in sources.aper_rads:
-        sources.ds9_regfile( f'{aperrad:.2f}.reg', radius=aperrad )
+        sources.ds9_regfile( f'{plot_dir}/{aperrad:.2f}.reg', radius=aperrad )
 
     # Run some photutils aperture photometry
 
@@ -45,7 +48,6 @@ def test_compare_sextr_photutils( decam_example_reduced_image_ds ):
         dphot[ :, i ] = res['aperture_sum_err']
 
     _logger.info( "Done with photutils aperture photometry." )
-
 
     # Futz around a whole lot doing comparisons
 
@@ -100,9 +102,9 @@ def test_compare_sextr_photutils( decam_example_reduced_image_ds ):
         sexapercor.append( sexac )
         puapercor.append( puac )
 
-    fig.savefig( f'reldiff.svg' )
+    fig.savefig( f'{plot_dir}/reldiff.svg' )
     pyplot.close( fig )
-    figzoom.savefig( f'reldiff_zoom.svg' )
+    figzoom.savefig( f'{plot_dir}/reldiff_zoom.svg' )
     pyplot.close( figzoom )
 
     fig = pyplot.figure( figsize=(8, 6), dpi=150, layout='tight' )
@@ -113,7 +115,7 @@ def test_compare_sextr_photutils( decam_example_reduced_image_ds ):
     ax.plot( sources.aper_rads, sexapercor, marker='.', label='sextractor' )
     ax.plot( sources.aper_rads, puapercor, marker='.', label='photutils' )
     ax.legend()
-    fig.savefig( 'apcor.svg' )
+    fig.savefig( f'{plot_dir}/apcor.svg' )
     pyplot.close( fig )
 
     fig = pyplot.figure( figsize=(8, 6), dpi=150, layout='tight' )
@@ -125,7 +127,7 @@ def test_compare_sextr_photutils( decam_example_reduced_image_ds ):
              linestyle='none', marker='.' )
     ax.plot( ax.get_xlim(), [ 1, 1 ] )
     ax.set_ylim( 0., 1.2 )
-    fig.savefig( 'psf_ap_vs_ap_.svg' )
+    fig.savefig( f'{plot_dir}/psf_ap_vs_ap_.svg' )
     pyplot.close( fig )
 
     for big in range( 1, len( sources.aper_rads ) ):
@@ -183,18 +185,17 @@ def test_compare_sextr_photutils( decam_example_reduced_image_ds ):
         ax.plot( ax.get_xlim(), [ med, med ], label=f'med={med:.2f}' )
         ax.legend()
 
-        fig.savefig( f'twoaperratio_vs_oneaper_ap{big}.svg' )
+        fig.savefig( f'{plot_dir}/twoaperratio_vs_oneaper_ap{big}.svg' )
         pyplot.close( fig )
 
         fig = pyplot.figure()
-        ax = fig.add_subplot( 1,1,1 )
+        ax = fig.add_subplot( 1, 1, 1 )
         ax.set_ylabel( f'Aper={sources.aper_rads[big]:.3f} ADU / Aper={sources.aper_rads[0]:.3f} ADU' )
         ax.set_xlabel( "sextractor" )
         ax.set_ylabel( "photutils" )
         wbigflux = p0[wuse] > 200000
         ax.plot( sextr_6_0[wbigflux], pu_6_0[wbigflux], linestyle='none', marker='.' )
 
-        fig.savefig( f'twoaperratio_sexvsphot_ap{big}.svg' )
+        fig.savefig( f'{plot_dir}/twoaperratio_sexvsphot_ap{big}.svg' )
         pyplot.close( fig )
 
-    pass

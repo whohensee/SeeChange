@@ -1,6 +1,7 @@
 import os
 import pytest
 import re
+import shutil
 import uuid
 
 import numpy as np
@@ -19,8 +20,17 @@ from models.decam import DECam
 from tests.conftest import rnd_str
 
 
-def test_exposure_no_null_values():
+def test_exposure_instrument_provenance(sim_exposure1):
+    with SmartSession() as session:
+        sim_exposure1.recursive_merge( session )
+        assert sim_exposure1.id is not None
+        assert sim_exposure1.provenance is not None
+        assert sim_exposure1.provenance.id is not None
+        assert sim_exposure1.provenance.code_version is not None
+        assert sim_exposure1.provenance.parameters == {'instrument': 'DemoInstrument'}
 
+
+def test_exposure_no_null_values():
     # cannot create an exposure without a filepath!
     with pytest.raises(ValueError, match='Exposure.__init__: must give at least a filepath or an instrument'):
         _ = Exposure()
@@ -110,16 +120,19 @@ def test_exposure_guess_demo_instrument():
     assert e.ra == 123
 
 
-def test_exposure_guess_decam_instrument():
+def test_exposure_guess_decam_instrument(persistent_dir, data_dir):
 
     t = datetime.now()
     mjd = Time(t).mjd
-
-    e = Exposure(filepath=f"test_data/DECam_examples/c4d_20221002_040239_r_v1.24.fits", exp_time=30, mjd=mjd,
+    basename = "c4d_20221002_040239_r_v1.24.fits"
+    shutil.copy2(os.path.join(persistent_dir, 'test_data/DECam_examples', basename), os.path.join(data_dir, basename))
+    e = Exposure(filepath=basename, exp_time=30, mjd=mjd,
                  filter="r", ra=123, dec=-23, project='foo', target='bar', nofile=True)
 
     assert e.instrument == 'DECam'
     assert isinstance(e.instrument_object, DECam)
+    if os.path.isfile(e.get_fullpath()):
+        os.remove(e.get_fullpath())
 
 
 def test_exposure_coordinates():
@@ -145,125 +158,48 @@ def test_exposure_coordinates():
     assert abs(e.gallon - 160.922) < 0.01
 
 
-def test_exposure_load_demo_instrument_data(exposure):
+def test_exposure_load_demo_instrument_data(sim_exposure1):
     # this is a new exposure, created as a fixture (not from DB):
-    assert exposure.from_db == 0
+    assert sim_exposure1.from_db == 0
 
     # the data is a SectionData object that lazy loads from file
-    assert isinstance(exposure.data, SectionData)
-    assert exposure.data.filepath == exposure.get_fullpath()
-    assert exposure.data.instrument == exposure.instrument_object
+    assert isinstance(sim_exposure1.data, SectionData)
+    assert sim_exposure1.data.filepath == sim_exposure1.get_fullpath()
+    assert sim_exposure1.data.instrument == sim_exposure1.instrument_object
 
     # must go to the DB to get the SensorSections first:
-    exposure.instrument_object.fetch_sections()
+    sim_exposure1.instrument_object.fetch_sections()
 
     # loading the first (and only!) section data gives a random array
-    array = exposure.data[0]
+    array = sim_exposure1.data[0]
     assert isinstance(array, np.ndarray)
 
     # this array is random integers, but it is not re-generated each time:
-    assert np.array_equal(array, exposure.data[0])
+    assert np.array_equal(array, sim_exposure1.data[0])
 
-    inst = exposure.instrument_object
+    inst = sim_exposure1.instrument_object
     assert array.shape == (inst.sections['0'].size_y, inst.sections['0'].size_x)
 
     # check that we can clear the cache and "re-load" data:
-    exposure.data.clear_cache()
-    assert not np.array_equal(array, exposure.data[0])
+    sim_exposure1.data.clear_cache()
+    assert not np.array_equal(array, sim_exposure1.data[0])
 
 
-def test_exposure_comes_loaded_with_instrument_from_db(exposure):
-    try:
-        with SmartSession() as session:
-            exposure.recursive_merge( session )
-            session.add(exposure)
-            session.commit()
-            eid = exposure.id
-
-        assert eid is not None
-
-        with SmartSession() as session:
-            e2 = session.scalars(sa.select(Exposure).where(Exposure.id == eid)).first()
-            assert e2 is not None
-            assert e2.instrument_object is not None
-            assert isinstance(e2.instrument_object, DemoInstrument)
-            assert e2.instrument_object.sections is not None
-    finally:
-        with SmartSession() as session:
-            session.execute( sa.delete(Exposure).where( Exposure.id == eid ) )
-            session.commit()
-
-
-def test_exposure_spatial_indexing(exposure):
-    pass  # TODO: complete this test
-
-
-def test_decam_exposure(decam_example_file):
-    assert os.path.isfile(decam_example_file)
-
-    # verify we don't already have an Exposure like this on DB
-    decam_example_file_short = decam_example_file[len(CODE_ROOT + '/data/'):]
+def test_exposure_comes_loaded_with_instrument_from_db(sim_exposure1):
     with SmartSession() as session:
-        session.execute(sa.delete(Exposure).where(Exposure.filepath == decam_example_file_short))
-        session.commit()
+        sim_exposure1.recursive_merge( session )
+        eid = sim_exposure1.id
 
-    e = Exposure(filepath=decam_example_file)
-    e.save()  # make sure to save it to archive so it has an MD5 sum
-    assert e.instrument == 'DECam'
-    assert isinstance(e.instrument_object, DECam)
-    assert e.telescope == 'CTIO 4.0-m telescope'
-    assert e.mjd == 59887.32121458
-    assert e.end_mjd == 59887.32232569111
-    assert e.ra == 116.32024583333332
-    assert e.dec == -26.25
-    assert e.exp_time == 96.0
-    assert e.filepath == 'test_data/DECam_examples/c4d_221104_074232_ori.fits.fz'
-    assert e.filter == 'g DECam SDSS c0001 4720.0 1520.0'
-    assert not e.from_db
-    assert e.header == {}
-    assert e.id is None
-    assert e.target == 'DECaPS-West'
-    assert e.project == '2022A-724693'
+    assert eid is not None
 
-    # check that we can lazy load the header from file
-    assert len(e.raw_header) == 150
-    assert e.raw_header['NAXIS'] == 0
-
-    with pytest.raises(ValueError, match=re.escape('The section_id must be a string. ')):
-        _ = e.data[0]
-
-    assert isinstance(e.data['N4'], np.ndarray)
-    assert e.data['N4'].shape == (4146, 2160)
-    assert e.data['N4'].dtype == 'uint16'
-
-    with pytest.raises(ValueError, match=re.escape('The section_id must be a string. ')):
-        _ = e.section_headers[0]
-
-    assert len(e.section_headers['N4']) == 100
-    assert e.section_headers['N4']['NAXIS'] == 2
-    assert e.section_headers['N4']['NAXIS1'] == 2160
-    assert e.section_headers['N4']['NAXIS2'] == 4146
-
-    try:
-        exp_id = None
-        with SmartSession() as session:
-            e = e.recursive_merge( session )
-            session.add(e)
-            session.commit()
-            exp_id = e.id
-            assert exp_id is not None
-
-        with SmartSession() as session:
-            e2 = session.scalars(sa.select(Exposure).where(Exposure.id == exp_id)).first()
-            assert e2 is not None
-            assert e2.id == exp_id
-            assert e2.from_db
-
-    finally:
-        if exp_id is not None:
-            with SmartSession() as session:
-                e = e.recursive_merge( session )
-                session.delete(e)
-                session.commit()
+    # now reload this exposure from the DB:
+    with SmartSession() as session:
+        e2 = session.scalars(sa.select(Exposure).where(Exposure.id == eid)).first()
+        assert e2 is not None
+        assert e2.instrument_object is not None
+        assert isinstance(e2.instrument_object, DemoInstrument)
+        assert e2.instrument_object.sections is not None
 
 
+def test_exposure_spatial_indexing(sim_exposure1):
+    pass  # TODO: complete this test

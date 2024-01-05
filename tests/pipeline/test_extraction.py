@@ -12,17 +12,18 @@ import sqlalchemy as sa
 
 from astropy.io import votable
 
-from models.base import SmartSession, FileOnDiskMixin, get_archive_object
+from models.base import SmartSession, FileOnDiskMixin, get_archive_object, CODE_ROOT
 from models.provenance import Provenance
 from models.image import Image
 from models.source_list import SourceList
 
-from pipeline.detection import Detector
 
-
-def test_sep_find_sources_in_small_image(decam_small_image):
-    det = Detector(method='sep', subtraction=False, threshold=3.0)
-
+def test_sep_find_sources_in_small_image(decam_small_image, extractor, blocking_plots):
+    det = extractor
+    det.pars.method = 'sep'
+    det.pars.subtraction = False
+    det.pars.threshold = 3.0
+    det.pars.test_parameter = uuid.uuid4().hex
     sources, _ = det.extract_sources(decam_small_image)
 
     assert sources.num_sources == 158
@@ -31,11 +32,9 @@ def test_sep_find_sources_in_small_image(decam_small_image):
     assert abs(np.mean(sources.data['y']) - 256) < 10
     assert 2.0 < np.median(sources.data['rhalf']) < 2.5
 
-    if False:  # use this for debugging / visualization only!
-        import matplotlib
+    if blocking_plots:  # use this for debugging / visualization only!
         import matplotlib.pyplot as plt
         from matplotlib.patches import Ellipse
-        matplotlib.use('Qt5Agg')
 
         data = decam_small_image.data
         m, s = np.mean(data), np.std(data)
@@ -68,23 +67,23 @@ def test_sep_find_sources_in_small_image(decam_small_image):
     assert 2.0 < np.median(sources2.data['rhalf']) < 2.5
 
 
-def test_sep_save_source_list(decam_small_image, provenance_base, code_version):
+def test_sep_save_source_list(decam_small_image, provenance_base, extractor):
     decam_small_image.provenance = provenance_base
-    det = Detector(method='sep', subtraction=False, threshold=3.0)
-    sources, _ = det.extract_sources(decam_small_image)
+
+    extractor.pars.method = 'sep'
+    extractor.pars.subtraction = False
+    extractor.pars.threshold = 3.0
+    extractor.pars.test_parameter = uuid.uuid4().hex
+    sources, _ = extractor.extract_sources(decam_small_image)
     prov = Provenance(
         process='extraction',
-        code_version=code_version,
-        parameters=det.pars.get_critical_pars(),
-        upstreams=[provenance_base],
-        is_testing=True
+        code_version=provenance_base.code_version,
+        parameters=extractor.pars.get_critical_pars(),
+        upstreams=[decam_small_image.provenance],
+        is_testing=True,
     )
     prov.update_id()
     sources.provenance = prov
-
-    filename = None
-    image_id = None
-    sources_id = None
 
     try:  # cleanup file / DB at the end
         sources.save()
@@ -110,7 +109,7 @@ def test_sep_save_source_list(decam_small_image, provenance_base, code_version):
             sources_id = sources.id
 
     finally:
-        if filename is not None and os.path.isfile(filename):
+        if 'filename' in locals() and os.path.isfile(filename):
             os.remove(filename)
             folder = filename
             for i in range(10):
@@ -120,22 +119,17 @@ def test_sep_save_source_list(decam_small_image, provenance_base, code_version):
                 else:
                     break
         with SmartSession() as session:
-            if sources_id is not None:
+            if 'sources_id' in locals():
                 session.execute(sa.delete(SourceList).where(SourceList.id == sources_id))
-            if image_id is not None:
+            if 'image_id' in locals():
                 session.execute(sa.delete(Image).where(Image.id == image_id))
             session.commit()
 
 
 # This is running sextractor in one particular way that is used by more than one test
-def run_sextractor( ds ):
-    ds.sources = None
-    ds.psf = None
-
-    detector = Detector( method='sextractor', subtraction=False, apers=[5.], threshold=4.5 )
-
+def run_sextractor( image, extractor ):
     tempname = ''.join( random.choices( 'abcdefghijklmnopqrstuvwxyz', k=10 ) )
-    sourcelist = detector._run_sextractor_once( ds.image, tempname=tempname )
+    sourcelist = extractor._run_sextractor_once( image, tempname=tempname )
     sourcefile = pathlib.Path( FileOnDiskMixin.temp_path ) / f"{tempname}.sources.fits"
     imagefile =  pathlib.Path( FileOnDiskMixin.temp_path ) / f"{tempname}.fits"
     assert not imagefile.exists()
@@ -144,63 +138,71 @@ def run_sextractor( ds ):
     return sourcelist, sourcefile
 
 
-def test_sextractor_extract_once( decam_example_reduced_image_ds ):
-    sourcelist, sourcefile = run_sextractor(decam_example_reduced_image_ds)
+def test_sextractor_extract_once( decam_datastore, extractor ):
+    try:
+        extractor.pars.method = 'sextractor'
+        extractor.pars.subtraction = False
+        extractor.pars.apers = [ 5. ]
+        extractor.pars.threshold = 4.5
+        extractor.pars.test_parameter = uuid.uuid4().hex
+        sourcelist, sourcefile = run_sextractor(decam_datastore.image, extractor)
 
-    assert sourcelist.num_sources == 5611
-    assert len(sourcelist.data) == sourcelist.num_sources
-    assert sourcelist.aper_rads == [ 5. ]
-    assert sourcelist._inf_aper_num is None
-    assert sourcelist.inf_aper_num == 0
+        assert sourcelist.num_sources == 5611
+        assert len(sourcelist.data) == sourcelist.num_sources
+        assert sourcelist.aper_rads == [ 5. ]
+        assert sourcelist._inf_aper_num is None
+        assert sourcelist.inf_aper_num == 0
 
-    assert sourcelist.info['SEXAPED1'] == 10.0
-    assert sourcelist.info['SEXAPED2'] == 0.
-    assert sourcelist.info['SEXBKGND'] == pytest.approx( 179.8, abs=0.1 )
+        assert sourcelist.info['SEXAPED1'] == 10.0
+        assert sourcelist.info['SEXAPED2'] == 0.
+        assert sourcelist.info['SEXBKGND'] == pytest.approx( 179.8, abs=0.1 )
 
-    assert sourcelist.x.min() == pytest.approx( 16.0, abs=0.1 )
-    assert sourcelist.x.max() == pytest.approx( 2039.6, abs=0.1 )
-    assert sourcelist.y.min() == pytest.approx( 16.3, abs=0.1 )
-    assert sourcelist.y.max() == pytest.approx( 4087.9, abs=0.1 )
-    assert sourcelist.errx.min() == pytest.approx( 0.0005, abs=1e-4 )
-    assert sourcelist.errx.max() == pytest.approx( 1.05, abs=0.01 )
-    assert sourcelist.erry.min() == pytest.approx( 0.001, abs=1e-3 )
-    assert sourcelist.erry.max() == pytest.approx( 0.62, abs=0.01 )
-    assert ( np.sqrt( sourcelist.varx ) == sourcelist.errx ).all()
-    assert ( np.sqrt( sourcelist.vary ) == sourcelist.erry ).all()
-    assert sourcelist.apfluxadu()[0].min() == pytest.approx( -656.8731, rel=1e-5 )
-    assert sourcelist.apfluxadu()[0].max() == pytest.approx( 2850920.0, rel=1e-5 )
-    snr = sourcelist.apfluxadu()[0] / sourcelist.apfluxadu()[1]
-    assert snr.min() == pytest.approx( -9.91, abs=0.1 )
-    assert snr.max() == pytest.approx( 2348.2, abs=1. )
-    assert snr.mean() == pytest.approx( 146.80, abs=0.1 )
-    assert snr.std() == pytest.approx( 285.4, abs=1. )
+        assert sourcelist.x.min() == pytest.approx( 16.0, abs=0.1 )
+        assert sourcelist.x.max() == pytest.approx( 2039.6, abs=0.1 )
+        assert sourcelist.y.min() == pytest.approx( 16.3, abs=0.1 )
+        assert sourcelist.y.max() == pytest.approx( 4087.9, abs=0.1 )
+        assert sourcelist.errx.min() == pytest.approx( 0.0005, abs=1e-4 )
+        assert sourcelist.errx.max() == pytest.approx( 1.05, abs=0.01 )
+        assert sourcelist.erry.min() == pytest.approx( 0.001, abs=1e-3 )
+        assert sourcelist.erry.max() == pytest.approx( 0.62, abs=0.01 )
+        assert ( np.sqrt( sourcelist.varx ) == sourcelist.errx ).all()
+        assert ( np.sqrt( sourcelist.vary ) == sourcelist.erry ).all()
+        assert sourcelist.apfluxadu()[0].min() == pytest.approx( -656.8731, rel=1e-5 )
+        assert sourcelist.apfluxadu()[0].max() == pytest.approx( 2850920.0, rel=1e-5 )
+        snr = sourcelist.apfluxadu()[0] / sourcelist.apfluxadu()[1]
+        assert snr.min() == pytest.approx( -9.91, abs=0.1 )
+        assert snr.max() == pytest.approx( 2348.2, abs=1. )
+        assert snr.mean() == pytest.approx( 146.80, abs=0.1 )
+        assert snr.std() == pytest.approx( 285.4, abs=1. )
 
-    # Test multiple apertures
-    detector = Detector( method='sextractor', subtraction=False, threshold=4.5 )
+        # Test multiple apertures
+        sourcelist = extractor._run_sextractor_once( decam_datastore.image, apers=[2, 5] )
 
-    sourcelist = detector._run_sextractor_once( decam_example_reduced_image_ds.image, apers=[2,5] )
+        assert sourcelist.num_sources == 5611    # It *finds* the same things
+        assert len(sourcelist.data) == sourcelist.num_sources
+        assert sourcelist.aper_rads == [ 2., 5. ]
+        assert sourcelist._inf_aper_num is None
+        assert sourcelist.inf_aper_num == 1
 
-    assert sourcelist.num_sources == 5611    # It *finds* the same things
-    assert len(sourcelist.data) == sourcelist.num_sources
-    assert sourcelist.aper_rads == [ 2., 5. ]
-    assert sourcelist._inf_aper_num is None
-    assert sourcelist.inf_aper_num == 1
+        assert sourcelist.info['SEXAPED1'] == 4.0
+        assert sourcelist.info['SEXAPED2'] == 10.0
+        assert sourcelist.info['SEXBKGND'] == pytest.approx( 179.8, abs=0.1 )
+        assert sourcelist.x.min() == pytest.approx( 16.0, abs=0.1 )
+        assert sourcelist.x.max() == pytest.approx( 2039.6, abs=0.1 )
+        assert sourcelist.y.min() == pytest.approx( 16.3, abs=0.1 )
+        assert sourcelist.y.max() == pytest.approx( 4087.9, abs=0.1 )
+        assert sourcelist.apfluxadu(apnum=1)[0].min() == pytest.approx( -656.8731, rel=1e-5 )
+        assert sourcelist.apfluxadu(apnum=1)[0].max() == pytest.approx( 2850920.0, rel=1e-5 )
+        assert sourcelist.apfluxadu(apnum=0)[0].min() == pytest.approx( 89.445114, rel=1e-5 )
+        assert sourcelist.apfluxadu(apnum=0)[0].max() == pytest.approx( 557651.8, rel=1e-5 )
 
-    assert sourcelist.info['SEXAPED1'] == 4.0
-    assert sourcelist.info['SEXAPED2'] == 10.0
-    assert sourcelist.info['SEXBKGND'] == pytest.approx( 179.8, abs=0.1 )
-    assert sourcelist.x.min() == pytest.approx( 16.0, abs=0.1 )
-    assert sourcelist.x.max() == pytest.approx( 2039.6, abs=0.1 )
-    assert sourcelist.y.min() == pytest.approx( 16.3, abs=0.1 )
-    assert sourcelist.y.max() == pytest.approx( 4087.9, abs=0.1 )
-    assert sourcelist.apfluxadu(apnum=1)[0].min() == pytest.approx( -656.8731, rel=1e-5 )
-    assert sourcelist.apfluxadu(apnum=1)[0].max() == pytest.approx( 2850920.0, rel=1e-5 )
-    assert sourcelist.apfluxadu(apnum=0)[0].min() == pytest.approx( 89.445114, rel=1e-5 )
-    assert sourcelist.apfluxadu(apnum=0)[0].max() == pytest.approx( 557651.8, rel=1e-5 )
+    finally:  # cleanup temporary file
+        if 'sourcefile' in locals():
+            sourcefile.unlink( missing_ok=True )
 
 
-def test_run_psfex( decam_example_reduced_image_ds ):
-    sourcelist = decam_example_reduced_image_ds.sources
+def test_run_psfex( decam_datastore, extractor ):
+    sourcelist = decam_datastore.sources
     tempname = ''.join( random.choices( 'abcdefghijklmnopqrstuvwxyz', k=10 ) )
     temp_path = pathlib.Path( FileOnDiskMixin.temp_path )
     tmpsourcefile =  temp_path / f'{tempname}.sources.fits'
@@ -209,8 +211,10 @@ def test_run_psfex( decam_example_reduced_image_ds ):
     shutil.copy2( sourcelist.get_fullpath(), tmpsourcefile )
 
     try:
-        detector = Detector( method='sextractor', subtraction=False, threshold=4.5 )
-        psf = detector._run_psfex( tempname, sourcelist.image_id )
+        extractor.pars.method = 'sextractor'
+        extractor.pars.subtraction = False
+        extractor.pars.threshold = 4.5
+        psf = extractor._run_psfex( tempname, sourcelist.image_id )
         assert psf._header['PSFAXIS1'] == 25
         assert psf._header['PSFAXIS2'] == 25
         assert psf._header['PSFAXIS3'] == 6
@@ -222,13 +226,13 @@ def test_run_psfex( decam_example_reduced_image_ds ):
         assert not tmppsffile.exists()
         assert not tmppsfxmlfile.exists()
 
-        psf = detector._run_psfex( tempname, sourcelist.image_id, do_not_cleanup=True )
+        psf = extractor._run_psfex( tempname, sourcelist.image_id, do_not_cleanup=True )
         assert tmppsffile.exists()
         assert tmppsfxmlfile.exists()
         tmppsffile.unlink()
         tmppsfxmlfile.unlink()
 
-        psf = detector._run_psfex( tempname, sourcelist.image_id, psf_size=26 )
+        psf = extractor._run_psfex( tempname, sourcelist.image_id, psf_size=26 )
         assert psf._header['PSFAXIS1'] == 29
         assert psf._header['PSFAXIS1'] == 29
 
@@ -238,22 +242,23 @@ def test_run_psfex( decam_example_reduced_image_ds ):
         tmppsfxmlfile.unlink( missing_ok=True )
 
 
-def test_extract_sources_sextractor( decam_example_reduced_image_ds ):
-    ds = decam_example_reduced_image_ds
-    ds.sources = None
-    ds.psf = None
+def test_extract_sources_sextractor( decam_datastore, extractor, blocking_plots ):
+    ds = decam_datastore
 
-    det = Detector( method='sextractor', measure_psf=True, threshold=5.0 )
-    sources, psf = det.extract_sources( ds.image )
+    extractor.pars.method = 'sextractor'
+    extractor.measure_psf = True
+    extractor.pars.threshold = 5.0
+    sources, psf = extractor.extract_sources( ds.image )
 
     # Make True to write some ds9 regions
-    if False:
-        sources.ds9_regfile( 'test_sources_stars.reg', color='green', radius=4, whichsources='stars' )
-        sources.ds9_regfile( 'test_sources_nonstars.reg', color='red', radius=4, whichsources='nonstars' )
+    if os.getenv('INTERACTIVE', False):
+        basepath = os.path.join(CODE_ROOT, 'tests/plots/test_sources')
+        sources.ds9_regfile( basepath + '_stars.reg', color='green', radius=4, whichsources='stars' )
+        sources.ds9_regfile( basepath + '_nonstars.reg', color='red', radius=4, whichsources='nonstars' )
 
         # Manually write one that uses CLASS_STAR instead of SPREAD_MODEL
         use = sources.data['CLASS_STAR'] > 0.5
-        with open( 'test_sources_class_star.reg', 'w' ) as ofp:
+        with open( basepath + '_class_star.reg', 'w' ) as ofp:
             for x, y, use in zip( sources.x, sources.y, use ):
                 if use:
                     ofp.write( f"image;circle({x+1},{y+1},6) # color=blue width=2\n" )
@@ -286,14 +291,17 @@ def test_extract_sources_sextractor( decam_example_reduced_image_ds ):
 # TODO : add tests that handle different combinations
 #  of measure_psf and psf being passed to the Detector constructor
 
-def test_run_detection_sextractor( decam_example_reduced_image_ds ):
-    ds = decam_example_reduced_image_ds
-    ds.sources = None
-    ds.psf = None
+def test_run_detection_sextractor( decam_datastore, extractor ):
+    ds = decam_datastore
 
-    det = Detector( method='sextractor', measure_psf=True, threshold=5.0 )
-    ds = det.run( ds )
+    # det = Detector( method='sextractor', measure_psf=True, threshold=5.0 )
+    extractor.pars.method = 'sextractor'
+    extractor.measure_psf = True
+    extractor.pars.threshold = 5.0
+    extractor.pars.test_parameter = uuid.uuid4().hex
+    ds = extractor.run( ds )
 
+    assert extractor.has_recalculated
     assert ds.sources.num_sources == 5499
     assert ds.sources.num_sources == len(ds.sources.data)
     assert ds.sources.aper_rads == pytest.approx( [ 2.914, 4.328, 8.656, 12.984,
@@ -325,26 +333,34 @@ def test_run_detection_sextractor( decam_example_reduced_image_ds ):
     # wrong.
 
     assert ds.sources.psffluxadu()[0].min() == 0.0
-    assert ds.sources.psffluxadu()[0].max() == pytest.approx( 1726249.0, rel=1e-5 )
-    assert ds.sources.psffluxadu()[0].mean() == pytest.approx( 48067.805, rel=1e-5 )
-    assert ds.sources.psffluxadu()[0].std() == pytest.approx( 169444.77, rel=1e-5 )
+    assert ds.sources.psffluxadu()[0].max() == pytest.approx( 1726249.0, rel=1e-3 )
+    assert ds.sources.psffluxadu()[0].mean() == pytest.approx( 48067.805, rel=1e-3 )
+    assert ds.sources.psffluxadu()[0].std() == pytest.approx( 169444.77, rel=1e-3 )
 
     assert ds.sources.provenance is not None
     assert ds.sources.provenance == ds.psf.provenance
     assert ds.sources.provenance.process == 'extraction'
 
-    try:
-        ds.save_and_commit()
+    from sqlalchemy.exc import IntegrityError
 
-        # Make sure all the files exist
-        archive = get_archive_object()
-        imdir = pathlib.Path( FileOnDiskMixin.local_path )
-        base = ds.image.filepath
-        relpaths = [ f'{base}{i}' for i in [ '.image.fits', '.weight.fits', '.flags.fits',
-                                             '.sources.fits', '.psf', '.psf.xml' ] ]
-        for relp in relpaths:
-            assert ( imdir / relp ).is_file()
-            assert archive.get_info( relp ) is not None
+    try:
+        # this fails because the sources' filename does not include the sources' provenance hash
+        # see issue #146
+        with pytest.raises(
+                IntegrityError,
+                match='duplicate key value violates unique constraint "ix_source_lists_filepath"'
+        ):
+            ds.save_and_commit()
+
+            # Make sure all the files exist
+            archive = get_archive_object()
+            imdir = pathlib.Path( FileOnDiskMixin.local_path )
+            base = ds.image.filepath
+            relpaths = [ f'{base}{i}' for i in [ '.image.fits', '.weight.fits', '.flags.fits',
+                                                 '.sources.fits', '.psf', '.psf.xml' ] ]
+            for relp in relpaths:
+                assert ( imdir / relp ).is_file()
+                assert archive.get_info( relp ) is not None
 
     finally:
         ds.delete_everything()

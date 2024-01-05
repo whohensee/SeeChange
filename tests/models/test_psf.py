@@ -16,6 +16,7 @@ from util.config import Config
 from models.base import FileOnDiskMixin, _logger, CODE_ROOT, get_archive_object
 from models.psf import PSF
 
+
 class PSFPaletteMaker:
     def __init__( self, round=False ):
         tempname = ''.join( random.choices( 'abcdefghijklmnopqrstuvwxyz', k=10 ) )
@@ -103,7 +104,6 @@ class PSFPaletteMaker:
         hdu = fits.PrimaryHDU( data=np.full( self.img.shape, 1. / ( self.noiselevel**2 ) ) )
         hdu.writeto( self.weightname, overwrite=True )
 
-
     def extract_and_psfex( self ):
         astromatic_dir = None
         cfg = Config.get()
@@ -184,6 +184,7 @@ def round_psf_palette():
 
     palette.cleanup()
 
+
 @pytest.fixture(scope="module")
 def psf_palette():
     palette = PSFPaletteMaker( round=False )
@@ -193,6 +194,7 @@ def psf_palette():
     yield palette
 
     palette.cleanup()
+
 
 def check_example_psfex_psf_values( psf ):
     assert psf.header[ 'TTYPE1' ] == 'PSF_MASK'
@@ -214,14 +216,16 @@ def check_example_psfex_psf_values( psf ):
     assert psfstats.array[ 'NStars_Accepted_Mean' ] ==  41
     assert psfstats.array[ 'FWHM_FromFluxRadius_Mean' ] == pytest.approx( 3.13, abs=0.01 )
 
-def test_read_psfex_psf( example_image_with_sources_and_psf_filenames ):
-    im, wt, fl, sr, psfpath, psfxmlpath = example_image_with_sources_and_psf_filenames
+
+def test_read_psfex_psf( ztf_filepaths_image_sources_psf ):
+    im, wt, fl, sr, psfpath, psfxmlpath = ztf_filepaths_image_sources_psf
     psf = PSF( format='psfex' )
     psf.load( psfpath=psfpath, psfxmlpath=psfxmlpath )
     check_example_psfex_psf_values( psf )
 
-def test_write_psfex_psf( example_image_with_sources_and_psf_filenames ):
-    image, weight, flags, sourcepath, psfpath, psfxmlpath = example_image_with_sources_and_psf_filenames
+
+def test_write_psfex_psf( ztf_filepaths_image_sources_psf ):
+    image, weight, flags, sourcepath, psfpath, psfxmlpath = ztf_filepaths_image_sources_psf
     psf = PSF( format='psfex' )
     psf.load( psfpath=psfpath, psfxmlpath=psfxmlpath )
 

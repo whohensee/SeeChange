@@ -7,6 +7,7 @@ from models.image import Image
 from models.datafile import DataFile
 from models.enums_and_bitflags import CalibratorTypeConverter, CalibratorSetConverter, FlatTypeConverter
 
+
 class CalibratorFile(Base, AutoIDMixin):
     __tablename__ = 'calibrator_files'
 
@@ -127,3 +128,14 @@ class CalibratorFile(Base, AutoIDMixin):
               ' which this calibrator file is no longer.  If None, this '
               ' calibrator is valid to the end of time.' )
     )
+
+    def __repr__(self):
+        return (
+            f'<CalibratorFile('
+            f'id={self.id}, '
+            f'type={self.type}, '
+            # f'set={self.calibrator_set}, '  # TODO: there's some issue loading the calibrator_set
+            f'image_id={self.image_id}, '
+            f'datafile_id={self.datafile_id}, '
+            f'>'
+        )

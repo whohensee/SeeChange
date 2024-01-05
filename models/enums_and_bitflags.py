@@ -174,10 +174,12 @@ class ImageTypeConverter( EnumConverter ):
     _dict_filtered = None
     _dict_inverse = None
 
+
 class CatalogExcerptFormatConverter( FormatConverter ):
     _allowed_values = [ 'fitsldac' ]
     _dict_filtered = None
     _dict_inverse = None
+
 
 class CatalogExcerptOriginConverter( EnumConverter ):
     _dict = {
@@ -187,6 +189,7 @@ class CatalogExcerptOriginConverter( EnumConverter ):
     _allowed_values = None
     _dict_filtered = None
     _dict_inverse = None
+
 
 class CalibratorTypeConverter( EnumConverter ):
     _dict = {
@@ -202,6 +205,7 @@ class CalibratorTypeConverter( EnumConverter ):
     _dict_filtered = None
     _dict_inverse = None
 
+
 class CalibratorSetConverter( EnumConverter ):
     _dict = {
         0: 'unknown',
@@ -209,6 +213,7 @@ class CalibratorSetConverter( EnumConverter ):
         2: 'general',             # A calib file you built yourself and use for a long time
         3: 'nightly'              # A calib built each night (or for a very limited mjd range)
     }
+
 
 class FlatTypeConverter( EnumConverter ):
     _dict = {
@@ -221,6 +226,7 @@ class FlatTypeConverter( EnumConverter ):
     _allowed_values = None
     _dict_filtered = None
     _dict_inverse = None
+
 
 class PSFFormatConverter( EnumConverter ):
     _dict = {

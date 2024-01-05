@@ -8,23 +8,25 @@ from models.base import Base, AutoIDMixin, HasBitFlagBadness
 from models.enums_and_bitflags import catalog_match_badness_inverse
 
 
-class ZeroPoint(Base, AutoIDMixin):
+class ZeroPoint(Base, AutoIDMixin, HasBitFlagBadness):
     __tablename__ = 'zero_points'
 
-    source_list_id = sa.Column(
+    sources_id = sa.Column(
         sa.ForeignKey('source_lists.id', ondelete='CASCADE', name='zero_points_source_list_id_fkey'),
         nullable=False,
         index=True,
-        doc="ID of the source list this zero point is associated with. "
+        doc="ID of the source list this zero point is associated with. ",
     )
 
-    source_list = orm.relationship(
+    sources = orm.relationship(
         'SourceList',
         lazy='selectin',
-        doc="The source list this zero point is associated with. "
+        cascade='save-update, merge, refresh-expire, expunge',
+        passive_deletes=True,
+        doc="The source list this zero point is associated with. ",
     )
 
-    image = association_proxy( "source_list", "image" )
+    image = association_proxy( "sources", "image" )
 
     provenance_id = sa.Column(
         sa.ForeignKey('provenances.id', ondelete="CASCADE", name='zero_points_provenance_id_fkey'),

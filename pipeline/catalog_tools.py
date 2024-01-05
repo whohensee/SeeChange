@@ -270,7 +270,7 @@ def download_GaiaDR3( minra, maxra, mindec, maxdec, padding=0.1, minmag=18., max
 # ----------------------------------------------------------------------
 
 def fetch_GaiaDR3_excerpt( image, minstars=50, maxmags=22, magrange=None, session=None, onlycached=False ):
-    """Search catalog exerpts for a compatible GaiaDR3 excerpt; if not found, make one.
+    """Search catalog excerpts for a compatible GaiaDR3 excerpt; if not found, make one.
 
     If multiple matching catalogs are found, will return the first
     one that the database happens to return.  (TODO: perhaps return
@@ -362,8 +362,16 @@ def fetch_GaiaDR3_excerpt( image, minstars=50, maxmags=22, magrange=None, sessio
                       .filter( CatalogExcerpt.minmag <= minmag+0.1 ) )
             if q.count() > 0:
                 catexp = q.first()
-                break
-            elif not onlycached:
+
+                if not os.path.isfile( catexp.get_fullpath() ):
+                    _logger.info( f"CatalogExcerpt {catexp.id} has no file at {catexp.filepath}")
+                    session.delete( catexp )
+                    session.commit()
+                    catexp = None
+                else:
+                    break
+
+            if catexp is None and not onlycached:
                 # No cached catalog excerpt, so query the NOIRLab server
                 catexp, localfile, dbfile = download_GaiaDR3(
                     minra,

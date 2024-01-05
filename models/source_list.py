@@ -1,8 +1,4 @@
 import os
-import re
-import pathlib
-
-from functools import partial
 
 import numpy as np
 import pandas as pd
@@ -10,18 +6,14 @@ import pandas as pd
 import sqlalchemy as sa
 from sqlalchemy import orm
 from sqlalchemy.ext.hybrid import hybrid_property
-from sqlalchemy.sql.functions import coalesce
+from sqlalchemy.ext.associationproxy import association_proxy
 
 import astropy.table
-from astropy.io import fits
 
 from models.base import Base, SmartSession, AutoIDMixin, FileOnDiskMixin, SeeChangeBase, HasBitFlagBadness, _logger
 from models.image import Image
 from models.enums_and_bitflags import (
     SourceListFormatConverter,
-    bitflag_to_string,
-    string_to_bitflag,
-    data_badness_dict,
     source_list_badness_inverse,
 )
 from util.util import ensure_file_does_not_exist
@@ -65,7 +57,7 @@ class SourceList(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
         self._format = SourceListFormatConverter.convert(value)
 
     image_id = sa.Column(
-        sa.ForeignKey('images.id', name='source_lists_image_id_fkey'),
+        sa.ForeignKey('images.id', ondelete='CASCADE', name='source_lists_image_id_fkey'),
         nullable=False,
         index=True,
         doc="ID of the image this source list was generated from. "
@@ -74,22 +66,14 @@ class SourceList(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
     image = orm.relationship(
         'Image',
         lazy='selectin',
+        cascade='save-update, merge, refresh-expire, expunge',
+        passive_deletes=True,
         doc="The image this source list was generated from. "
     )
 
-    @hybrid_property
-    def is_sub(self):
-        """Whether this source list is from a subtraction image (detections),
-        or from a regular image (sources, the default).
-        """
-        if self.image is None:
-            return None
-        else:
-            return self.image.is_sub
+    is_sub = association_proxy('image', 'is_sub')
 
-    @is_sub.expression
-    def is_sub(cls):
-        return sa.select(Image.is_sub).where(Image.id == cls.image_id).label('is_sub')
+    is_coadd = association_proxy('image', 'is_coadd')
 
     @hybrid_property
     def is_coadd(self):
@@ -178,6 +162,7 @@ class SourceList(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
     def __setattr__(self, key, value):
         if key == 'image' and value is not None:
             self._upstream_bitflag = value.bitflag
+        # TODO: what happens if setting the image_id instead of the image?
 
         super().__setattr__(key, value)
 
@@ -701,13 +686,15 @@ class SourceList(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
         from models.world_coordinates import WorldCoordinates
         from models.zero_point import ZeroPoint
 
+        # TODO: add Cutouts and Measurements?
         with SmartSession(session) as session:
-            wcs = session.scalars(sa.select(WorldCoordinates).where(WorldCoordinates.source_list_id == self.id)).all()
-            zps = session.scalars(sa.select(ZeroPoint).where(ZeroPoint.source_list_id == self.id)).all()
+            wcs = session.scalars(sa.select(WorldCoordinates).where(WorldCoordinates.sources_id == self.id)).all()
+            zps = session.scalars(sa.select(ZeroPoint).where(ZeroPoint.sources_id == self.id)).all()
 
         return wcs + zps
 
 
+# TODO: replace these with association proxies?
 # add "property" attributes to SourceList referencing the image for convenience
 for att in [
     'section_id',

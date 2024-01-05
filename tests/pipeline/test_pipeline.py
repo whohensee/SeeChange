@@ -1,26 +1,16 @@
 import os
 import pytest
-
+import shutil
 import sqlalchemy as sa
 
 from models.base import SmartSession, FileOnDiskMixin
 from models.provenance import Provenance
-from models.exposure import Exposure
 from models.image import Image, image_upstreams_association_table
 from models.source_list import SourceList
 from models.world_coordinates import WorldCoordinates
 from models.zero_point import ZeroPoint
-from models.cutouts import Cutouts
-from models.measurements import Measurements
 
 from pipeline.top_level import Pipeline
-
-
-def match_exposure_to_reference_entry(exposure, reference_entry):
-    """Make sure the exposure has the same target, project, filter, and section_id as the reference image."""
-    exposure.target = reference_entry.target
-    exposure.project = reference_entry.image.project
-    exposure.filter = reference_entry.filter
 
 
 def check_datastore_and_database_have_everything(exp_id, sec_id, ref_id, session, ds):
@@ -65,9 +55,6 @@ def check_datastore_and_database_have_everything(exp_id, sec_id, ref_id, session
     assert zp is not None
     assert ds.zp.id == zp.id
 
-    # sub = session.scalars(
-    #     sa.select(Image).where(Image.new_image_id == im.id, Image.ref_image_id == ref_id)
-    # ).first()
     aliased_table = sa.orm.aliased(image_upstreams_association_table)
     sub = session.scalars(
         sa.select(Image).join(
@@ -98,7 +85,7 @@ def check_datastore_and_database_have_everything(exp_id, sec_id, ref_id, session
     # TODO: add the cutouts and measurements, but we need to produce them first!
 
 
-def test_parameters( config_test ):
+def test_parameters( test_config ):
     """Test that pipeline parameters are being set properly"""
 
     # Verify that we _enforce_no_new_attrs works
@@ -145,37 +132,24 @@ def test_parameters( config_test ):
 
 
 # TODO: need to finish this test (i.e., finish subtraction, source extraction from sub image, etc)
-def test_data_flow(decam_example_exposure, reference_entry_decam_example):
+def test_data_flow(decam_exposure, decam_reference, decam_default_calibrators):
     """Test that the pipeline runs end-to-end."""
-    exposure = decam_example_exposure
-    exposure.save()
-    ref = reference_entry_decam_example
-    ref.image.save()
+    exposure = decam_exposure
+
+    ref = decam_reference
     sec_id = ref.section_id
-    exp_id = None
-    ds = None
     try:  # cleanup the file at the end
-        # add the exposure to DB and use that ID to run the pipeline
-        with SmartSession() as session:
-            ref = ref.recursive_merge(session)
-            session.add(ref)
-            exposure.provenance = session.merge( exposure.provenance )
-            match_exposure_to_reference_entry(exposure, ref)
-
-            session.add(exposure)
-            session.commit()
-            exp_id = exposure.id
-
-            filename = exposure.get_fullpath()
-            open(filename, 'a').close()
-            ref_id = ref.image.id
+        # with SmartSession() as session:
+        #     ref = ref.recursive_merge(session)
+        #     exposure = exposure.recursive_merge(session)
 
         p = Pipeline()
         assert p.extractor.pars.threshold != 3.14
         assert p.detector.pars.threshold != 3.14
 
         with pytest.raises(NotImplementedError, match="This needs to be updated for detection on a subtraction."):
-            ds = p.run(exp_id, sec_id)
+            # TODO: failure modes! if the run fails we never get a datastore back, and can't issue a delete_everything!
+            ds = p.run(exposure, sec_id)
         return  # TODO: need to finish subtraction and detection etc and bring this back:
         # commit to DB using this session
         with SmartSession() as session:
@@ -236,13 +210,9 @@ def test_data_flow(decam_example_exposure, reference_entry_decam_example):
                 check_datastore_and_database_have_everything(exp_id, sec_id, ref_id, session, ds)
 
     finally:
-        if ds is not None:
+        if 'ds' in locals():
             ds.delete_everything()
-        if exp_id is not None:
-            with SmartSession() as session:
-                exposure = session.scalars(sa.select(Exposure).where(Exposure.id == exp_id)).first()
-                if exposure is not None:
-                    exposure.remove_data_from_disk()
-                    session.delete(exposure)
-                    session.commit()
+        # added this cleanup to make sure the temp data folder is cleaned up
+        # this should be removed after we add datastore failure modes (issue #150)
+        shutil.rmtree(os.path.join(os.path.dirname(exposure.get_fullpath()), '115'), ignore_errors=True)
 

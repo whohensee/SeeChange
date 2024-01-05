@@ -11,8 +11,12 @@ import astropy.wcs.utils
 from util import ldac
 from util.exceptions import SubprocessFailure, BadMatchException
 import improc.scamp
-from models.base import SmartSession, FileOnDiskMixin, _logger
+
+
+from models.base import FileOnDiskMixin, _logger
+from models.provenance import Provenance
 from models.image import Image
+
 from pipeline.data_store import DataStore
 from pipeline.parameters import Parameters
 from pipeline.utils import read_fits_image
@@ -41,7 +45,7 @@ class ImageAligner:
     def __init__( self, **kwargs ):
         self.pars = ParsImageAligner( **kwargs )
 
-    def _align_swarp( self, image, target, sources, targetsources, imagezp, session=None ):
+    def _align_swarp( self, image, target, sources, target_sources ):
         """Use scamp and swarp to align image to target.
 
         Parameters
@@ -59,16 +63,9 @@ class ImageAligner:
           sources: SourceList
             A SourceList from the image, with good RA/Dec values
 
-          targetsources: SourceList
+          target_sources: SourceList
             A SourceList from the other image to which this image should
             be aligned, with good RA/Dec values
-
-          imagezp: ZeroPoint
-            A zeropoint for image
-
-          session: sqlalchemy session, optional
-            If given, will use this session for all fetching, and will
-            set the session of the returned DataStore to this.
 
         Returns
         -------
@@ -94,9 +91,9 @@ class ImageAligner:
         # image, cropping them, and summing them, which is more (and
         # less) than what we want.  In order to get it to align a single
         # image to another single image, we rely on behavior that's
-        # mentioned almost as an aftertought in the SWarp manual: "To
+        # mentioned almost as an afterthought in the SWarp manual: "To
         # implement the unusual output features required, one must write
-        # a coadd.head ASCII ﬁle that contains a custom anisotropic
+        # a coadd.head ASCII file that contains a custom anisotropic
         # scaling matrix."  Practically speaking, we put the WCS that we
         # want the output image to have into <outim>.head.  SWarp will
         # then warp the input image so that the requested WCS will be
@@ -109,7 +106,7 @@ class ImageAligner:
         # then from RA/Dec to the target image WCS).  It may be that the
         # Gaia WCSes we use nowadays are good enough for this, but we
         # can do better by making a *direct* transformation between the
-        # two images.  To this end, we use the *source images's* source
+        # two images.  To this end, we use the *source image's* source
         # list as the catalog, and use Scamp to calculate the
         # transformation necessary from the target image to the source
         # image.  The resultant WCS is now a WCS for the target image,
@@ -133,11 +130,11 @@ class ImageAligner:
         try:
             # Write out the source lists for scamp to chew on
             sourcedat = sources._convert_to_sextractor_for_saving( sources.data )
-            targetdat = targetsources._convert_to_sextractor_for_saving( targetsources.data )
+            targetdat = target_sources._convert_to_sextractor_for_saving( target_sources.data )
             ldac.save_table_as_ldac( astropy.table.Table( sourcedat), imagecat,
                                      imghdr=sources.info, overwrite=True )
             ldac.save_table_as_ldac( astropy.table.Table( targetdat ), targetcat,
-                                     imghdr=targetsources.info, overwrite=True )
+                                     imghdr=target_sources.info, overwrite=True )
 
             # Scamp it up
             wcs = improc.scamp._solve_wcs_scamp( targetcat, imagecat, magkey='MAG', magerrkey='MAGERR' )
@@ -151,8 +148,8 @@ class ImageAligner:
 
             # Warp the image
             # TODO : support single image.  (I hope swarp is smart
-            # enough that you could do imagepat[1] to get HDU 1, but
-            # I don't know if that's the case.)
+            #  enough that you could do imagepat[1] to get HDU 1, but
+            #  I don't know if that's the case.)
             if image.filepath_extensions is None:
                 raise NotImplementedError( "Only separate image/weight/flags images currently supported." )
             impaths = image.get_fullpath( as_list=True )
@@ -180,14 +177,14 @@ class ImageAligner:
             if res.returncode != 0:
                 raise SubprocessFailure( res )
 
-            warpedim = Image( format='fits', source_images=[image],
-                              type='Warped', mjd=image.mjd,
+            warpedim = Image( format='fits', upstream_images=[image, target],
+                              type='Warped', mjd=target.mjd,
                               end_mjd=image.end_mjd, exp_time=image.exp_time,
                               instrument=image.instrument, telescope=image.telescope,
                               filter=image.filter, section_id=image.section_id,
                               project=image.project, target=image.target,
                               preproc_bitflag=image.preproc_bitflag,
-                              astro_cal_done=True, _bitflag=image._bitflag,
+                              astro_cal_done=True, _bitflag=0,  # external scope will set _upstream_bitflag
                               ra=target.ra, dec=target.dec,
                               gallat=target.gallat, gallon=target.gallon,
                               ecllat=target.ecllat, ecllon=target.ecllon,
@@ -200,9 +197,9 @@ class ImageAligner:
             warpedim.weight = read_fits_image( outwt )
             warpedim.flags = np.zeros( warpedim.weight.shape, dtype=np.uint16 )  # Do I want int16 or uint16?
             # TODO : a good cutoff for this weight
-            # For most images I've seen, no image
-            # will have a pixel with noise above 100000,
-            # hence the 1e-10.
+            #  For most images I've seen, no image
+            #  will have a pixel with noise above 100000,
+            #  hence the 1e-10.
             warpedim.flags[ warpedim.weight < 1e-10 ] = 1
 
             return warpedim
@@ -214,21 +211,21 @@ class ImageAligner:
             outwt.unlink( missing_ok=True )
             outimhead.unlink( missing_ok=True )
 
-    def run( self, ds_image, ds_target, session=None ):
+    def run( self, source_image, target_image ):
         """Warp source image so that it is aligned with target image.
 
         Parameters
         ----------
-          ds_image: DataStore
-             A DataStore with the image that will get warped.  Image must have
+          source_image: Image
+             An Image that will get warped.  Image must have
              already been through astrometric and photometric calibration.
-             Will use the image, sources, wcs, and zp fields of the datastore.
+             Will use the sources, wcs, and zp attributes attached to
+             the Image object.
 
-          ds_target: DataStore
-             A DataStore with the image to which the image in ds_image will
-             be aligned.  Will use the image, sources and wcs fields of the datastore.
-
-          session: sqlalchemy session, optional
+          target_image: Image
+             An image to which the source_image will be aligned.
+             Will use the sources and wcs fields attributes attached to
+             the Image object.
 
         Returns
         -------
@@ -238,67 +235,86 @@ class ImageAligner:
             has not been run.
 
         """
-
         # Make sure we have what we need
+        source_sources = source_image.sources
+        if source_sources is None:
+            raise RuntimeError( f'Image {source_image.id} has no sources' )
+        source_wcs = source_image.wcs
+        if source_wcs is None:
+            raise RuntimeError( f'Image {source_image.id} has no wcs' )
+        source_zp = source_image.zp
+        if source_zp is None:
+            raise RuntimeError( f'Image {source_image.id} has no zp' )
 
-        image = ds_image.get_image( session=session )
-        sources = ds_image.get_sources( session=session )
-        imagewcs = ds_image.get_wcs( session=session )
-        imagezp = ds_image.get_zp( session=session )
-        target = ds_target.get_image( session=session )
-        targetsources = ds_target.get_sources( session=session )
-        targetwcs = ds_target.get_wcs( session=session )
-
-        if any( [ f is None for f in [ image, sources, imagewcs, target, targetsources, targetwcs ] ] ):
-            raise RuntimeError( f'Both the image and the target image must have image, sources, and wcs available.' )
+        target_sources = target_image.sources
+        if target_sources is None:
+            raise RuntimeError( f'Image {target_image.id} has no sources' )
+        target_wcs = target_image.wcs
+        if target_wcs is None:
+            raise RuntimeError( f'Image {target_image.id} has no wcs' )
 
         # Do the warp
 
         if self.pars.method == 'swarp':
-            if ( sources.format != 'sextrfits' ) or ( targetsources.format != 'sextrfits' ):
+            if ( source_sources.format != 'sextrfits' ) or ( target_sources.format != 'sextrfits' ):
                 raise RuntimeError( f'swarp ImageAligner requires sextrfits sources' )
 
             # We need good RA/Dec values, and a magnitude, in the object list
             # that's serving as the catalog to scamp
-            imskyco = imagewcs.wcs.pixel_to_world( sources.x, sources.y )
+            imskyco = source_wcs.wcs.pixel_to_world( source_sources.x, source_sources.y )
             # ...the choice of a numpy recarray is inconvenient here, since
             # adding a column requires making a new datatype, copying data, etc.
             # Take the shortcut of using astropy.Table.  (Could also use Pandas.)
-            datatab = astropy.table.Table( sources.data )
+            datatab = astropy.table.Table( source_sources.data )
             datatab['X_WORLD'] = imskyco.ra.deg
             datatab['Y_WORLD'] = imskyco.dec.deg
             # TODO: the astropy doc says this returns the pixel scale along
             # each axis in the same units as the WCS yields.  Can we assume
             # that the WCS is always yielding degrees?
-            pixsc = astropy.wcs.utils.proj_plane_pixel_scales( imagewcs.wcs ).mean()
-            datatab['ERRA_WORLD'] = sources.errx * pixsc
-            datatab['ERRB_WORLD'] = sources.erry * pixsc
-            flux, dflux = sources.apfluxadu()
-            datatab['MAG'] = -2.5*np.log10( flux ) + imagezp.zp + imagezp.get_aper_cor( sources.aper_rads[0] )
+            pixsc = astropy.wcs.utils.proj_plane_pixel_scales( source_wcs.wcs ).mean()
+            datatab['ERRA_WORLD'] = source_sources.errx * pixsc
+            datatab['ERRB_WORLD'] = source_sources.erry * pixsc
+            flux, dflux = source_sources.apfluxadu()
+            datatab['MAG'] = -2.5 * np.log10( flux ) + source_zp.zp
+            datatab['MAG'] += source_zp.get_aper_cor( source_sources.aper_rads[0] )
             datatab['MAGERR'] = 1.0857 * dflux / flux
-            sources.data = datatab.as_array()
+            source_sources.data = datatab.as_array()
 
-            # targskyco = targetwcs.wcs.pixel_to_world( targetsources.x, targetsources.y )
-            # datatab = astropy.table.Table( targetsources.data )
+            # targskyco = target_wcs.wcs.pixel_to_world( target_sources.x, target_sources.y )
+            # datatab = astropy.table.Table( target_sources.data )
             # datatab['X_WORLD'] = targskyco.ra.deg
             # datatab['Y_WORLD'] = targskyco.dec.deg
-            # pixsc = astropy.wcs.utils.proj_plane_pixel_scales( targetwcs.wcs ).mean()
-            # datatab['ERRA_IMAGE'] = sources.
-            # targetsources.data = datatab.as_array()
+            # pixsc = astropy.wcs.utils.proj_plane_pixel_scales( target_wcs.wcs ).mean()
+            # datatab['ERRA_IMAGE'] = source_sources.
+            # target_sources.data = datatab.as_array()
 
-            warped_image = self._align_swarp( image, target, sources, targetsources, imagezp, session=session )
+            warped_image = self._align_swarp(source_image, target_image, source_sources, target_sources)
         else:
             raise ValueError( f'alignment method {self.pars.method} is unknown' )
 
-        # Make and return the resultant datastore
+        warped_image.provenance = Provenance(
+            code_version=source_image.provenance.code_version,
+            process='alignment',
+            parameters=self.pars.get_critical_pars(),
+            upstreams=[
+                source_image.provenance,
+                source_sources.provenance,
+                source_wcs.provenance,
+                source_zp.provenance,
+                target_image.provenance,
+                target_sources.provenance,
+                target_wcs.provenance,
+            ],  # this does not really matter since we are not going to save this to DB!
+        )
+        upstream_bitflag = source_image.bitflag
+        upstream_bitflag |= target_image.bitflag
+        upstream_bitflag |= source_sources.bitflag
+        upstream_bitflag |= target_sources.bitflag
+        upstream_bitflag |= source_wcs.bitflag
+        upstream_bitflag |= target_wcs.bitflag
+        upstream_bitflag |= source_zp.bitflag
 
-        ds = DataStore()
-        ds.session = session
-        with SmartSession( session ) as sess:
-            prov = ds.get_provenance( self.pars.get_process_name(), self.pars.get_critical_pars(),
-                                      upstream_provs=[imagezp.provenance], session=sess )
-            warped_image.provenance = prov
-            ds.image = warped_image.recursive_merge( sess )
+        warped_image._upstream_bitflag = upstream_bitflag
 
-        return ds
+        return warped_image
 

@@ -267,7 +267,6 @@ submodules that have not been initialized yet.
 
 Some environmental variables are used by SeeChange.
  - `GITHUB_REPOSITORY_OWNER` is the name of your github user (used only for dockerized tests). 
- - `SEECHANGE_TEST_ARCHIVE_DIR` is used to set up a local directory for test data archive. 
 Usually this will point to a folder outside the SeeChange directory, 
 where data can be downloaded and stored.
  - `SEECHANGE_CONFIG` can be used to specify the location of the main config file,
@@ -290,6 +289,7 @@ One way to set things up is to put the following into
 ```yaml
 archive:
   local_read_dir: /path/to/local/archive
+  local_write_dir: /path/to/local/archive
   archive_url: null
 
 db:
@@ -301,8 +301,7 @@ db:
   database: seechange
 ```
 
-Replace `/path/to/local/archive` with the path to the local archive directory, 
-which should also be defined as the environmental variable `SEECHANGE_TEST_ARCHIVE_DIR`.
+Replace `/path/to/local/archive` with the path to the local archive directory.
 
 The same files (`local_overrides.yaml` and `local_augments.yaml`) can be used
 on the main SeeChange directory, where they have the same effect, 

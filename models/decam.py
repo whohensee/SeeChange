@@ -62,7 +62,6 @@ class DECam(Instrument):
         # Notice that the "N" chips are to the south and the "S" chips
         # are to the north; this is correct! See:
         # https://noirlab.edu/science/programs/ctio/instruments/Dark-Energy-Camera/characteristics
-        # will apply kwargs to attributes, and register instrument in the INSTRUMENT_INSTANCE_CACHE
         self._chip_radec_off = {
             'S29': { 'ccdnum':  1, 'dra':  -0.30358, 'ddec':   0.90579 },
             'S30': { 'ccdnum':  2, 'dra':   0.00399, 'ddec':   0.90370 },
@@ -128,6 +127,7 @@ class DECam(Instrument):
             'N31': { 'ccdnum': 62, 'dra':   0.30889, 'ddec':  -0.90498 },
         }
 
+        # will apply kwargs to attributes, and register instrument in the INSTRUMENT_INSTANCE_CACHE
         Instrument.__init__(self, **kwargs)
 
         self.preprocessing_steps = [ 'overscan', 'linearity', 'flat', 'fringe' ]
@@ -148,7 +148,7 @@ class DECam(Instrument):
     def check_section_id(cls, section_id):
         """
         Check that the type and value of the section is compatible with the instrument.
-        In this case, it must be an integer in the range [0, 63].
+        In this case, it must be a string starting with 'N' or 'S' and a number between 1 and 31.
         """
         if not isinstance(section_id, str):
             raise ValueError(f"The section_id must be a string. Got {type(section_id)}. ")
@@ -276,7 +276,6 @@ class DECam(Instrument):
         if image is None:
             return Instrument.average_again( self, None, section_id=section_id )
         return ( float( image.raw_header['GAINA'] ) + float( image.raw_header['GAINB'] ) ) / 2.
-
 
     def average_saturation_limit( self, image, section_id=None ):
         if image is None:
@@ -444,7 +443,7 @@ class DECam(Instrument):
                 FileOnDiskMixin.save( image, fileabspath )
                 calfile = CalibratorFile( type=calibtype,
                                           calibrator_set='externally_supplied',
-                                          flat_type='externally_supplied' if calibtype=='flat' else None,
+                                          flat_type='externally_supplied' if calibtype == 'flat' else None,
                                           instrument='DECam',
                                           sensor_section=section,
                                           image=image )
@@ -718,7 +717,7 @@ class DECamOriginExposures:
         if indexes is None:
             indexes = range( len(self._frame) )
         if not isinstance( indexes, collections.abc.Sequence ):
-            indexes = [ index ]
+            indexes = [ indexes ]
 
         exposures = []
 
@@ -736,9 +735,12 @@ class DECamOriginExposures:
                       }
 
         with SmartSession(session) as dbsess:
-            provenance = Provenance( process='download',
-                                     parameters={ 'proc_type': self.proc_type },
-                                     code_version=Provenance.get_code_version(session=dbsess) )
+            provenance = Provenance(
+                process='download',
+                parameters={ 'proc_type': self.proc_type, 'Instrument': 'DECam' },
+                code_version=Provenance.get_code_version(session=dbsess),
+                is_testing=True,
+            )
             provenance.update_id()
             provenance = provenance.recursive_merge( dbsess )
             dbsess.add( provenance )
@@ -752,7 +754,7 @@ class DECamOriginExposures:
                     # TODO: load these as file extensions (see
                     # FileOnDiskMixin), if we're ever going to actually
                     # use the observatory-reduced DECam images It's more
-                    # work than just what needs to be doe here, because
+                    # work than just what needs to be done here, because
                     # we will need to think about that in
                     # Image.from_exposure(), and perhaps other places as
                     # well.
@@ -773,7 +775,7 @@ class DECamOriginExposures:
 
                 q = ( dbsess.query( Exposure )
                       .filter( Exposure.instrument == 'DECam' )
-                      .filter( Exposure.origin_identifier==origin_identifier )
+                      .filter( Exposure.origin_identifier == origin_identifier )
                      )
                 existing = q.first()
                 # Maybe check that q.count() isn't >1; if it is, throw an exception
