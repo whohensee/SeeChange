@@ -216,6 +216,5 @@ def ptf_reference_images(ptf_images_factory):
         for image in images:
             image = image.recursive_merge(session)
             image.exposure.delete_from_disk_and_database(session=session, commit=False)
-            image.sources.delete_from_disk_and_database(session=session, commit=False)
-            image.delete_from_disk_and_database(session=session, commit=False)
+            image.delete_from_disk_and_database(session=session, commit=False, remove_downstream_data=True)
         session.commit()

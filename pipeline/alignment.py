@@ -1,3 +1,4 @@
+import os
 import pathlib
 import random
 import time
@@ -9,7 +10,7 @@ import astropy.table
 import astropy.wcs.utils
 
 from util import ldac
-from util.exceptions import SubprocessFailure, BadMatchException
+from util.exceptions import SubprocessFailure
 import improc.scamp
 
 
@@ -34,6 +35,14 @@ class ParsImageAligner(Parameters):
             critical=True
         )
 
+        self.to_index = self.add_par(
+            'to_index',
+            'last',
+            str,
+            'How to choose the index of image to align to. Can choose "first" or "last" (default). ',
+            critical=True
+        )
+
         self.enforce_no_new_attrs = True
         self.override( kwargs )
 
@@ -42,6 +51,18 @@ class ParsImageAligner(Parameters):
 
 
 class ImageAligner:
+    temp_images = []
+
+    @classmethod
+    def cleanup_temp_images( cls ):
+        for im in cls.temp_images:
+            im.remove_data_from_disk()
+            for file in im.get_fullpath(as_list=True):
+                if file is not None and os.path.isfile( file ):
+                    raise RuntimeError( f'Failed to clean up {file}' )
+
+        cls.temp_images = []
+
     def __init__( self, **kwargs ):
         self.pars = ParsImageAligner( **kwargs )
 
@@ -214,6 +235,9 @@ class ImageAligner:
     def run( self, source_image, target_image ):
         """Warp source image so that it is aligned with target image.
 
+        If the source_image and target_image are the same, will just create
+        a copy of the same image data in a new Image object.
+
         Parameters
         ----------
           source_image: Image
@@ -252,6 +276,10 @@ class ImageAligner:
         target_wcs = target_image.wcs
         if target_wcs is None:
             raise RuntimeError( f'Image {target_image.id} has no wcs' )
+
+        if target_image == source_image:
+            warped_image = Image.copy_image( source_image )
+            return warped_image
 
         # Do the warp
 
@@ -292,20 +320,21 @@ class ImageAligner:
         else:
             raise ValueError( f'alignment method {self.pars.method} is unknown' )
 
-        warped_image.provenance = Provenance(
-            code_version=source_image.provenance.code_version,
-            process='alignment',
-            parameters=self.pars.get_critical_pars(),
-            upstreams=[
-                source_image.provenance,
-                source_sources.provenance,
-                source_wcs.provenance,
-                source_zp.provenance,
-                target_image.provenance,
-                target_sources.provenance,
-                target_wcs.provenance,
-            ],  # this does not really matter since we are not going to save this to DB!
-        )
+        warped_image.provenance = None  # better to leave an empty provenance so this doesn't get saved!
+        # warped_image.provenance = Provenance(
+        #     code_version=source_image.provenance.code_version,
+        #     process='alignment',
+        #     parameters=self.pars.get_critical_pars(),
+        #     upstreams=[
+        #         source_image.provenance,
+        #         source_sources.provenance,
+        #         source_wcs.provenance,
+        #         source_zp.provenance,
+        #         target_image.provenance,
+        #         target_sources.provenance,
+        #         target_wcs.provenance,
+        #     ],  # this does not really matter since we are not going to save this to DB!
+        # )
         upstream_bitflag = source_image.bitflag
         upstream_bitflag |= target_image.bitflag
         upstream_bitflag |= source_sources.bitflag

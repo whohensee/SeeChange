@@ -1229,11 +1229,15 @@ class FileOnDiskMixin:
             else:
                 self.md5sum = remmd5
 
-    def remove_data_from_disk(self, remove_folders=True):
-
+    def remove_data_from_disk(self, remove_folders=True, remove_downstream_data=False):
         """Delete the data from local disk, if it exists.
         If remove_folders=True, will also remove any folders
         if they are empty after the deletion.
+        Use remove_downstream_data=True to also remove any
+        downstream data (e.g., for an Image, that would be the
+        data for the SourceLists and PSFs that depend on this Image).
+        This function will not remove database rows or archive files,
+        only cleanup local storage for this object and its downstreams.
 
         To remove both the files and the database entry, use
         delete_from_disk_and_database() instead.
@@ -1243,23 +1247,39 @@ class FileOnDiskMixin:
         remove_folders: bool
             If True, will remove any folders on the path to the files
             associated to this object, if they are empty.
+        remove_downstream_data: bool
+            If True, will also remove any downstream data.
+            Will recursively call get_downstreams() and find any objects
+            that have remove_data_from_disk() implemented, and call it.
+            Default is False.
         """
-        if self.filepath is None:
-            return
-        # get the filepath, but don't check if the file exists!
-        for f in self.get_fullpath(as_list=True, nofile=True):
-            if os.path.exists(f):
-                os.remove(f)
-                if remove_folders:
-                    folder = f
-                    for i in range(10):
-                        folder = os.path.dirname(folder)
-                        if len(os.listdir(folder)) == 0:
-                            os.rmdir(folder)
-                        else:
-                            break
+        if self.filepath is not None:
+            # get the filepath, but don't check if the file exists!
+            for f in self.get_fullpath(as_list=True, nofile=True):
+                if os.path.exists(f):
+                    os.remove(f)
+                    if remove_folders:
+                        folder = f
+                        for i in range(10):
+                            folder = os.path.dirname(folder)
+                            if len(os.listdir(folder)) == 0:
+                                os.rmdir(folder)
+                            else:
+                                break
 
-    def delete_from_disk_and_database(self, session=None, commit=True, remove_folders=True):
+        if remove_downstream_data:
+            try:
+                downstreams = self.get_downstreams()
+                for d in downstreams:
+                    if hasattr(d, 'remove_data_from_disk'):
+                        d.remove_data_from_disk(remove_folders=remove_folders, remove_downstream_data=True)
+
+            except NotImplementedError as e:
+                pass  # if this object does not implement get downstreams, it is ok
+
+    def delete_from_disk_and_database(
+            self, session=None, commit=True, remove_folders=True, remove_downstream_data=False
+    ):
         """
         Delete the data from disk, archive and the database.
         Use this to clean up an entry from all locations.
@@ -1288,12 +1308,18 @@ class FileOnDiskMixin:
         remove_folders: bool
             If True, will remove any folders on the path to the files
             associated to this object, if they are empty.
+        remove_downstream_data: bool
+            If True, will also remove any downstream data.
+            Will recursively call get_downstreams() and find any objects
+            that have remove_data_from_disk() implemented, and call it.
+            Will only remove local data, not archive data.
+            Default is False.
         """
 
         if session is None and not commit:
             raise RuntimeError("When session=None, commit must be True!")
 
-        self.remove_data_from_disk(remove_folders=remove_folders)
+        self.remove_data_from_disk(remove_folders=remove_folders, remove_downstream_data=remove_downstream_data)
 
         if self.filepath is not None:
             if self.filepath_extensions is None:
@@ -1321,8 +1347,6 @@ class FileOnDiskMixin:
 
             if commit and need_commit:
                 session.commit()
-            # if self in session:
-            #     session.expunge(self)
 
 
 # load the default paths from the config

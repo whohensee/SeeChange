@@ -21,8 +21,7 @@ UPSTREAM_NAMES = {
     'extraction': ['preprocessing'],
     'astro_cal': ['extraction'],
     'photo_cal': ['extraction', 'astro_cal'],
-    'alignment': [ 'photo_cal' ],
-    'subtraction': ['preprocessing', 'extraction', 'astro_cal', 'photo_cal'],
+    'subtraction': ['reference', 'preprocessing', 'extraction', 'astro_cal', 'photo_cal'],
     'detection': ['subtraction'],
     'cutting': ['detection'],
     'measurement': ['detection', 'photo_cal'],
@@ -35,6 +34,7 @@ UPSTREAM_OBJECTS = {
     'extraction': 'sources',
     'astro_cal': 'wcs',
     'photo_cal': 'zp',
+    'reference': 'ref-image',
     'subtraction': 'sub_image',
     'detection': 'detections',
     'cutting': 'cutouts',
@@ -1382,8 +1382,8 @@ class DataStore:
             autoflush_state = session.autoflush
             try:
                 obj_list = self.get_all_data_products(output='list', omit_exposure=True)
-                for obj in obj_list:  # first make sure all are merged
-                    obj = obj.recursive_merge(session)
+                for i, obj in enumerate(obj_list):  # first make sure all are merged
+                    obj_list[i] = obj.recursive_merge(session)
                 # no flush to prevent some foreign keys from being voided before all objects are deleted
                 session.autoflush = False
                 for obj in obj_list:  # now do the deleting without flushing
