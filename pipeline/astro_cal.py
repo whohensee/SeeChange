@@ -129,9 +129,6 @@ class AstroCalibrator:
         self.has_recalculated = False
     # ----------------------------------------------------------------------
 
-    # TODO: should we move all of these catalog fetches into a separate file?
-    #  probably need to when doing the photometric calibration
-
     def _solve_wcs_scamp( self, image, sources, catexp, crossid_rad=2. ):
         """Solve for the WCS of image, updating image.raw_header.
 

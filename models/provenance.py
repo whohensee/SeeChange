@@ -127,7 +127,7 @@ class Provenance(Base):
         primaryjoin='provenances.c.id == provenance_upstreams.c.upstream_id',
         secondaryjoin='provenances.c.id == provenance_upstreams.c.downstream_id',
         passive_deletes=True,
-        cascade="save-update, merge, expunge, refresh-expire, delete",
+        cascade="delete",
         overlaps="upstreams",
     )
 
@@ -342,11 +342,15 @@ class Provenance(Base):
         if done_list is None:
             done_list = set()
 
-        if self in done_list:
-            return self
+        # if self in done_list:
+        #     return self
 
         merged_self = safe_merge(session, self)
-        done_list.add(merged_self)
+
+        if merged_self in done_list:
+            return merged_self
+        else:
+            done_list.add(merged_self)
 
         merged_self.code_version = safe_merge(session, merged_self.code_version)
 

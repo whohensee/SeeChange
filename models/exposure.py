@@ -432,9 +432,6 @@ class Exposure(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagB
         This will set the column attributes from these values.
         Additional header values will be stored in the header JSONB column.
         """
-        # if self.telescope is None:
-        #     self.telescope = self.instrument_object.telescope
-
         # get the header from the file in its raw form as a fits.Header object
         if fromfile is None:
             fromfile = self.get_fullpath()

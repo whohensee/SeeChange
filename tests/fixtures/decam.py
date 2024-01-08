@@ -236,7 +236,7 @@ def decam_datastore(
         decam_exposure,
         'N1',
         cache_dir=cache_dir,
-        cache_base_name='115/c4d_20221104_074232_N1_g_Sci_HI4PX4'
+        cache_base_name='115/c4d_20221104_074232_N1_g_Sci_FVOSOC'
     )
     ds.save_and_commit()
 

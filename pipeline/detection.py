@@ -460,13 +460,13 @@ class Detector:
         try:
 
             # TODO : if the image is already on disk, then we may not need
-            # to do the writing here.  In that case, we do have to think
-            # about whether the extensions are different HDUs in the same
-            # file, or if they are separate files (which I think can just be
-            # handled by changing the sextractor arguments a bit).  If
-            # they're non-FITS files, we'll have to write them.  For
-            # simplicity, right now, just write the temp files, even though
-            # it might be redundant.
+            #  to do the writing here.  In that case, we do have to think
+            #  about whether the extensions are different HDUs in the same
+            #  file, or if they are separate files (which I think can just be
+            #  handled by changing the sextractor arguments a bit).  If
+            #  they're non-FITS files, we'll have to write them.  For
+            #  simplicity, right now, just write the temp files, even though
+            #  it might be redundant.
             fits.writeto( tmpimage, image.data, header=image.raw_header )
             fits.writeto( tmpweight, image.weight )
             fits.writeto( tmpflags, image.flags )
@@ -605,19 +605,20 @@ class Detector:
                     psfdatasize += 1
 
                 # TODO: make the fwhmmax tried configurable
-                # (This is just a range of things to try to see if we can
-                # get psfex to succeed; it will stop after the first one that does.)
+                #  (This is just a range of things to try to see if we can
+                #  get psfex to succeed; it will stop after the first one that does.)
                 fwhmmaxtotry = [ 10.0, 15.0, 20.0, 25.0 ]
                 #
                 # TODO: make -XML_URL configurable.  (The default there is what
-                # is installed if you install the psfex package on a
-                # debian-based distro, which is what the Dockerfile is built from.)
+                #  is installed if you install the psfex package on a
+                #  debian-based distro, which is what the Dockerfile is built from.)
                 for fwhmmaxdex, fwhmmax in enumerate( fwhmmaxtotry ):
                     command = [ 'psfex',
                                 '-PSF_SIZE', f'{psfdatasize},{psfdatasize}',
                                 '-SAMPLE_FWHMRANGE', f'0.5,{fwhmmax}',
                                 '-SAMPLE_VARIABILITY', "0.2",   # Allowed FWHM variability (1.0 = 100%)
                                 '-SAMPLE_IMAFLAGMASK', "0xff",
+                                '-SAMPLE_MINSN', '5',  # Minimum S/N for sampling
                                 '-CHECKPLOT_DEV', 'NULL',
                                 '-CHECKPLOT_TYPE', 'NONE',
                                 '-CHECKIMAGE_TYPE', 'NONE',

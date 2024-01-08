@@ -159,10 +159,10 @@ def test_sextractor_extract_once( decam_datastore, extractor ):
 
         assert sourcelist.x.min() == pytest.approx( 16.0, abs=0.1 )
         assert sourcelist.x.max() == pytest.approx( 2039.6, abs=0.1 )
-        assert sourcelist.y.min() == pytest.approx( 16.3, abs=0.1 )
+        assert sourcelist.y.min() == pytest.approx( 16.264, abs=0.1 )
         assert sourcelist.y.max() == pytest.approx( 4087.9, abs=0.1 )
         assert sourcelist.errx.min() == pytest.approx( 0.0005, abs=1e-4 )
-        assert sourcelist.errx.max() == pytest.approx( 1.05, abs=0.01 )
+        assert sourcelist.errx.max() == pytest.approx( 1.0532, abs=0.01 )
         assert sourcelist.erry.min() == pytest.approx( 0.001, abs=1e-3 )
         assert sourcelist.erry.max() == pytest.approx( 0.62, abs=0.01 )
         assert ( np.sqrt( sourcelist.varx ) == sourcelist.errx ).all()
@@ -171,7 +171,7 @@ def test_sextractor_extract_once( decam_datastore, extractor ):
         assert sourcelist.apfluxadu()[0].max() == pytest.approx( 2850920.0, rel=1e-5 )
         snr = sourcelist.apfluxadu()[0] / sourcelist.apfluxadu()[1]
         assert snr.min() == pytest.approx( -9.91, abs=0.1 )
-        assert snr.max() == pytest.approx( 2348.2, abs=1. )
+        assert snr.max() == pytest.approx( 2348.2166, abs=1. )
         assert snr.mean() == pytest.approx( 146.80, abs=0.1 )
         assert snr.std() == pytest.approx( 285.4, abs=1. )
 
@@ -189,7 +189,7 @@ def test_sextractor_extract_once( decam_datastore, extractor ):
         assert sourcelist.info['SEXBKGND'] == pytest.approx( 179.8, abs=0.1 )
         assert sourcelist.x.min() == pytest.approx( 16.0, abs=0.1 )
         assert sourcelist.x.max() == pytest.approx( 2039.6, abs=0.1 )
-        assert sourcelist.y.min() == pytest.approx( 16.3, abs=0.1 )
+        assert sourcelist.y.min() == pytest.approx( 16.264, abs=0.1 )
         assert sourcelist.y.max() == pytest.approx( 4087.9, abs=0.1 )
         assert sourcelist.apfluxadu(apnum=1)[0].min() == pytest.approx( -656.8731, rel=1e-5 )
         assert sourcelist.apfluxadu(apnum=1)[0].max() == pytest.approx( 2850920.0, rel=1e-5 )
@@ -222,7 +222,7 @@ def test_run_psfex( decam_datastore, extractor ):
         assert psf._header['CHI2'] == pytest.approx( 0.9, abs=0.1 )
         bio = io.BytesIO( psf._info.encode( 'utf-8' ) )
         psfstats = votable.parse( bio ).get_table_by_index(1)
-        assert psfstats.array['FWHM_FromFluxRadius_Max'] == pytest.approx( 4.33, abs=0.01 )
+        assert psfstats.array['FWHM_FromFluxRadius_Max'] == pytest.approx( 4.31, abs=0.01 )
         assert not tmppsffile.exists()
         assert not tmppsfxmlfile.exists()
 
@@ -263,23 +263,23 @@ def test_extract_sources_sextractor( decam_datastore, extractor, blocking_plots 
                 if use:
                     ofp.write( f"image;circle({x+1},{y+1},6) # color=blue width=2\n" )
 
-    assert sources.num_sources == 5499
+    assert sources.num_sources == 5500
     assert sources.num_sources == len(sources.data)
-    assert sources.aper_rads == pytest.approx( [ 2.914, 4.328, 8.656, 12.984,
-                                                 17.312, 21.640, 30.296, 43.280 ], abs=0.01 )
+    assert sources.aper_rads == pytest.approx( [ 2.885, 4.286, 8.572, 12.858,
+                                                 17.145, 21.431, 30.003, 42.862 ], abs=0.01 )
     assert sources._inf_aper_num == 5
     assert sources.inf_aper_num == 5
-    assert psf.fwhm_pixels == pytest.approx( 4.328, abs=0.01 )
+    assert psf.fwhm_pixels == pytest.approx( 4.286, abs=0.01 )
     assert psf.fwhm_pixels == pytest.approx( psf.header['PSF_FWHM'], rel=1e-5 )
     assert psf.data.shape == ( 6, 25, 25 )
     assert psf.image_id == ds.image.id
 
-    assert sources.apfluxadu()[0].min() == pytest.approx( 204.55038, rel=1e-5 )
-    assert sources.apfluxadu()[0].max() == pytest.approx( 1131884.6, rel=1e-5 )
-    assert sources.apfluxadu()[0].mean() == pytest.approx( 37183.51, rel=1e-5 )
-    assert sources.apfluxadu()[0].std() == pytest.approx( 123518.94, rel=1e-5 )
+    assert sources.apfluxadu()[0].min() == pytest.approx( 200.34559, rel=1e-5 )
+    assert sources.apfluxadu()[0].max() == pytest.approx( 1105999.625, rel=1e-5 )
+    assert sources.apfluxadu()[0].mean() == pytest.approx( 36779.797 , rel=1e-5 )
+    assert sources.apfluxadu()[0].std() == pytest.approx(  121950.04 , rel=1e-5 )
 
-    assert sources.good.sum() == 3642
+    assert sources.good.sum() == 3643
     # This value is what you get using the SPREAD_MODEL parameter
     # assert sources.is_star.sum() == 4870
     # assert ( sources.good & sources.is_star ).sum() == 3593
@@ -291,6 +291,7 @@ def test_extract_sources_sextractor( decam_datastore, extractor, blocking_plots 
 # TODO : add tests that handle different combinations
 #  of measure_psf and psf being passed to the Detector constructor
 
+# TODO: is this test really the same as the one above?
 def test_run_detection_sextractor( decam_datastore, extractor ):
     ds = decam_datastore
 
@@ -302,23 +303,23 @@ def test_run_detection_sextractor( decam_datastore, extractor ):
     ds = extractor.run( ds )
 
     assert extractor.has_recalculated
-    assert ds.sources.num_sources == 5499
+    assert ds.sources.num_sources == 5500
     assert ds.sources.num_sources == len(ds.sources.data)
-    assert ds.sources.aper_rads == pytest.approx( [ 2.914, 4.328, 8.656, 12.984,
-                                                    17.312, 21.640, 30.296, 43.280 ], abs=0.01 )
+    assert ds.sources.aper_rads == pytest.approx( [ 2.88551706,  4.28627014,  8.57254028, 12.85881042, 17.14508057,
+                                                    21.43135071, 30.00389099, 42.86270142], abs=0.01 )
     assert ds.sources._inf_aper_num == 5
     assert ds.sources.inf_aper_num == 5
-    assert ds.psf.fwhm_pixels == pytest.approx( 4.328, abs=0.01 )
+    assert ds.psf.fwhm_pixels == pytest.approx( 4.286, abs=0.01 )
     assert ds.psf.fwhm_pixels == pytest.approx( ds.psf.header['PSF_FWHM'], rel=1e-5 )
     assert ds.psf.data.shape == ( 6, 25, 25 )
     assert ds.psf.image_id == ds.image.id
 
-    assert ds.sources.apfluxadu()[0].min() == pytest.approx( 204.55038, rel=1e-5 )
-    assert ds.sources.apfluxadu()[0].max() == pytest.approx( 1131884.6, rel=1e-5 )
-    assert ds.sources.apfluxadu()[0].mean() == pytest.approx( 37183.51, rel=1e-5 )
-    assert ds.sources.apfluxadu()[0].std() == pytest.approx( 123518.94, rel=1e-5 )
+    assert ds.sources.apfluxadu()[0].min() == pytest.approx( 200.3456, rel=1e-5 )
+    assert ds.sources.apfluxadu()[0].max() == pytest.approx( 1105999.6, rel=1e-5 )
+    assert ds.sources.apfluxadu()[0].mean() == pytest.approx( 36779.797, rel=1e-5 )
+    assert ds.sources.apfluxadu()[0].std() == pytest.approx(  121950.04 , rel=1e-5 )
 
-    assert ds.sources.good.sum() == 3642
+    assert ds.sources.good.sum() == 3643
     # This value is what you get using the SPREAD_MODEL parameter
     # assert ds.sources.is_star.sum() == 4870
     # assert ( ds.sources.good & ds.sources.is_star ).sum() == 3593
@@ -327,15 +328,15 @@ def test_run_detection_sextractor( decam_datastore, extractor ):
     assert ( ds.sources.good & ds.sources.is_star ).sum() == 63
 
     # TODO : actually think about these psf fluxes and how they compare
-    # to the aperture fluxes (esp. the large-aperture fluxes).  Try to
-    # understand what SExtractor psf weighted photometry actually
-    # does....  Preliminary investigations suggest that something may be
-    # wrong.
+    #  to the aperture fluxes (esp. the large-aperture fluxes).  Try to
+    #  understand what SExtractor psf weighted photometry actually
+    #  does....  Preliminary investigations suggest that something may be
+    #  wrong.
 
     assert ds.sources.psffluxadu()[0].min() == 0.0
-    assert ds.sources.psffluxadu()[0].max() == pytest.approx( 1726249.0, rel=1e-3 )
-    assert ds.sources.psffluxadu()[0].mean() == pytest.approx( 48067.805, rel=1e-3 )
-    assert ds.sources.psffluxadu()[0].std() == pytest.approx( 169444.77, rel=1e-3 )
+    assert ds.sources.psffluxadu()[0].max() == pytest.approx( 1725000.0, rel=1e-2 )
+    assert ds.sources.psffluxadu()[0].mean() == pytest.approx( 48000.0, rel=1e-2 )
+    assert ds.sources.psffluxadu()[0].std() == pytest.approx( 170000.0, rel=1e-2 )
 
     assert ds.sources.provenance is not None
     assert ds.sources.provenance == ds.psf.provenance

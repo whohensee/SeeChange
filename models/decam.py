@@ -1,14 +1,7 @@
-import io
-import re
 import math
-import time
 import copy
 import pathlib
-import traceback
-import hashlib
-import logging
 import requests
-import subprocess
 import collections.abc
 
 import numpy as np
@@ -246,10 +239,10 @@ class DECam(Instrument):
             rawbpm = hdu[0].data
 
         # TODO : figure out what the bits mean in this bad pixel mask file!
-        # For now, call anything non-zero as "bad"
-        # (If we ever change this, we have to fix the
-        # flag_image_bits dictionary in enums_and_bitflags,
-        # and everything that has used it...)
+        #  For now, call anything non-zero as "bad"
+        #  (If we ever change this, we have to fix the
+        #  flag_image_bits dictionary in enums_and_bitflags,
+        #  and everything that has used it...)
         bpm = np.zeros( rawbpm.shape, dtype=np.uint16 )
         bpm[ rawbpm != 0 ] = string_to_bitflag( 'bad pixel', flag_image_bits_inverse )
 

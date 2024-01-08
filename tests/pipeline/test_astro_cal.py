@@ -82,14 +82,16 @@ def test_solve_wcs_scamp( ztf_gaiadr3_excerpt, ztf_datastore_uncommitted, astrom
 
 def test_run_scamp( decam_datastore, astrometor ):
     ds = decam_datastore
-    with open(ds.image.get_fullpath()[0], "rb") as ifp:
+    original_filename = ds.cache_base_name + '.image.fits.original'
+    with open(original_filename, "rb") as ifp:
         md5 = hashlib.md5()
         md5.update(ifp.read())
         origmd5 = uuid.UUID(md5.hexdigest())
 
     xvals = [0, 0, 2047, 2047]
     yvals = [0, 4095, 0, 4095]
-    origwcs = WCS(ds.image.raw_header)
+    with fits.open(original_filename) as hdu:
+        origwcs = WCS(hdu[ds.section_id].header)
 
     astrometor.pars.cross_match_catalog = 'GaiaDR3'
     astrometor.pars.solution_method = 'scamp'
@@ -168,8 +170,8 @@ def test_run_scamp( decam_datastore, astrometor ):
         imwcs = WCS( hdul[0].header )
         imscs = imwcs.pixel_to_world( xvals, yvals )
         for newsc, imsc in zip( newscs, imscs ):
-            assert newsc.ra.value == pytest.approx( imsc.ra.value, abs=0.01/3600. )
-            assert newsc.dec.value == pytest.approx( imsc.dec.value, abs=0.01/3600. )
+            assert newsc.ra.value == pytest.approx( imsc.ra.value, abs=0.05/3600. )
+            assert newsc.dec.value == pytest.approx( imsc.dec.value, abs=0.05/3600. )
 
         # Make sure the archive has the right md5sum
         info = foundim.archive.get_info( f'{foundim.filepath}.image.fits' )

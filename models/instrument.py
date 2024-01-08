@@ -800,7 +800,7 @@ class Instrument:
         Returns
         -------
         header: astropy.io.fits.Header
-            The header from the exposure file, as a astropy.io.fits.Header object.
+            The header from the exposure file, as an astropy.io.fits.Header object.
         """
         if isinstance(filepath, (str, pathlib.Path)):
             if section_id is None:
@@ -1025,7 +1025,6 @@ class Instrument:
 
     @classmethod
     def _get_header_keyword_translations(cls):
-
         """
         Get a dictionary that translates the header keywords into normalized column names.
         Each column name has a list of possible header keywords that can be used to populate it.
@@ -1036,7 +1035,7 @@ class Instrument:
         t = dict(
             ra=['RA', 'RADEG'],
             dec=['DEC', 'DECDEG'],
-            mjd=['MJD', 'MJDOBS'],
+            mjd=['MJD', 'MJDOBS', 'OBSMJD'],
             project=['PROJECT', 'PROJID', 'PROPOSID', 'PROPOSAL', 'PROPID'],
             target=['TARGET', 'OBJECT', 'FIELD', 'FIELDID'],
             width=['WIDTH', 'NAXIS1'],
@@ -1130,9 +1129,9 @@ class Instrument:
     def get_short_instrument_name(cls):
         """
         Get a short name used for e.g., making filenames.
+        The default instrument just spits out the instrument class name.
         """
-
-        raise NotImplementedError("Subclasses must implement this method")
+        return cls.__name__
 
     @classmethod
     def get_short_filter_name(cls, filter):
@@ -1286,6 +1285,8 @@ class Instrument:
 
         Could use a polynomial based on the colors, or any other method.
 
+        SUBCLASS MUST IMPLEMENT THIS METHOD!
+
         Parameters
         ----------
         filter: str
@@ -1308,7 +1309,7 @@ class Instrument:
         trans_magerr: float or numpy array
             The instrument magnitude error(s).
         """
-        return NotImplementedError( f"{cls.__name__} needs to implement GaiaDR3_to_instrument_mag" )
+        raise NotImplementedError( f"{cls.__name__} needs to implement GaiaDR3_to_instrument_mag" )
 
     # ----------------------------------------
     # Preprocessing functions.  These live here rather than
@@ -1371,7 +1372,7 @@ class Instrument:
         load it without checking first.  That other method searches the
         database first.
 
-        WILL NEED TO BE OVERRIDEEN FOR EVERY SUBCLASS, unless the
+        WILL NEED TO BE OVERRIDDEN FOR EVERY SUBCLASS, unless the
         instrument doesn't use any calibrator images, or doesn't have
         any default externally supplied calibrator images.
 
@@ -1443,7 +1444,7 @@ class Instrument:
         -------
         dict with up to 12 keys:
            (zero|flat|dark|fringe|illumination|linearity)_isimage: bool
-               True if the calibrator id is an image (other wise is none, or a miscellaneous data file)
+               True if the calibrator id is an image (otherwise is none, or a miscellaneous data file)
            (zero|flat|dark|fringe|illumination|linearity)_fileid: int
                Either the image_id or datafile_id of the calibrator file, or None if not found
 

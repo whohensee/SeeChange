@@ -11,6 +11,7 @@ from models.base import FileOnDiskMixin, _logger
 from util import ldac
 from util.exceptions import SubprocessFailure, BadMatchException
 
+
 def _solve_wcs_scamp( sources, catalog, crossid_rad=2.,
                       max_sources_to_use=2000, min_frac_matched=0.1,
                       min_matched=10, max_arcsec_residual=0.15,

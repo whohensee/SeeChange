@@ -304,7 +304,6 @@ class SeeChangeBase:
             'zp',
             'upstream_images',
         ]
-
         # recursively call this on the provenance and other parent objects
         for att in attributes:
             try:
@@ -542,6 +541,7 @@ class SeeChangeBase:
                 shutil.copyfile(source_f, target_f)
 
         return output
+
 
 Base = declarative_base(cls=SeeChangeBase)
 
@@ -1304,7 +1304,6 @@ class FileOnDiskMixin:
 
         # make sure these are set to null just in case we fail
         # to commit later on, we will at least know something is wrong
-
         self.md5sum = None
         self.md5sum_extensions = None
         self.filepath_extensions = None

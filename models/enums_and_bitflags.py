@@ -400,3 +400,10 @@ flag_image_bits = {
     2: 'saturated',
 }
 flag_image_bits_inverse = { EnumConverter.c(v):k for k, v in flag_image_bits.items() }
+
+
+class BitFlagConverter( EnumConverter ):
+    _dict = flag_image_bits
+    _allowed_values = flag_image_bits
+    _dict_filtered = None
+    _dict_inverse = None

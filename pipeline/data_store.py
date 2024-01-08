@@ -16,7 +16,8 @@ from models.measurements import Measurements
 
 
 UPSTREAM_NAMES = {
-    'preprocessing': [],
+    'exposure': [], # no upstreams
+    'preprocessing': ['exposure'],
     'extraction': ['preprocessing'],
     'astro_cal': ['extraction'],
     'photo_cal': ['extraction', 'astro_cal'],
@@ -28,6 +29,7 @@ UPSTREAM_NAMES = {
 }
 
 UPSTREAM_OBJECTS = {
+    'exposure': 'exposure',
     'preprocessing': 'image',
     'coaddition': 'image',
     'extraction': 'sources',
@@ -193,7 +195,7 @@ class DataStore:
             raise ValueError(
                 'Invalid arguments to DataStore constructor, '
                 f'got {arg_types}. '
-                f'Expected [int, int] or [int]'
+                f'Expected [int, int] or [int], or [<image>] or [<exposure>, <section id>]. '
             )
 
         # parse the kwargs dict
@@ -388,7 +390,7 @@ class DataStore:
                 upstreams=upstreams,
             )
             prov.update_id()
-            prov = prov.recursive_merge(session)
+            prov = session.merge(prov)
 
         return prov
 

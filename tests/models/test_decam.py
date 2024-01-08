@@ -296,6 +296,12 @@ def test_decam_download_and_commit_exposure(code_version, decam_raw_origin_expos
             for exposure in exposures:
                 exposure.delete_from_disk_and_database( session=session, commit=False )
             session.commit()
+            # remove downloaded files from data_dir (a cached version should remain)
+            if 'downloaded' in locals():
+                for d in downloaded:
+                    path = os.path.join(data_dir, d['exposure'].name)
+                    if os.path.isfile(path):
+                        os.unlink(path)
 
             # remove downloaded files from data_dir (a cached version should remain)
             if 'downloaded' in locals():

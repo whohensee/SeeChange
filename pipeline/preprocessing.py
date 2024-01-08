@@ -180,14 +180,15 @@ class Preprocessor:
         for step in self._stepstodo:
             required_bitflag |= string_to_bitflag( step, image_preprocessing_inverse )
 
+        if image._data is None:  # in case we are skipping all preprocessing steps
+            image.data = image.raw_data
+
         if image.preproc_bitflag != required_bitflag:
             self.has_recalculated = True
             # Overscan is always first (as it reshapes the image)
             if 'overscan' in self._stepstodo:
                 image.data = self.instrument.overscan_and_trim( image )
                 image.preproc_bitflag |= string_to_bitflag( 'overscan', image_preprocessing_inverse )
-            else:
-                image.data = image.raw_data
 
             # Apply steps in the order expected by the instrument
             for step in self._stepstodo:
@@ -253,6 +254,7 @@ class Preprocessor:
                 image.preproc_bitflag |= string_to_bitflag( step, image_preprocessing_inverse )
 
             # Get the Instrument standard bad pixel mask for this image
+        if image._flags is None or image._weight is None:
             image._flags = self.instrument.get_standard_flags_image( ds.section_id )
 
             # Estimate the background rms with sep
@@ -292,15 +294,15 @@ class Preprocessor:
                 image._flags[ wsat ] |= string_to_bitflag( "saturated", flag_image_bits_inverse )
                 image._weight[ wsat ] = 0.
 
-            if image.provenance is None:
-                image.provenance = prov
-            else:
-                if image.provenance.id != prov.id:
-                    # Logically, this should never happen
-                    raise ValueError('Provenance mismatch for image and provenance!')
+        if image.provenance is None:
+            image.provenance = prov
+        else:
+            if image.provenance.id != prov.id:
+                # Logically, this should never happen
+                raise ValueError('Provenance mismatch for image and provenance!')
 
-            image.filepath = image.invent_filepath()
-            _logger.debug( f"Done with {pathlib.Path(image.filepath).name}" )
+        image.filepath = image.invent_filepath()
+        _logger.debug( f"Done with {pathlib.Path(image.filepath).name}" )
 
         ds.image = image
         return ds
