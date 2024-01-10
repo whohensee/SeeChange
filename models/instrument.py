@@ -1044,6 +1044,7 @@ class Instrument:
             filter=['FILTER', 'FILT', 'FILTER_ARRAY', 'FILTERA'],
             instrument=['INSTRUME', 'INSTRUMENT'],
             telescope=['TELESCOP', 'TELESCOPE'],
+            gain=['GAIN'],
         )
         return t
         # TODO: add more!

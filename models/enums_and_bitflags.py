@@ -59,7 +59,7 @@ class EnumConverter:
     @classmethod
     def c( cls, keyword ):
         """Convert the key to something more compatible. """
-        return keyword.lower().replace(' ', '')
+        return keyword.lower().replace(' ', '').replace('_','')
 
     @classproperty
     def dict( cls ):

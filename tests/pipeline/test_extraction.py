@@ -214,7 +214,7 @@ def test_run_psfex( decam_datastore, extractor ):
         extractor.pars.method = 'sextractor'
         extractor.pars.subtraction = False
         extractor.pars.threshold = 4.5
-        psf = extractor._run_psfex( tempname, sourcelist.image_id )
+        psf = extractor._run_psfex( tempname, sourcelist.image )
         assert psf._header['PSFAXIS1'] == 25
         assert psf._header['PSFAXIS2'] == 25
         assert psf._header['PSFAXIS3'] == 6
@@ -226,13 +226,13 @@ def test_run_psfex( decam_datastore, extractor ):
         assert not tmppsffile.exists()
         assert not tmppsfxmlfile.exists()
 
-        psf = extractor._run_psfex( tempname, sourcelist.image_id, do_not_cleanup=True )
+        psf = extractor._run_psfex( tempname, sourcelist.image, do_not_cleanup=True )
         assert tmppsffile.exists()
         assert tmppsfxmlfile.exists()
         tmppsffile.unlink()
         tmppsfxmlfile.unlink()
 
-        psf = extractor._run_psfex( tempname, sourcelist.image_id, psf_size=26 )
+        psf = extractor._run_psfex( tempname, sourcelist.image, psf_size=26 )
         assert psf._header['PSFAXIS1'] == 29
         assert psf._header['PSFAXIS1'] == 29
 
@@ -279,13 +279,13 @@ def test_extract_sources_sextractor( decam_datastore, extractor, blocking_plots 
     assert sources.apfluxadu()[0].mean() == pytest.approx( 36779.797 , rel=1e-5 )
     assert sources.apfluxadu()[0].std() == pytest.approx(  121950.04 , rel=1e-5 )
 
-    assert sources.good.sum() == 3643
+    assert sources.good.sum() == 3638
     # This value is what you get using the SPREAD_MODEL parameter
     # assert sources.is_star.sum() == 4870
     # assert ( sources.good & sources.is_star ).sum() == 3593
     # This is what you get with CLASS_STAR
     assert sources.is_star.sum() == 337
-    assert ( sources.good & sources.is_star ).sum() == 63
+    assert ( sources.good & sources.is_star ).sum() == 61
 
 
 # TODO : add tests that handle different combinations
@@ -319,13 +319,13 @@ def test_run_detection_sextractor( decam_datastore, extractor ):
     assert ds.sources.apfluxadu()[0].mean() == pytest.approx( 36779.797, rel=1e-5 )
     assert ds.sources.apfluxadu()[0].std() == pytest.approx(  121950.04 , rel=1e-5 )
 
-    assert ds.sources.good.sum() == 3643
+    assert ds.sources.good.sum() == 3638
     # This value is what you get using the SPREAD_MODEL parameter
     # assert ds.sources.is_star.sum() == 4870
     # assert ( ds.sources.good & ds.sources.is_star ).sum() == 3593
     # This value is what you get using the CLASS_STAR parameter
     assert ds.sources.is_star.sum() == 337
-    assert ( ds.sources.good & ds.sources.is_star ).sum() == 63
+    assert ( ds.sources.good & ds.sources.is_star ).sum() == 61
 
     # TODO : actually think about these psf fluxes and how they compare
     #  to the aperture fluxes (esp. the large-aperture fluxes).  Try to

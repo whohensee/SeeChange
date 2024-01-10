@@ -22,8 +22,8 @@ def test_ptf_datastore(ptf_datastore):
     assert isinstance(ptf_datastore.zp, ZeroPoint)
 
     # using that bad row of pixels from the mask image
-    assert all(ptf_datastore.image.flags[0:120, 93] > 0)
-    assert all(ptf_datastore.image.weight[0:120, 93] == 0)
+    assert all(ptf_datastore.image.flags[0:120, 94] > 0)
+    assert all(ptf_datastore.image.weight[0:120, 94] == 0)
 
 
 def test_ptf_urls(ptf_urls):

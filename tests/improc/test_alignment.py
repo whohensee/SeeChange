@@ -1,5 +1,6 @@
 import pytest
 import random
+import re
 
 import numpy as np
 import astropy.wcs
@@ -52,31 +53,38 @@ def test_warp_decam( decam_datastore, decam_reference ):
 def test_alignment_in_image( ptf_reference_images, code_version ):
     try:  # cleanup at the end
         images_to_align = ptf_reference_images[:4]  # speed things up using fewer images
-        new_image = Image.from_images( images_to_align )
-        new_image.provenance = Provenance(
+        prov = Provenance(
             code_version=code_version,
             parameters={'alignment': {'method': 'swarp', 'to_index': 'last'}, 'test_parameter': 'test_value'},
-            upstreams=new_image.get_upstream_provenances(),
+            upstreams=[],
             process='coaddition',
             is_testing=True,
         )
-        if new_image.provenance.parameters['alignment']['to_index'] == 'last':
-            new_image.ref_image_index = len(images_to_align) - 1
-        elif new_image.provenance.parameters['alignment']['to_index'] == 'first':
-            new_image.ref_image_index = 0
+        prov.update_id()
+        if prov.parameters['alignment']['to_index'] == 'last':
+            index = -1
+        elif prov.parameters['alignment']['to_index'] == 'first':
+            index = 0
         else:
-            raise ValueError(
-                f"Unknown alignment reference index: {new_image.provenance.parameters['alignment']['to_index']}"
-            )
+            raise ValueError(f"Unknown alignment reference index: {prov.parameters['alignment']['to_index']}")
+
+        new_image = Image.from_images(images_to_align, index=index)
+        new_image.provenance = prov
+        new_image.provenance.upstreams = new_image.get_upstream_provenances()
         new_image.new_image = None
         new_image.data = np.sum([image.data for image in new_image.aligned_images], axis=0)
         new_image.save()
-        aligned = new_image.aligned_images
 
+        # check that the filename is correct
+        # e.g.: /path/to/data/PTF_<YYYYMMDD>_<HHMMSS>_<sec_ID>_<filt>_ComSci_<prov hash>_u-<coadd hash>.image.fits
+        match = re.match(r'/.*/.*_\d{8}_\d{6}_.*_.*_ComSci_.{6}_u-.{6}\.image\.fits', new_image.get_fullpath()[0])
+        assert match is not None
+
+        aligned = new_image.aligned_images
         assert new_image.upstream_images == images_to_align
         assert len(aligned) == len(images_to_align)
-        assert np.array_equal(aligned[-1].data, images_to_align[-1].data)
-        ref = images_to_align[-1]
+        assert np.array_equal(aligned[index].data, images_to_align[index].data)
+        ref = images_to_align[index]
 
         # check that images are aligned properly
         for image in new_image.aligned_images:
@@ -112,7 +120,9 @@ def test_alignment_in_image( ptf_reference_images, code_version ):
 
 def check_aligned(image1, image2):
     d1 = image1.data.copy()
+    d1[image1.flags > 0] = np.nan
     d2 = image2.data.copy()
+    d2[image2.flags > 0] = np.nan
 
     row_func1 = np.nansum(d1 - np.nanmedian(d1, axis=1, keepdims=True), axis=1)
     row_func2 = np.nansum(d2 - np.nanmedian(d2, axis=1, keepdims=True), axis=1)

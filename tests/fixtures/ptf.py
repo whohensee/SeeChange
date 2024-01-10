@@ -3,6 +3,8 @@ import os
 import shutil
 import requests
 
+import numpy as np
+
 import sqlalchemy as sa
 from bs4 import BeautifulSoup
 from datetime import datetime
@@ -10,7 +12,12 @@ from astropy.io import fits
 
 from models.base import SmartSession, _logger
 from models.ptf import PTF  # need this import to make sure PTF is added to the Instrument list
+from models.provenance import Provenance
 from models.exposure import Exposure
+from models.image import Image
+from models.psf import PSF
+from models.zero_point import ZeroPoint
+
 from util.retrydownload import retry_download
 
 
@@ -38,9 +45,21 @@ def ptf_bad_pixel_map(data_dir, cache_dir):
     with fits.open(data_path) as hdul:
         data = (hdul[0].data == 0).astype('uint16')  # invert the mask (good is False, bad is True)
 
+    data = np.roll(data, -1, axis=0)  # shift the mask by one pixel (to match the PTF data)
+    data[-1, :] = 0  # the last row that got rolled seems to be wrong
+    data = np.roll(data, 1, axis=1)  # shift the mask by one pixel (to match the PTF data)
+    data[:, 0] = 0  # the last column that got rolled seems to be wrong
+
     yield data
 
     os.remove(data_path)
+
+    # remove (sub)folder if empty
+    dirname = os.path.dirname(data_path)
+    for i in range(2):
+        if os.path.isdir(dirname) and len(os.listdir(dirname)) == 0:
+            os.removedirs(dirname)
+            dirname = os.path.dirname(dirname)
 
 
 @pytest.fixture(scope='session')
@@ -128,7 +147,6 @@ def ptf_urls():
     soup = BeautifulSoup(r.text, 'html.parser')
     links = soup.find_all('a')
     filenames = [link.get('href') for link in links if link.get('href').endswith('.fits')]
-
     bad_files = [
         'PTF200904053266_2_o_19609_11.w.fits',
         'PTF200904053340_2_o_19614_11.w.fits',
@@ -163,8 +181,6 @@ def ptf_images_factory(ptf_urls, ptf_downloader, datastore_factory, cache_dir, p
             obstime = datetime.strptime(url[3:11], '%Y%m%d')
             if start_time <= obstime <= end_time:
                 urls.append(url)
-            if max_images is not None and len(urls) >= max_images:
-                break
 
         # download the images and make a datastore for each one
         images = []
@@ -196,10 +212,15 @@ def ptf_images_factory(ptf_urls, ptf_downloader, datastore_factory, cache_dir, p
                             f.write(f'{key} {value}\n')
 
             except Exception as e:
-                print(f'Error processing {url}')
-                print(e)  # TODO: should we be worried that some of these images can't complete their processing?
-                continue  # I think we should fix this along with issue #150
+                raise e
+                # I think we should fix this along with issue #150
+                print(f'Error processing {url}')  # this will also leave behind exposure and image data on disk only
+                # print(e)  # TODO: should we be worried that some of these images can't complete their processing?
+                continue
+
             images.append(ds.image)
+            if max_images is not None and len(images) >= max_images:
+                break
 
         return images
 
@@ -213,8 +234,74 @@ def ptf_reference_images(ptf_images_factory):
     yield images
 
     with SmartSession() as session:
+        session.autoflush = False
+
         for image in images:
-            image = image.recursive_merge(session)
+            image = session.merge(image)
             image.exposure.delete_from_disk_and_database(session=session, commit=False)
             image.delete_from_disk_and_database(session=session, commit=False, remove_downstream_data=True)
         session.commit()
+
+
+# conditionally call the ptf_reference_images fixture if cache is not there:
+# ref: https://stackoverflow.com/a/75337251
+@pytest.fixture(scope='session')
+def ptf_aligned_images(request, cache_dir, data_dir, code_version):
+    cache_dir = os.path.join(cache_dir, 'PTF/aligned_images')
+
+    # try to load from cache
+    if os.path.isfile(os.path.join(cache_dir, 'manifest.txt')):
+        with open(os.path.join(cache_dir, 'manifest.txt')) as f:
+            filenames = f.read().splitlines()
+        output_images = []
+        for filename in filenames:
+            output_images.append(Image.copy_from_cache(cache_dir, filename + '.image.fits'))
+            output_images[-1].psf = PSF.copy_from_cache(cache_dir, filename + '.psf')
+            output_images[-1].zp = ZeroPoint.copy_from_cache(cache_dir, filename + '.zp')
+    else:  # no cache available
+        ptf_reference_images = request.getfixturevalue('ptf_reference_images')
+        images_to_align = ptf_reference_images[:9]  # speed things up using fewer images
+        prov = Provenance(
+            code_version=code_version,
+            parameters={'alignment': {'method': 'swarp', 'to_index': 'last'}, 'test_parameter': 'test_value'},
+            upstreams=[],
+            process='coaddition',
+            is_testing=True,
+        )
+        prov.update_id()
+        new_image = Image.from_images(images_to_align, index=-1)
+        new_image.provenance = prov
+        new_image.provenance.upstreams = new_image.get_upstream_provenances()
+
+        filenames = []
+        for image in new_image.aligned_images:
+            image.save()
+            filepath = image.copy_to_cache(cache_dir)
+            image.psf.copy_to_cache(cache_dir, filepath=filepath[:-len('.image.fits.json')])
+            image.zp.copy_to_cache(cache_dir, filepath=filepath[:-len('.image.fits.json')]+'.zp.json')
+            filenames.append(image.filepath)
+
+        os.makedirs(cache_dir, exist_ok=True)
+        with open(os.path.join(cache_dir, 'manifest.txt'), 'w') as f:
+            for filename in filenames:
+                f.write(f'{filename}\n')
+        output_images = new_image.aligned_images
+
+    yield output_images
+
+    if 'output_images' in locals():
+        for image in output_images:
+            image.psf.delete_from_disk_and_database()
+            image.delete_from_disk_and_database()
+
+    if 'new_image' in locals():
+        new_image.delete_from_disk_and_database()
+
+    # must delete these here, as the cleanup for the getfixturevalue() happens after pytest_sessionfinish!
+    if 'ptf_reference_images' in locals():
+        with SmartSession() as session:
+            for image in ptf_reference_images:
+                image = session.merge(image)
+                image.exposure.delete_from_disk_and_database(commit=False, session=session)
+                image.delete_from_disk_and_database(commit=False, session=session, remove_downstream_data=True)
+            session.commit()

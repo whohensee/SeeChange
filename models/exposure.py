@@ -50,7 +50,7 @@ EXPOSURE_COLUMN_NAMES = [
 
 # these are header keywords that are not stored as columns of the Exposure table,
 # but are still useful to keep around inside the "header" JSONB column.
-EXPOSURE_HEADER_KEYS = []  # TODO: add more here
+EXPOSURE_HEADER_KEYS = ['gain']  # TODO: add more here
 
 
 class SectionData:

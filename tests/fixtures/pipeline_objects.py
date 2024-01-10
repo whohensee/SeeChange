@@ -3,10 +3,13 @@ import warnings
 import shutil
 import pytest
 
+import numpy as np
+
 import sqlalchemy as sa
 
 from models.base import SmartSession, _logger
 from models.provenance import Provenance
+from models.enums_and_bitflags import BitFlagConverter
 from models.image import Image
 from models.source_list import SourceList
 from models.psf import PSF
@@ -18,10 +21,12 @@ from pipeline.preprocessing import Preprocessor
 from pipeline.detection import Detector
 from pipeline.astro_cal import AstroCalibrator
 from pipeline.photo_cal import PhotCalibrator
+from pipeline.coaddition import Coadder
 from pipeline.subtraction import Subtractor
 from pipeline.cutting import Cutter
 from pipeline.measurement import Measurer
 
+from improc.bitmask_tools import make_saturated_flag
 
 @pytest.fixture(scope='session')
 def preprocessor_factory(test_config):
@@ -104,6 +109,27 @@ def photometor_factory(test_config):
 @pytest.fixture
 def photometor(photometor_factory):
     return photometor_factory()
+
+
+@pytest.fixture(scope='session')
+def coadder_factory(test_config):
+
+    def make_coadder():
+        coadd = Coadder(**test_config.value('coaddition'))
+        coadd.pars._enforce_no_new_attrs = False
+        coadd.pars.test_parameter = coadd.pars.add_par(
+            'test_parameter', 'test_value', str, 'parameter to define unique tests', critical=True
+        )
+        coadd.pars._enforce_no_new_attrs = True
+
+        return coadd
+
+    return make_coadder
+
+
+@pytest.fixture
+def coadder(coadder_factory):
+    return coadder_factory()
 
 
 @pytest.fixture(scope='session')
@@ -317,6 +343,10 @@ def datastore_factory(
                     ds.image.flags |= bad_pixel_map
                     if ds.image.weight is not None:
                         ds.image.weight[ds.image.flags.astype(bool)] = 0.0
+
+                # flag saturated pixels, too (TODO: is there a better way to get the saturation limit? )
+                mask = make_saturated_flag(ds.image.data, ds.image.instrument_object.saturation_limit, iterations=2)
+                ds.image.flags |= (mask * 2 ** BitFlagConverter.convert('saturated')).astype(np.uint16)
 
                 ds.image.save()
                 output_path = ds.image.copy_to_cache(cache_dir)

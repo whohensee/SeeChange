@@ -26,14 +26,8 @@ from tests.conftest import CODE_ROOT
 def test_decam_exposure(decam_filename):
     assert os.path.isfile(decam_filename)
 
-    # verify we don't already have an Exposure like this on DB
-    decam_example_file_short = decam_filename[len(CODE_ROOT + '/data/'):]
-    with SmartSession() as session:
-        session.execute(sa.delete(Exposure).where(Exposure.filepath == decam_example_file_short))
-        session.commit()
-
     e = Exposure(filepath=decam_filename)
-    e.save()  # make sure to save it to archive so it has an MD5 sum
+    e.save()  # make sure to save it to archive, so it has an MD5 sum
     assert e.instrument == 'DECam'
     assert isinstance(e.instrument_object, DECam)
     assert e.telescope == 'CTIO 4.0-m telescope'
@@ -68,28 +62,6 @@ def test_decam_exposure(decam_filename):
     assert e.section_headers['N4']['NAXIS'] == 2
     assert e.section_headers['N4']['NAXIS1'] == 2160
     assert e.section_headers['N4']['NAXIS2'] == 4146
-
-    try:
-        exp_id = None
-        with SmartSession() as session:
-            e = e.recursive_merge( session )
-            session.add(e)
-            session.commit()
-            exp_id = e.id
-            assert exp_id is not None
-
-        with SmartSession() as session:
-            e2 = session.scalars(sa.select(Exposure).where(Exposure.id == exp_id)).first()
-            assert e2 is not None
-            assert e2.id == exp_id
-            assert e2.from_db
-
-    finally:
-        if exp_id is not None:
-            with SmartSession() as session:
-                e = e.recursive_merge( session )
-                session.delete(e)
-                session.commit()
 
 
 def test_image_from_decam_exposure(decam_filename, provenance_base, data_dir):

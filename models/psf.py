@@ -150,6 +150,11 @@ class PSF(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
     def info( self, value ):
         self._info = value
 
+    @property
+    def image_shape(self):
+        """The shape of the image this PSF is for."""
+        return self.header['IMAXIS2'], self.header['IMAXIS1']
+
     def _get_inverse_badness(self):
         """Get a dict with the allowed values of badness that can be assigned to this object"""
         return psf_badness_inverse
@@ -215,7 +220,7 @@ class PSF(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
         header0 = fits.Header( [ fits.Card( 'SIMPLE', 'T', 'This is a FITS file' ),
                                  fits.Card( 'BITPIX', 8 ),
                                  fits.Card( 'NAXIS', 0 ),
-                                 fits.Card( 'EXTEND', 'T', 'This file may contain FITS extensions' )
+                                 fits.Card( 'EXTEND', 'T', 'This file may contain FITS extensions' ),
                                 ] )
         hdu0 = fits.PrimaryHDU( header=header0 )
         # The PSFEx format is a bit byzantine
@@ -340,7 +345,7 @@ class PSF(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
 
         return psfwid, psfsamp, stampwid, psfdex1d
 
-    def get_clip( self, x, y, flux, norm=True, noisy=False, gain=1., rng=None, dtype=np.float64 ):
+    def get_clip( self, x=None, y=None, flux=1.0, norm=True, noisy=False, gain=1., rng=None, dtype=np.float64 ):
         """Get an image clip with the psf.
 
         The clip will have the same pixel scale as the image.
@@ -349,32 +354,27 @@ class PSF(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
         ----------
           x: float
             x-coordinate on the image the PSF was extracted for (0-offset)
-
+            If None (default) will use the center of the image.
           y: float
             y-coordinate of the image the PSF was extracted from (0-offset)
-
+            If None (default) will use the center of the image.
           flux: float
             Sum of the psf flux values over all pixels.
-
           norm: bool, default True
             Normalize the psf to 1.0, before adding noise if any.  (This
             seems to be necessary with PSFEx.)
-
           noisy: bool, default False
             If True, will also scatter the pixel values using
             Poisson statistics, assuming gain e-/adu.
-
           gain: float, default 1.
             Assumed e-/adu gain for calculating Poisson statistics if
             noisy is true.
-
           rng: numpy.random.Generator, default None
             If not None, will use this (already-seeded) random number
             generator (produced, for example, with numpy.default_rng) to
             generate the noise.  Pass this if you want reproducible
             noise for testing purposes.  If None, will use
             numpy.random.default_rng() (i.e. seeded from system entropy).
-
           dtype: type, default numpy.float64
             Type of the returned array; usually either numpy.float64 or numpy.float32
 
@@ -386,6 +386,13 @@ class PSF(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
 
         if self.format != 'psfex':
             raise NotImplementedError( "Only know how to get clip for psfex PSF files" )
+
+        if x is None:
+            x = self.image_shape[1] / 2.
+            # x = 0  # I think the x/y are centered on the center of the image
+        if y is None:
+            y = self.image_shape[0] / 2.
+            # y = 0  # I think the x/y are centered on the center of the image
 
         psfbase = self.get_resampled_psf( x, y, dtype=np.float64 )
 

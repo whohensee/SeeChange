@@ -291,10 +291,9 @@ class Detector:
 
                 # Get the PSF
                 _logger.debug( "detection: determining psf" )
-                psf = self._run_psfex( tempnamebase, image.id, do_not_cleanup=True )
+                psf = self._run_psfex( tempnamebase, image, do_not_cleanup=True )
                 psfpath = pathlib.Path( FileOnDiskMixin.temp_path ) / f'{tempnamebase}.sources.psf'
                 psfxmlpath = pathlib.Path( FileOnDiskMixin.temp_path ) / f'{tempnamebase}.sources.psf.xml'
-                psf.image = image
             elif self.pars.psf is not None:
                 psf = self.pars.psf
                 psfpath, psfxmlpath = psf.get_fullpath()
@@ -545,7 +544,7 @@ class Detector:
                 tmpparams.unlink( missing_ok=True )
                 if tempname is None: tmpsources.unlink( missing_ok=True )
 
-    def _run_psfex( self, tempname, image_id, psf_size=None, do_not_cleanup=False ):
+    def _run_psfex( self, tempname, image, psf_size=None, do_not_cleanup=False ):
         """Create a PSF from a SExtractor catalog file.
 
         Will run psfex twice, to make sure it has the right data size.
@@ -564,8 +563,8 @@ class Detector:
             The catalog file is found in
             {FileOnDiskMixin.temp_path}/{tempname}.sources.fits.
 
-          image_id: int
-            The id of the Image the sources were extracted from
+          image: Image
+            The Image that the sources were extracted from.
 
           psf_size: int or None
             The size of one side of the thumbnail of the PSF, in pixels.
@@ -646,9 +645,17 @@ class Detector:
                     if usepsfsize % 2 == 0:
                         usepsfsize += 1
 
-            psf = PSF( format="psfex", image_id=image_id,
-                       fwhm_pixels=float(psfstats.array['FWHM_FromFluxRadius_Mean'][0]) )
+            psf = PSF(
+                format="psfex", image=image, image_id=image.id,
+                fwhm_pixels=float(psfstats.array['FWHM_FromFluxRadius_Mean'][0])
+            )
             psf.load( psfpath=psffile, psfxmlpath=psfxmlfile )
+            psf.header['IMAXIS1'] = image.data.shape[1]
+            psf.header['IMAXIS2'] = image.data.shape[0]
+            with fits.open(psffile) as hdul:
+                hdul[1].header['IMAXIS1'] = image.data.shape[1]
+                hdul[1].header['IMAXIS2'] = image.data.shape[0]
+                # TODO: any more information about the Image or SourceList we want to save here?
 
             return psf
 

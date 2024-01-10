@@ -77,6 +77,20 @@ photo_cal:
   mag_range_catalog: 4.0
   min_catalog_stars: 50
 
+coaddition:
+  method: zogy
+  noise_estimator: sep
+  flag_fwhm_factor: 1.0
+  alignment:
+    method: swarp
+    to_index: last
+  inpainting:
+    multi_image_method: median
+    feather_width : 2
+    rescale_method: median
+    single_image_method: biharmonic
+    ignore_flags: 0
+
 subtraction:
   method: hotpants
 

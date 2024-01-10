@@ -1,5 +1,9 @@
 import os
-import math
+import base64
+import hashlib
+
+import numpy as np
+
 import sqlalchemy as sa
 from sqlalchemy import orm
 from sqlalchemy.dialects.postgresql import JSONB
@@ -438,6 +442,7 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
 
         self._aligner = None  # an ImageAligner object (lazy loaded using the provenance parameters)
         self._aligned_images = None  # a list of Images that are aligned to one image (lazy calculated, not committed)
+        self._combined_filepath = None  # a filepath built from invent_filepath and a hash of the upstream images
 
         self._instrument_object = None
         self._bitflag = 0
@@ -475,6 +480,7 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
 
         self._aligner = None
         self._aligned_images = None
+        self._combined_filepath = None
 
         self._instrument_object = None
         this_object_session = orm.Session.object_session(self)
@@ -618,7 +624,7 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
         # (Can be done after the decam_pull PR is merged)
 
         if not gotcorners:
-            halfwid = new.instrument_object.pixel_scale * width / 2. / math.cos( new.dec * math.pi / 180. ) / 3600.
+            halfwid = new.instrument_object.pixel_scale * width / 2. / np.cos( new.dec * np.pi / 180. ) / 3600.
             halfhei = new.instrument_object.pixel_scale * height / 2. / 3600.
             ra0 = new.ra - halfwid
             ra1 = new.ra + halfwid
@@ -658,6 +664,7 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
             'score',
             'background',
             'header',
+            'raw_header',
         ]
         simple_attributes = [
             'ra',
@@ -706,7 +713,7 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
         return new
 
     @classmethod
-    def from_images(cls, images):
+    def from_images(cls, images, index=0):
         """
         Create a new Image object from a list of other Image objects.
         This is the first step in making a multi-image (usually a coadd).
@@ -729,6 +736,12 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
         ----------
         images: list of Image objects
             The images to combine into a new Image object.
+        index: int
+            The image index in the (mjd sorted) list of upstream images
+            that is used to set several attributes of the output image.
+            Notably this includes the RA/Dec (and corners) of the output image,
+            which implies that the indexed source image should be the one that
+            all other images are aligned to (when running alignment).
 
         Returns
         -------
@@ -754,19 +767,18 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
                 values = set([str(getattr(image, att)) for image in images])
                 if len(values) != 1:
                     raise ValueError(f"Cannot combine images with different {att} values: {values}")
-            setattr(output, att, getattr(images[0], att))
+            setattr(output, att, getattr(images[index], att))
 
-        # TODO: should RA and Dec also be exactly the same??
-        output.ra = images[0].ra
-        output.dec = images[0].dec
-        output.ra_corner_00 = images[0].ra_corner_00
-        output.ra_corner_01 = images[0].ra_corner_01
-        output.ra_corner_10 = images[0].ra_corner_10
-        output.ra_corner_11 = images[0].ra_corner_11
-        output.dec_corner_00 = images[0].dec_corner_00
-        output.dec_corner_01 = images[0].dec_corner_01
-        output.dec_corner_10 = images[0].dec_corner_10
-        output.dec_corner_11 = images[0].dec_corner_11
+        output.ra = images[index].ra
+        output.dec = images[index].dec
+        output.ra_corner_00 = images[index].ra_corner_00
+        output.ra_corner_01 = images[index].ra_corner_01
+        output.ra_corner_10 = images[index].ra_corner_10
+        output.ra_corner_11 = images[index].ra_corner_11
+        output.dec_corner_00 = images[index].dec_corner_00
+        output.dec_corner_01 = images[index].dec_corner_01
+        output.dec_corner_10 = images[index].dec_corner_10
+        output.dec_corner_11 = images[index].dec_corner_11
 
         # exposure time is usually added together
         output.exp_time = sum([image.exp_time for image in images])
@@ -776,17 +788,17 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
         output.end_mjd = max([image.end_mjd for image in images])  # exposure ends are not necessarily sorted
 
         # TODO: what about the header? should we combine them somehow?
-        output.header = images[0].header
-        output.raw_header = images[0].raw_header
+        output.header = images[index].header
+        output.raw_header = images[index].raw_header
 
-        base_type = images[0].type
+        base_type = images[index].type
         if not base_type.startswith('Com'):
             output.type = 'Com' + base_type
 
         output.upstream_images = images
 
-        # mark the first image as the reference (this can be overriden later when actually warping into one image)
-        output.ref_image_index = 0
+        # mark as the reference the image used for alignment
+        output.ref_image_index = index
 
         output._upstream_bitflag = 0
         for im in images:
@@ -883,7 +895,8 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
         # Note that "data" is not filled by this method, also the provenance is empty!
         return output
 
-    def align_images(self):
+
+    def _make_aligned_images(self):
         """Align the upstream_images to one of the images pointed to by image_index.
 
         The parameters of the alignment must be given in the parameters attribute
@@ -897,9 +910,9 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
         to the database. Note that each aligned image is also referred to by
         a global variable under the ImageAligner.temp_images list.
         """
-        from pipeline.alignment import ImageAligner  # avoid circular import
+        from improc.alignment import ImageAligner  # avoid circular import
         if self.provenance is None or self.provenance.parameters is None:
-            raise RuntimeError('Cannot align images without a Provenace with legal parameters!')
+            raise RuntimeError('Cannot align images without a Provenance with legal parameters!')
         if 'alignment' not in self.provenance.parameters:
             raise RuntimeError('Cannot align images without an "alignment" dictionary in the Provenance parameters!')
 
@@ -926,10 +939,53 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
 
         self._aligned_images = aligned
 
+        # also suggest a filepath for an image created from the aligned upstream images:
+        self._combined_filepath = None  # if we don't clear this, it gets loaded in invent filepath!
+        path = self.invent_filepath()
+        utag = hashlib.sha256()
+        for image in self.upstream_images:
+            utag.update(image.filepath.encode('utf-8'))
+        utag = base64.b32encode(utag.digest()).decode().lower()
+        utag = '_u-' + utag[:6]
+        path += utag
+
+        self._combined_filepath = path
+
+    def _check_aligned_images(self):
+        """Check that the aligned_images loaded in this Image are consistent.
+
+        The aligned_images must have the same provenance parameters as the Image,
+        and their "original_image_id" must point to the IDs of the upstream_images.
+
+        """
+        if self._aligned_images is None:
+            return
+
+        if self.provenance is None or self.provenance.parameters is None:
+            raise RuntimeError('Cannot check aligned images without a Provenance with legal parameters!')
+        if 'alignment' not in self.provenance.parameters:
+            raise RuntimeError(
+                'Cannot check aligned images without an "alignment" dictionary in the Provenance parameters!'
+            )
+
+        upstream_images_ids = [image.id for image in self.upstream_images]
+
+        for image in self._aligned_images:
+            if self.provenance.parameters['alignment'] != image.provenance.parameters:
+                self._aligned_images = None
+                return
+
+            if image.header['original_image_id'] not in upstream_images_ids:
+                self._aligned_images = None
+                return
+
     @property
     def aligned_images(self):
+        self._check_aligned_images()  # possibly destroy the old aligned images
+
         if self._aligned_images is None:
-            self.align_images()
+            self._make_aligned_images()
+
         return self._aligned_images
 
     @property
@@ -977,6 +1033,9 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
         filename.
 
         """
+        if self._combined_filepath is not None:
+            return self._combined_filepath
+
         prov_hash = inst_name = im_type = date = time = filter = ra = dec = dec_int_pm = ''
         section_id = section_id_int = ra_int = ra_int_h = ra_frac = dec_int = dec_frac = 0
 
@@ -1043,7 +1102,6 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
 
         # TODO: which elements of the naming convention are really necessary?
         #  and what is a good way to make sure the filename actually depends on them?
-        self.filepath = filename
 
         return filename
 
@@ -1107,7 +1165,7 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
         if filename is not None:
             self.filepath = filename
         if self.filepath is None:
-            self.invent_filepath()
+            self.filepath = self.invent_filepath()
 
         cfg = config.Config.get()
         single_file = cfg.value('storage.images.single_file', default=False)

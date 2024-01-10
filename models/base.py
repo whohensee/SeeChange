@@ -455,11 +455,15 @@ class SeeChangeBase:
             if filepath is None:
                 raise ValueError("filepath must be given when caching a non FileOnDiskMixin object")
 
-        else:
+        else:  # it is a FileOnDiskMixin
             if filepath is None:  # use the FileOnDiskMixin filepath as default
                 filepath = self.filepath  # use this filepath for the data files
                 json_filepath = self.filepath  # use the same filepath for the json file too
-                if self.filepath_extensions is not None and len(self.filepath_extensions) > 0:
+            if (
+                    self.filepath_extensions is not None and
+                    len(self.filepath_extensions) > 0 and
+                    not json_filepath.endswith(self.filepath_extensions[0])
+            ):
                     json_filepath += self.filepath_extensions[0]  # only append this extension to the json filename
 
             for i, source_f in enumerate(self.get_fullpath(as_list=True)):
@@ -1340,6 +1344,9 @@ class FileOnDiskMixin:
             need_commit = False
             if info.persistent:
                 session.delete(self)
+                need_commit = True
+            elif info.pending:
+                session.expunge(self)
                 need_commit = True
             elif info.detached:
                 session.execute(sa.delete(self.__class__).where(self.__class__.id == self.id))

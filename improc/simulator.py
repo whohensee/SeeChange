@@ -5,7 +5,7 @@ from collections import defaultdict
 
 from scipy.ndimage import gaussian_filter
 
-import pylandau
+# import pylandau
 
 from pipeline.parameters import Parameters
 
@@ -1498,7 +1498,7 @@ class Simulator:
         self.galaxy_f = None
 
         self.psf = None  # we are cheating because this includes both the optical and atmospheric PSFs
-        self.psf_downsampled = None # the PSF, correctly downsampled as to retain the symmetric single peak pixel
+        self.psf_downsampled = None  # the PSF, correctly downsampled as to retain the symmetric single peak pixel
         self.flux_top = None  # this is the mean number of photons hitting the top of the atmosphere
 
         # adding the sky into the mix
