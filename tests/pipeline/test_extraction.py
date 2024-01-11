@@ -82,7 +82,6 @@ def test_sep_save_source_list(decam_small_image, provenance_base, extractor):
         upstreams=[decam_small_image.provenance],
         is_testing=True,
     )
-    prov.update_id()
     sources.provenance = prov
 
     try:  # cleanup file / DB at the end

@@ -7,6 +7,8 @@ import numpy as np
 
 import sqlalchemy as sa
 
+import sep
+
 from models.base import SmartSession, _logger
 from models.provenance import Provenance
 from models.enums_and_bitflags import BitFlagConverter
@@ -115,7 +117,8 @@ def photometor(photometor_factory):
 def coadder_factory(test_config):
 
     def make_coadder():
-        coadd = Coadder(**test_config.value('coaddition'))
+
+        coadd = Coadder(**test_config.value('coaddition.coaddition'))
         coadd.pars._enforce_no_new_attrs = False
         coadd.pars.test_parameter = coadd.pars.add_par(
             'test_parameter', 'test_value', str, 'parameter to define unique tests', critical=True
@@ -308,15 +311,19 @@ def datastore_factory(
                     if ds.exposure is not None:
                         ds.image.exposure = ds.exposure
 
+                    # add the preprocessing steps from instruement (TODO: remove this as part of Issue #142)
+                    preprocessing_steps = ds.image.instrument_object.preprocessing_steps
+                    prep_pars = preprocessor.pars.get_critical_pars()
+                    prep_pars['preprocessing_steps'] = preprocessing_steps
+
                     upstreams = [ds.exposure.provenance] if ds.exposure is not None else []  # images without exposure
                     prov = Provenance(
                         code_version=code_version,
                         process='preprocessing',
                         upstreams=upstreams,
-                        parameters=preprocessor.pars.to_dict(),
+                        parameters=prep_pars,
                         is_testing=True,
                     )
-                    prov.update_id()
                     prov = prov.recursive_merge(session)
 
                     # if Image already exists on the database, use that instead of this one
@@ -339,6 +346,7 @@ def datastore_factory(
             if ds.image is None:  # make the preprocessed image
                 _logger.debug('making preprocessed image. ')
                 ds = preprocessor.run(ds)
+                ds.image.provenance.is_testing = True
                 if bad_pixel_map is not None:
                     ds.image.flags |= bad_pixel_map
                     if ds.image.weight is not None:
@@ -362,6 +370,23 @@ def datastore_factory(
                     ds.cache_base_name = output_path
                     print(f'Saving image to cache at: {output_path}')
 
+            # check if background was calculated
+            if ds.image.bkg_mean_estimate is None or ds.image.bkg_rms_estimate is None:
+                # Estimate the background rms with sep
+                boxsize = ds.image.instrument_object.background_box_size
+                filtsize = ds.image.instrument_object.background_filt_size
+
+                # Dysfunctionality alert: sep requires a *float* image for the mask
+                # IEEE 32-bit floats have 23 bits in the mantissa, so they should
+                # be able to precisely represent a 16-bit integer mask image
+                # In any event, sep.Background uses >0 as "bad"
+                fmask = np.array(ds.image.flags, dtype=np.float32)
+                backgrounder = sep.Background(ds.image.data, mask=fmask,
+                                              bw=boxsize, bh=boxsize, fw=filtsize, fh=filtsize)
+
+                ds.image.bkg_mean_estimate = backgrounder.globalback
+                ds.image.bkg_rms_estimate = backgrounder.globalrms
+
             ############# extraction to create sources #############
             if cache_dir is not None and cache_base_name is not None:
                 cache_name = cache_base_name + '.sources.fits.json'
@@ -377,7 +402,6 @@ def datastore_factory(
                         parameters=extractor.pars.to_dict(),
                         is_testing=True,
                     )
-                    prov.update_id()
                     prov = prov.recursive_merge(session)
 
                     # if SourceList already exists on the database, use that instead of this one
@@ -414,7 +438,6 @@ def datastore_factory(
                         parameters=extractor.pars.to_dict(),
                         is_testing=True,
                     )
-                    prov.update_id()
                     prov = prov.recursive_merge(session)
 
                     # if PSF already exists on the database, use that instead of this one
@@ -463,7 +486,6 @@ def datastore_factory(
                         parameters=astrometor.pars.to_dict(),
                         is_testing=True,
                     )
-                    prov.update_id()
                     prov = prov.recursive_merge(session)
 
                     # check if WCS already exists on the database
@@ -511,7 +533,6 @@ def datastore_factory(
                         parameters=photometor.pars.to_dict(),
                         is_testing=True,
                     )
-                    prov.update_id()
                     prov = prov.recursive_merge(session)
 
                     # check if ZP already exists on the database

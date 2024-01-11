@@ -1,5 +1,4 @@
 
-
 from pipeline.parameters import Parameters
 from pipeline.data_store import DataStore
 from pipeline.preprocessing import Preprocessor
@@ -20,13 +19,15 @@ from models.base import SmartSession
 class ParsPipeline(Parameters):
 
     def __init__(self, **kwargs):
-            super().__init__()
+        super().__init__()
 
-            self.add_par('example_pipeline_parameter', 1, int, 'an example pipeline parameter')
+        self.example_pipeline_parameter = self.add_par(
+            'example_pipeline_parameter', 1, int, 'an example pipeline parameter'
+        )
 
-            self._enforce_no_new_attrs = True  # lock against new parameters
+        self._enforce_no_new_attrs = True  # lock against new parameters
 
-            self.override(kwargs)
+        self.override(kwargs)
 
 
 class Pipeline:

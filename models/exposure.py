@@ -404,7 +404,6 @@ class Exposure(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagB
             parameters={'instrument': self.instrument},
             upstreams=[],
         )
-        self.provenance.update_id()
 
     @sa.orm.reconstructor
     def init_on_load(self):

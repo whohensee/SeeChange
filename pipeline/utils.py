@@ -67,7 +67,7 @@ def get_latest_provenance(process_name, session=None):
         prov = session.scalars(
             sa.select(Provenance).where(
                 Provenance.process == process_name
-            ).order_by(Provenance.id.desc())
+            ).order_by(Provenance.created_at.desc())
         ).first()
 
     return prov

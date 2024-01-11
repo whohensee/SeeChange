@@ -7,6 +7,7 @@ import astropy.coordinates
 _radecparse = re.compile( '^ *(?P<sign>[\-\+])? *(?P<d>[0-9]{1,2}): *(?P<m>[0-9]{1,2}):'
                           ' *(?P<s>[0-9]{1,2}(\.[0-9]*)?) *$' )
 
+
 def parse_sexigesimal_degrees( strval, hours=False, **kwargs ):
     """Parse [+-]dd:mm::ss to decimal degrees in the range [0, 360) or (-180, 180]
 
@@ -46,6 +47,7 @@ def parse_sexigesimal_degrees( strval, hours=False, **kwargs ):
         while val > 180: val -= 360.
         while val <= -180: val += 360.
     return val
+
 
 def radec_to_gal_and_eclip( ra, dec ):
     """Convert ra/dec to galactic and ecliptic coordinates

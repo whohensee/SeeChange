@@ -246,6 +246,12 @@ class Provenance(Base):
         else:
             self.upstreams = upstreams
 
+        self.is_bad = kwargs.get('is_bad', False)
+        self.bad_comment = kwargs.get('bad_comment', None)
+        self.is_testing = kwargs.get('is_testing', False)
+
+        self.update_id()  # too many times I've forgotten to do this!
+
     def __repr__(self):
         return (
             '<Provenance('

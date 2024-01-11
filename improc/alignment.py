@@ -392,8 +392,10 @@ class ImageAligner:
                 target_wcs.provenance,
             ],  # this does not really matter since we are not going to save this to DB!
         )
-        warped_image.provenance.update_id()
-        warped_image.header['original_image_id'] = source_image.id  # add this only for aligned images for verification
+        warped_image.provenance_id = warped_image.provenance.id  # make sure this is filled even if not saved to DB
+        warped_image.header['original_image_id'] = source_image.id
+        warped_image.header['original_image_filepath'] = source_image.filepath  # verification of aligned images
+        warped_image.header['alignment_parameters'] = self.pars.get_critical_pars()
 
         upstream_bitflag = source_image.bitflag
         upstream_bitflag |= target_image.bitflag

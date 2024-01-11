@@ -60,7 +60,6 @@ def test_alignment_in_image( ptf_reference_images, code_version ):
             process='coaddition',
             is_testing=True,
         )
-        prov.update_id()
         if prov.parameters['alignment']['to_index'] == 'last':
             index = -1
         elif prov.parameters['alignment']['to_index'] == 'first':

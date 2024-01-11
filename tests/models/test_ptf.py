@@ -31,4 +31,4 @@ def test_ptf_urls(ptf_urls):
 
 
 def test_ptf_images(ptf_reference_images):
-    assert len(ptf_reference_images) == 10
+    assert len(ptf_reference_images) == 5

@@ -200,6 +200,7 @@ class AstroCalibrator:
             raise ValueError(f'Cannot find a source list corresponding to the datastore inputs: {ds.get_inputs()}')
 
         success = False
+        exceptions = []
         for maxmag in self.pars.max_catalog_mag:
             try:
                 catexp = fetch_GaiaDR3_excerpt(
@@ -212,6 +213,7 @@ class AstroCalibrator:
             except CatalogNotFoundError as ex:
                 _logger.info( f"Failed to get a catalog excerpt with enough stars with maxmag {maxmag}, "
                               f"trying the next one." )
+                exceptions.append(ex)
                 continue
 
             for crossid_rad in self.pars.crossid_radius:
@@ -222,10 +224,12 @@ class AstroCalibrator:
                 except SubprocessFailure as ex:
                     _logger.info( f"Scamp failed for maxmag {maxmag} and crossid_rad {crossid_rad}, "
                                   f"trying the next crossid_rad" )
+                    exceptions.append(ex)
                     continue
                 except BadMatchException as ex:
                     _logger.info( f"Scamp didn't produce a successful match for maxmag {maxmag} "
                                   f"and crossid_rad {crossid_rad}; trying the next crossid_rad" )
+                    exceptions.append(ex)
                     continue
 
             if success:
@@ -234,7 +238,7 @@ class AstroCalibrator:
                 _logger.info( f"Failed to solve for WCS with maxmag {maxmag}, trying the next one." )
 
         if not success:
-            raise RuntimeError( "_run_scamp failed to find a match." )
+            raise RuntimeError( f"_run_scamp failed to find a match. Exceptions that were raised: {exceptions}" )
 
         # Save these in case something outside wants to
         # probe them (e.g. tests)

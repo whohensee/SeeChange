@@ -7,9 +7,18 @@ import numpy as np
 from numpy.fft import fft2, ifft2, fftshift
 
 from models.image import Image
+from models.source_list import SourceList
+from models.psf import PSF
+from models.world_coordinates import WorldCoordinates
+from models.zero_point import ZeroPoint
 
 from improc.simulator import Simulator
 from improc.tools import sigma_clipping
+
+from pipeline.coaddition import Coadder, CoaddPipeline
+from pipeline.detection import Detector
+from pipeline.astro_cal import AstroCalibrator
+from pipeline.photo_cal import PhotCalibrator
 
 
 def estimate_psf_width(data, sz=15, upsampling=25):
@@ -269,24 +278,19 @@ def test_zogy_vs_naive(ptf_aligned_images, coadder):
 
 
 def test_coaddition_run(coadder, ptf_reference_images, ptf_aligned_images):
-    for image, aligned_image in zip(ptf_reference_images, ptf_aligned_images):
-        image.aligned_image = aligned_image
-
     # first make sure the "naive" coadd method works
     coadder.pars.test_parameter = uuid.uuid4().hex
     coadder.pars.method = 'naive'
 
-    ref_image = coadder.run(ptf_reference_images)
+    ref_image = coadder.run(ptf_reference_images, ptf_aligned_images)
     ref_image.provenance.is_testing = True
-    ref_image.provenance.update_id()
 
     # now check that ZOGY works and verify the output
     coadder.pars.test_parameter = uuid.uuid4().hex
     coadder.pars.method = 'zogy'
 
-    ref_image = coadder.run(ptf_reference_images)
+    ref_image = coadder.run(ptf_reference_images, ptf_aligned_images)
     ref_image.provenance.is_testing = True
-    ref_image.provenance.update_id()
 
     assert isinstance(ref_image, Image)
     assert ref_image.filepath is None
@@ -331,8 +335,159 @@ def test_coaddition_run(coadder, ptf_reference_images, ptf_aligned_images):
     assert ref_image.zogy_score.shape == ref_image.data.shape
 
 
+def test_coaddition_pipeline_inputs(ptf_reference_images):
+    pipe = CoaddPipeline()
+    assert pipe.pars.date_range == 7
+    assert isinstance(pipe.coadder, Coadder)
+    assert pipe.coadder.pars.method == 'zogy'
+    assert isinstance(pipe.extractor, Detector)
+    assert pipe.extractor.pars.threshold == 3.0
+    assert isinstance(pipe.astro_cal, AstroCalibrator)
+    assert pipe.astro_cal.pars.max_catalog_mag == [22.0]
+    assert isinstance(pipe.photo_cal, PhotCalibrator)
+    assert pipe.photo_cal.pars.max_catalog_mag == [22.0]
+
+    # make a new pipeline with modified parameters
+    pipe = CoaddPipeline(pipeline={'date_range': 5}, coaddition={'method': 'naive'})
+    assert pipe.pars.date_range == 5
+    assert isinstance(pipe.coadder, Coadder)
+    assert pipe.coadder.pars.method == 'naive'
+
+    # now modify it after initialization:
+    pipe.coadder.pars.method = 'zogy'
+    assert pipe.coadder.pars.method == 'zogy'
+
+    # now run the pipeline:
+    pipe.parse_inputs(ptf_reference_images)
+    assert pipe.images == ptf_reference_images
+
+    # make sure you can grab these using the target and other parameters:
+    pipe.parse_inputs(
+        target="100014",
+        instrument="PTF",
+        filter="R",
+        section_id="11",
+        provenance_ids='5F5TAUCJJEXKX6I5H4CJ',
+    )
+
+    # without giving a start/end time, all these images will not be selected!
+    assert len(pipe.images) == 0
+
+    # try with a time too far in the past
+    pipe.parse_inputs(
+        target="100014",
+        instrument="PTF",
+        filter="R",
+        section_id="11",
+        provenance_ids='5F5TAUCJJEXKX6I5H4CJ',
+        start_time='2000-01-01',
+        end_time='2007-01-01',
+    )
+    assert len(pipe.images) == 0
+
+    # without an end_time, should use "now" so it would include the images
+    pipe.parse_inputs(
+        target="100014",
+        instrument="PTF",
+        filter="R",
+        section_id="11",
+        provenance_ids='5F5TAUCJJEXKX6I5H4CJ',
+        start_time='2000-01-01',
+    )
+    im_ids = set([im.id for im in pipe.images])
+    ptf_im_ids = set([im.id for im in ptf_reference_images])
+    assert ptf_im_ids == im_ids
+
+    ptf_ras = [im.ra for im in ptf_reference_images]
+    ptf_decs = [im.dec for im in ptf_reference_images]
+    center_ra = np.mean(ptf_ras)
+    center_dec = np.mean(ptf_decs)
+
+    # make sure we can grab these images using coordinates as well:
+    pipe.parse_inputs(
+        target=None,
+        ra=center_ra,
+        dec=center_dec,
+        instrument="PTF",
+        filter="R",
+        section_id="11",
+        provenance_ids='5F5TAUCJJEXKX6I5H4CJ',
+        start_time='2000-01-01',
+    )
+
+    im_ids = set([im.id for im in pipe.images])
+    ptf_im_ids = set([im.id for im in ptf_reference_images])
+    assert ptf_im_ids == im_ids
 
 
+def test_coaddition_pipeline_outputs(ptf_reference_images, ptf_aligned_images):
+    pipe = CoaddPipeline()
+    coadd_image = pipe.run(ptf_reference_images, ptf_aligned_images)
+
+    # check that the second list input was ingested
+    assert pipe.aligned_images == ptf_aligned_images
+
+    assert isinstance(coadd_image, Image)
+    assert coadd_image.filepath is None
+    assert coadd_image.type == 'ComSci'
+    assert coadd_image.provenance.id != ptf_reference_images[0].provenance.id
+    assert coadd_image.instrument == 'PTF'
+    assert coadd_image.telescope == 'P48'
+    assert coadd_image.filter == 'R'
+    assert coadd_image.section_id == '11'
+    assert coadd_image.start_mjd == min([im.start_mjd for im in ptf_reference_images])
+    assert coadd_image.end_mjd == max([im.end_mjd for im in ptf_reference_images])
+    assert coadd_image.provenance_id is not None
+    assert coadd_image.aligned_images == ptf_aligned_images  # use the same images from the input to pipeline
+
+    # check that all output products are there
+    assert isinstance(coadd_image.sources, SourceList)
+    assert isinstance(coadd_image.psf, PSF)
+    assert isinstance(coadd_image.wcs, WorldCoordinates)
+    assert isinstance(coadd_image.zp, ZeroPoint)
+
+    # check that the ZOGY PSF width is similar to the PSFex result
+    assert np.max(coadd_image.zogy_psf) == pytest.approx(np.max(coadd_image.psf.get_clip()), abs=0.01)
+    zogy_fwhm = estimate_psf_width(coadd_image.zogy_psf)
+    psfex_fwhm = estimate_psf_width(np.pad(coadd_image.psf.get_clip(), 20))  # pad so extract_psf_surrogate works
+    assert zogy_fwhm == pytest.approx(psfex_fwhm, rel=0.1)
+
+    # check that the S/N is consistent with a coadd
+    flux_zp = [10 ** (0.4 * im.zp.zp) for im in ptf_reference_images]  # flux in ADU of a magnitude 0 star
+    bkgs = [im.bkg_rms_estimate for im in ptf_reference_images]
+    snrs = np.array(flux_zp) / np.array(bkgs)
+    mean_snr = np.mean(snrs)
+
+    flux_zp_zogy = 10 ** (0.4 * coadd_image.zp.zp)
+    _, bkg_zogy = sigma_clipping(coadd_image.data)
+    snr_zogy = flux_zp_zogy / bkg_zogy
+
+    # zogy background noise is normalized by construction
+    assert bkg_zogy == pytest.approx(1.0, abs=0.1)
+
+    # S/N should be sqrt(N) better
+    assert snr_zogy == pytest.approx(mean_snr * np.sqrt(len(ptf_reference_images)), rel=0.1)
 
 
+def test_coadded_reference(ptf_ref):
+    ref_image = ptf_ref.image
+    assert isinstance(ref_image, Image)
+    assert ref_image.filepath is not None
+    assert ref_image.type == 'ComSci'
+    assert isinstance(ref_image.sources, SourceList)
+    assert isinstance(ref_image.psf, PSF)
+    assert isinstance(ref_image.wcs, WorldCoordinates)
+    assert isinstance(ref_image.zp, ZeroPoint)
+
+    assert ptf_ref.target == ref_image.target
+    assert ptf_ref.filter == ref_image.filter
+    assert ptf_ref.section_id == ref_image.section_id
+
+    assert ptf_ref.validity_start is None
+    assert ptf_ref.validity_end is None
+
+    assert ptf_ref.provenance.upstreams[0].id == ref_image.provenance_id
+    assert ptf_ref.provenance.process == 'reference'
+
+    assert ptf_ref.provenance.parameters['test_parameter'] == 'test_value'
 

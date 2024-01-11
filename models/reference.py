@@ -145,6 +145,18 @@ class Reference(Base, AutoIDMixin):
         if this_object_session is not None:  # if just loaded, should usually have a session!
             self.load_upstream_products(this_object_session)
 
+    def make_provenance(self):
+        """Make a provenance for this reference image. """
+        if self.image is None:
+            raise ValueError('Reference must have a valid image.')
+
+        self.provenance = Provenance(
+            code_version=self.image.provenance.code_version,
+            process='reference',
+            parameters={},  # do we need any parameters for a reference's provenance?
+            upstreams=[self.image.provenance],
+        )
+
     def get_upstream_provenances(self):
         """Collect the provenances for all upstream objects.
         Assumes all the objects are already committed to the DB
@@ -243,5 +255,9 @@ class Reference(Base, AutoIDMixin):
             self.target = value.target
             self.filter = value.filter
             self.section_id = value.section_id
+            self.sources = value.sources
+            self.psf = value.psf
+            self.wcs = value.wcs
+            self.zp = value.zp
 
         super().__setattr__(key, value)

@@ -389,7 +389,6 @@ class DataStore:
                 parameters=pars_dict,
                 upstreams=upstreams,
             )
-            prov.update_id()
             prov = session.merge(prov)
 
         return prov

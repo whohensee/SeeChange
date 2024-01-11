@@ -391,7 +391,6 @@ class DECam(Instrument):
         cfg = Config.get()
         cv = Provenance.get_code_version()
         prov = Provenance( process='DECam Default Calibrator', code_version=cv )
-        prov.update_id()
 
         reldatadir = pathlib.Path( "DECam_default_calibrators" )
         datadir = pathlib.Path( FileOnDiskMixin.local_path ) / reldatadir
@@ -734,7 +733,6 @@ class DECamOriginExposures:
                 code_version=Provenance.get_code_version(session=dbsess),
                 is_testing=True,
             )
-            provenance.update_id()
             provenance = provenance.recursive_merge( dbsess )
             dbsess.add( provenance )
 

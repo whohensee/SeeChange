@@ -161,7 +161,6 @@ def test_unique_provenance_hash(code_version):
                 upstreams=[],
                 is_testing=True,
             )
-            p2.update_id()
             assert p2.id == hash
 
             with pytest.raises(sa.exc.IntegrityError) as e:
@@ -263,28 +262,24 @@ def test_recursive_merge( provenance_base ):
                              parameters={'test_parameter': 'test_value'},
                              upstreams=[ provenance_base ],
                              is_testing=True )
-            p1.update_id()
 
             p2 = Provenance( process="test_secondary_process_2",
                              code_version=provenance_base.code_version,
                              parmeters={'test_parameter': 'test_value'},
                              upstreams=[ p1 ],
                              is_testing=True )
-            p2.update_id()
 
             p3 = Provenance( process="test_tertiary_process",
                              code_version=provenance_base.code_version,
                              paremeters={'test_parameter': 'test_value'},
                              upstreams=[ p2, p1 ],
                              is_testing=True )
-            p3.update_id()
 
             p4 = Provenance( process="test_final_process",
                              code_version=provenance_base.code_version,
                              parmeters={'test_parameter': 'test_value'},
                              upstreams=[ p3 ],
                              is_testing=True )
-            p4.update_id()
 
             # Now, in another session....
             with SmartSession() as different_session:

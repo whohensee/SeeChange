@@ -968,14 +968,14 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
                 'Cannot check aligned images without an "alignment" dictionary in the Provenance parameters!'
             )
 
-        upstream_images_ids = [image.id for image in self.upstream_images]
+        upstream_images_filepaths = [image.filepath for image in self.upstream_images]
 
         for image in self._aligned_images:
-            if self.provenance.parameters['alignment'] != image.provenance.parameters:
+            if self.provenance.parameters['alignment'] != image.header.get('alignment_parameters', None):
                 self._aligned_images = None
                 return
 
-            if image.header['original_image_id'] not in upstream_images_ids:
+            if image.header['original_image_filepath'] not in upstream_images_filepaths:
                 self._aligned_images = None
                 return
 
@@ -987,6 +987,10 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
             self._make_aligned_images()
 
         return self._aligned_images
+
+    @aligned_images.setter
+    def aligned_images(self, value):
+        self._aligned_images = value
 
     @property
     def instrument_object(self):

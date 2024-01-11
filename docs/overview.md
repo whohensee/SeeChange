@@ -312,8 +312,8 @@ It is useful to get familiar with the naming convention for different data produ
    These include flux+errors, magnitude+errors, centroid positions, spot width, machine learning scores, etc. 
  - `Provenance`: A table containing the code version and critical parameters that are unique to this version of the data. 
    Each data product above must link back to a provenance row, so we can recreate the conditions that produced this data. 
- - `ReferenceEntry`: An object that links a reference `Image` (and other associated data) with a specific field/target, 
-   a section ID, and a time validity range, that allows users to quickly identify which reference goes with a new image. 
+ - `Reference`: An object that links a reference `Image`  with a specific field/target, a section ID, 
+   and a time validity range, that allows users to quickly identify which reference goes with a new image. 
  - `CalibratorFile`: An object that tracks data needed to apply calibration (preprocessing) for a specific instrument.
    The calibration could include an `Image` data file, or a generic non-image `DataFile` object. 
  - `DataFile`: An object that tracks non-image data on disk for use in, e.g., calibration/preprocessing. 

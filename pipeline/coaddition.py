@@ -2,16 +2,28 @@
 import numpy as np
 from numpy.fft import fft2, ifft2, fftshift
 
+import sqlalchemy as sa
+
+from astropy.time import Time
+
 from sep import Background
 
+from models.base import SmartSession
 from models.provenance import Provenance
 from models.image import Image
 
 from pipeline.parameters import Parameters
+from pipeline.detection import Detector
+from pipeline.astro_cal import AstroCalibrator
+from pipeline.photo_cal import PhotCalibrator
+from pipeline.utils import parse_session, parse_ra_hms_to_deg, parse_dec_dms_to_deg, get_latest_provenance
 
 from improc.bitmask_tools import dilate_bitflag
 from improc.inpainting import Inpainter
 from improc.tools import sigma_clipping
+
+from util.config import Config
+from util.util import listify
 
 
 class ParsCoadd(Parameters):
@@ -375,7 +387,7 @@ class Coadder:
 
         return outim, outwt, outfl, psf, score
 
-    def run(self, images):
+    def run(self, images, aligned_images=None):
         """Run coaddition on the given list of images, and return the coadded image.
 
         The images should have at least a set of SourceList and WorldCoordinates loaded, so they can be aligned.
@@ -384,6 +396,14 @@ class Coadder:
         Parameters
         ----------
         images: list of Image objects
+            The input Image objects that will be used as the upstream_images for the new, coadded image.
+        aligned_images: list of Image objects (optional)
+            A list of images that correspond to the images list,
+            but already aligned to each other, so it can be put into the output image's aligned_images attribute.
+            The aligned images must have the same alignment parameters as in the output image's provenance
+            (i.e., the "alignment" dictionary should be the same as in the coadder object's pars).
+            If not given, the output Image object will generate the aligned images by itself,
+            using the input images and its provenance's alignment parameters.
 
         Returns
         -------
@@ -404,13 +424,22 @@ class Coadder:
             upstreams=output.get_upstream_provenances(),
             process='coaddition',
         )
+        output.provenance_id = output.provenance.id
+
         output.is_coadd = True
         output.new_image = None
 
+        # note: output is a newly formed image, that has upstream_images
+        # and also a Provenance that contains "alignment" parameters...
+        # it can create its own aligned_images, but if you already have them,
+        # you can pass them in to save time re-calculating them here:
+        if aligned_images is not None:
+            output.aligned_images = aligned_images
+
         if self.pars.method == 'naive':
-            outim, outwt, outfl = self._coadd_naive(images)
+            outim, outwt, outfl = self._coadd_naive(output.aligned_images)
         elif self.pars.method == 'zogy':
-            outim, outwt, outfl, outpsf, outscore = self._coadd_zogy(images)
+            outim, outwt, outfl, outpsf, outscore = self._coadd_zogy(output.aligned_images)
         else:
             raise ValueError(f'Unknown coaddition method: {self.pars.method}. Use "naive" or "zogy".')
 
@@ -424,3 +453,177 @@ class Coadder:
             output.zogy_score = outscore
 
         return output
+
+
+class ParsCoaddPipeline(Parameters):
+    def __init__(self, **kwargs):
+        super().__init__()
+
+        self.date_range = self.add_par(
+            'date_range', 7.0, float, 'Number of days before end date to set start date, if start date is not given. '
+        )
+
+        self._enforce_no_new_attrs = True  # lock against new parameters
+
+        self.override(kwargs)
+
+
+class CoaddPipeline:
+    """A pipeline that runs coaddition and other tasks like source extraction on the coadd image. """
+    def __init__(self, **kwargs):
+        self.config = Config.get()
+
+        # top level parameters
+        self.pars = ParsCoaddPipeline(**(self.config.value('coaddition.pipeline', {})))
+        self.pars.augment(kwargs.get('pipeline', {}))
+
+        # coaddition process
+        coadd_config = self.config.value('coaddition.coaddition', {})
+        coadd_config.update(kwargs.get('coaddition', {}))
+        self.pars.add_defaults_to_dict(coadd_config)
+        self.coadder = Coadder(**coadd_config)
+
+        # source detection ("extraction" for the regular image!)
+        extraction_config = self.config.value('extraction', {})
+        extraction_config.update(self.config.value('coaddition.extraction', {}))  # override coadd specific pars
+        extraction_config.update(kwargs.get('extraction', {'measure_psf': True}))
+        self.pars.add_defaults_to_dict(extraction_config)
+        self.extractor = Detector(**extraction_config)
+
+        # astrometric fit using a first pass of sextractor and then astrometric fit to Gaia
+        astro_cal_config = self.config.value('astro_cal', {})
+        astro_cal_config.update(self.config.value('coaddition.astro_cal', {}))  # override coadd specific pars
+        astro_cal_config.update(kwargs.get('astro_cal', {}))
+        self.pars.add_defaults_to_dict(astro_cal_config)
+        self.astro_cal = AstroCalibrator(**astro_cal_config)
+
+        # photometric calibration:
+        photo_cal_config = self.config.value('photo_cal', {})
+        photo_cal_config.update(self.config.value('coaddition.photo_cal', {}))  # override coadd specific pars
+        photo_cal_config.update(kwargs.get('photo_cal', {}))
+        self.pars.add_defaults_to_dict(photo_cal_config)
+        self.photo_cal = PhotCalibrator(**photo_cal_config)
+
+        self.datastore = None  # use this datastore to save the coadd image and all the products
+
+        self.images = None  # use this to store the input images
+        self.aligned_images = None  # use this to pass in already aligned images
+
+    def parse_inputs(self, *args, **kwargs):
+        """Parse the possible inputs to the run method.
+
+        The possible input types are:
+        - unamed arguments that are all Image objects, to be treated as self.images
+        - a list of Image objects, assigned into self.images
+        - two lists of Image objects, the second one is a list of aligned images matching the first list,
+          such that the two lists are assigned to self.images and self.aligned_images
+        - start_time + end_time + instrument + filter + section_id + provenance_id + RA + Dec (or target)
+
+        To pass the latter option, must use named parameters.
+        An optional session can be given, either as one of the named
+        or unnamed args, and it will be used throughout the pipeline
+        (and left open at the end).
+
+        The start_time and end_time can be floats (interpreted as MJD)
+        or strings (interpreted by astropy.time.Time(...)), or None.
+        If end_time is not given, will use current time.
+        If start_time is not given, will use end_time minus the
+        coaddition pipeline parameter date_range.
+        The provenance_ids can be None, which will use the most recent "preprocessing" provenance.
+        Can also provide a list of provenance_ids or a single string.
+        The coordinates can be given as either float (decimal degrees) or strings
+        (sexagesimal hours for RA and degrees for Dec).
+        Can leave coordinates empty and provide a "target" instead (i.e., target
+        will be used as the "field identifier" in the survey).
+
+        In either case, the output is a list of Image objects.
+        Each image is checked to see if it has the related products
+        (SourceList, PSF, WorldCoordinates, ZeroPoint).
+        If not, it will raise an exception. If giving these images directly
+        (i.e., not letting the pipeline load them from DB) the calling scope
+        must make sure to load those products first.
+        """
+        # first parse the session from args and kwargs
+        args, kwargs, session = parse_session(*args, **kwargs)
+        self.images = None
+        self.aligned_images = None
+        if len(args) == 0:
+            pass  # there are not args, we can skip them quietly
+        elif len(args) == 1 and isinstance(args[0], list):
+            if not all([isinstance(a, Image) for a in args[0]]):
+                raise TypeError('When supplying a list, all elements must be Image objects. ')
+            self.images = args[0]  # in case we are given a list of images
+        elif len(args) == 2 and isinstance(args[0], list) and isinstance(args[1], list):
+            if not all([isinstance(im, Image) for im in args[0] + args[1]]):
+                raise TypeError('When supplying two lists, both must be lists of Image objects. ')
+            self.images = args[0]
+            self.aligned_images = args[1]
+        elif all([isinstance(a, Image) for a in args]):
+            self.images = args
+        else:
+            raise ValueError('All unnamed arguments must be Image objects. ')
+
+        if self.images is None:  # get the images from the DB
+            # TODO: this feels like it could be a useful tool, maybe need to move it Image class? Issue 188
+            # if no images were given, parse the named parameters
+            ra = kwargs.get('ra', None)
+            if isinstance(ra, str):
+                ra = parse_ra_hms_to_deg(ra)
+            dec = kwargs.get('dec', None)
+            if isinstance(dec, str):
+                dec = parse_dec_dms_to_deg(dec)
+            target = kwargs.get('target', None)
+            if target is None and (ra is None or dec is None):
+                raise ValueError('Must give either target or RA and Dec. ')
+
+            start_time = kwargs.get('start_time', None)
+            end_time = kwargs.get('end_time', None)
+            if end_time is None:
+                end_time = Time.now().mjd
+            if start_time is None:
+                start_time = end_time - self.pars.date_range
+
+            if isinstance(end_time, str):
+                end_time = Time(end_time).mjd
+            if isinstance(start_time, str):
+                start_time = Time(start_time).mjd
+
+            instrument = kwargs.get('instrument', None)
+            filter = kwargs.get('filter', None)
+            section_id = str(kwargs.get('section_id', None))
+            provenance_ids = kwargs.get('provenance_ids', None)
+            if provenance_ids is None:
+                prov = get_latest_provenance('preprocessing', session=session)
+                provenance_ids = [prov.id]
+            provenance_ids = listify(provenance_ids)
+
+            with SmartSession(session) as session:
+                stmt = sa.select(Image).where(
+                        Image.mjd >= start_time,
+                        Image.mjd <= end_time,
+                        Image.instrument == instrument,
+                        Image.filter == filter,
+                        Image.section_id == section_id,
+                        Image.provenance_id.in_(provenance_ids),
+                    )
+
+                if target is not None:
+                    stmt = stmt.where(Image.target == target)
+                else:
+                    stmt = stmt.where(Image.containing( ra, dec ))
+                self.images = session.scalars(stmt.order_by(Image.mjd.asc())).all()
+
+    def run(self, *args, **kwargs):
+        self.parse_inputs(*args, **kwargs)
+        if self.images is None or len(self.images) == 0:
+            raise ValueError('No images found matching the given parameters. ')
+
+        # the self.aligned_images is None unless you explicitly pass in the pre-aligned images to save time
+        coadd = self.coadder.run(self.images, self.aligned_images)
+
+        self.datastore = self.extractor.run(coadd)
+        self.datastore = self.astro_cal.run(self.datastore)
+        self.datastore = self.photo_cal.run(self.datastore)
+
+        return self.datastore.image
+

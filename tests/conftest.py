@@ -182,7 +182,6 @@ def provenance_base(code_version):
             upstreams=[],
             is_testing=True,
         )
-        p.update_id()
         p = p.recursive_merge(session)
 
         session.commit()
@@ -205,7 +204,6 @@ def provenance_extra( provenance_base ):
             upstreams=[provenance_base],
             is_testing=True,
         )
-        p.update_id()
         p = p.recursive_merge(session)
         session.commit()
 
@@ -228,7 +226,6 @@ def provenance_preprocessing(code_version):
             upstreams=[],
             is_testing=True,
         )
-        p.update_id()
 
         p = p.recursive_merge(session)
         session.commit()
