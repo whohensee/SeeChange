@@ -12,7 +12,7 @@ from util import ldac
 from util.exceptions import SubprocessFailure, BadMatchException
 
 
-def _solve_wcs_scamp( sources, catalog, crossid_rad=2.,
+def solve_wcs_scamp( sources, catalog, crossid_radius=2.,
                       max_sources_to_use=2000, min_frac_matched=0.1,
                       min_matched=10, max_arcsec_residual=0.15,
                       magkey='MAG', magerrkey='MAGERR' ):
@@ -32,13 +32,13 @@ def _solve_wcs_scamp( sources, catalog, crossid_rad=2.,
         'X_WORLD', 'Y_WORLD', 'MAG', and 'MAGERR' (where the latter two
         may be overridden with the magkey and magerrkey keywords).
 
-      crossid_rad: float, default 2.0
+      crossid_radius: float, default 2.0
         The radius in arcseconds for the initial scamp match (not the final solution).
 
       max_sources_to_use: int, default 2000
         If specified, if the number of objects in sources is larger
         than this number, tell scamp to only use this many sources.
-        for the initial match.  (This makes the intial match go faster.)
+        for the initial match.  (This makes the initial match go faster.)
 
       min_frac_matched: float, default 0.1
         scamp must be able to match at least this fraction of
@@ -107,7 +107,7 @@ def _solve_wcs_scamp( sources, catalog, crossid_rad=2.,
                     '-PROJECTION_TYPE', 'TPV',
                     '-WRITE_XML', 'Y',
                     '-XML_NAME', xmlfile,
-                    '-CROSSID_RADIUS', str( crossid_rad ),
+                    '-CROSSID_RADIUS', str( crossid_radius ),
                     '-ASTREFMAG_KEY', magkey,
                     '-ASTREFMAGERR_KEY', magerrkey
                    ]

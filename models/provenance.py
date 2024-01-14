@@ -294,7 +294,7 @@ class Provenance(Base):
         superdict = dict(
             process=self.process,
             parameters=self.parameters,
-            upstream_hashes=self.upstream_hashes,
+            upstream_hashes=self.upstream_hashes,  # this list is ordered by upstream ID
             code_version=self.code_version.id
         )
         json_string = json.dumps(superdict, sort_keys=True)

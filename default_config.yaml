@@ -79,7 +79,10 @@ photo_cal:
 
 
 subtraction:
-  method: hotpants
+  method: zogy
+  alignment:
+    method: swarp
+    to_index: new
 
 detection:
   subtraction: true

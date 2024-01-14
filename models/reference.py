@@ -129,14 +129,27 @@ class Reference(Base, AutoIDMixin):
     )
 
     def __init__(self, **kwargs):
-        super().__init__(**kwargs)
         self.sources = None
         self.psf = None
         self.wcs = None
         self.zp = None
+        super().__init__(**kwargs)
+
+    def __setattr__(self, key, value):
+        if key == 'image':
+            self.target = value.target
+            self.filter = value.filter
+            self.section_id = value.section_id
+            self.sources = value.sources
+            self.psf = value.psf
+            self.wcs = value.wcs
+            self.zp = value.zp
+
+        super().__setattr__(key, value)
 
     @orm.reconstructor
     def init_on_load(self):
+        Base.init_on_load(self)
         self.sources = None
         self.psf = None
         self.wcs = None
@@ -147,14 +160,18 @@ class Reference(Base, AutoIDMixin):
 
     def make_provenance(self):
         """Make a provenance for this reference image. """
-        if self.image is None:
-            raise ValueError('Reference must have a valid image.')
+        upstreams = [self.image.provenance]
+        for att in ['image', 'sources', 'psf', 'wcs', 'zp']:
+            if getattr(self, att) is not None:
+                upstreams.append(getattr(self, att).provenance)
+            else:
+                raise ValueError(f'Reference must have a valid {att}.')
 
         self.provenance = Provenance(
             code_version=self.image.provenance.code_version,
             process='reference',
             parameters={},  # do we need any parameters for a reference's provenance?
-            upstreams=[self.image.provenance],
+            upstreams=upstreams,
         )
 
     def get_upstream_provenances(self):
@@ -184,11 +201,10 @@ class Reference(Base, AutoIDMixin):
         return prov
 
     def load_upstream_products(self, session=None):
-        """Make sure each upstream image has its related products loaded.
+        """Make sure the reference image has its related products loaded.
 
-        This only works after all the images and products are committed to the database,
-        with provenances consistent with what is saved in this Image's provenance
-        and its own upstream_ids.
+        This only works after the image and products are committed to the database,
+        with provenances consistent with what is saved in this Reference's provenance.
         """
         with SmartSession(session) as session:
             prov_ids = self.provenance.upstream_ids
@@ -249,15 +265,3 @@ class Reference(Base, AutoIDMixin):
                 elif len(zps) == 1:
                     self.image.zp = zps[0]
                     self.zp = zps[0]
-
-    def __setattr__(self, key, value):
-        if key == 'image':
-            self.target = value.target
-            self.filter = value.filter
-            self.section_id = value.section_id
-            self.sources = value.sources
-            self.psf = value.psf
-            self.wcs = value.wcs
-            self.zp = value.zp
-
-        super().__setattr__(key, value)

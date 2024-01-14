@@ -33,7 +33,7 @@ class ParsImageAligner(Parameters):
             'swarp',
             str,
             'Alignment method.  Currently only swarp is supported',
-            critical=True
+            critical=True,
         )
 
         self.to_index = self.add_par(
@@ -41,7 +41,52 @@ class ParsImageAligner(Parameters):
             'last',
             str,
             'How to choose the index of image to align to. Can choose "first" or "last" (default). ',
-            critical=True
+            critical=True,
+        )
+
+        self.max_arcsec_residual = self.add_par(
+            'max_arcsec_residual',
+            0.2,
+            float,
+            'Maximum residual in arcseconds, along both RA and Dec (i.e. not a radial residual),  '
+            'for the WCS solution to be considered successful.  Used in SCAMP only. ',
+            critical=True,
+        )
+
+        self.crossid_radius = self.add_par(
+            'crossid_radius',
+            2.0,
+            float,
+            'The radius in arcseconds for the initial SCAMP match (not the final solution).  Used in SCAMP only. ',
+            critical=True,
+        )
+
+        self.max_sources_to_use = self.add_par(
+            'max_sources_to_use',
+            2000,
+            int,
+            'If specified, if the number of objects in sources is larger than this number, '
+            'tell SCAMP to only use this many sources for the initial match.  '
+            '(This makes the initial match go faster.)  Used in SCAMP only. ',
+            critical=True,
+        )
+
+        self.min_frac_matched = self.add_par(
+            'min_frac_matched',
+            0.1,
+            float,
+            'SCAMP must be able to match at least this fraction of min(number of sources, number of catalog objects) '
+            'for the match to be considered good.  Used in SCAMP only. ',
+            critical=True,
+        )
+
+        self.min_matched = self.add_par(
+            'min_matched',
+            10,
+            int,
+            'SCAMP must be able to match at least this many objects for the match to be considered good.  '
+            'Used in SCAMP only. ',
+            critical=True,
         )
 
         self.enforce_no_new_attrs = True
@@ -201,7 +246,17 @@ class ImageAligner:
                                      imghdr=target_sources.info, overwrite=True )
 
             # Scamp it up
-            wcs = improc.scamp._solve_wcs_scamp( targetcat, imagecat, magkey='MAG', magerrkey='MAGERR' )
+            wcs = improc.scamp.solve_wcs_scamp(
+                targetcat,
+                imagecat,
+                magkey='MAG',
+                magerrkey='MAGERR',
+                crossid_radius=self.pars.crossid_radius,
+                max_sources_to_use=self.pars.max_sources_to_use,
+                min_frac_matched=self.pars.min_frac_matched,
+                min_matched=self.pars.min_matched,
+                max_arcsec_residual=self.pars.max_arcsec_residual,
+            )
 
             # Write out the .head file that swarp will use to figure out what to do
             hdr = wcs.to_header()

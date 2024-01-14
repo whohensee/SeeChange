@@ -155,6 +155,7 @@ def ptf_urls():
     bad_files = [
         'PTF200904053266_2_o_19609_11.w.fits',
         'PTF200904053340_2_o_19614_11.w.fits',
+        'PTF201002163703_2_o_18626_11.w.fits',
     ]
     for file in bad_files:
         if file in filenames:
@@ -217,9 +218,9 @@ def ptf_images_factory(ptf_urls, ptf_downloader, datastore_factory, cache_dir, p
                             f.write(f'{key} {value}\n')
 
             except Exception as e:
-                raise e
                 # I think we should fix this along with issue #150
                 print(f'Error processing {url}')  # this will also leave behind exposure and image data on disk only
+                raise e
                 # print(e)  # TODO: should we be worried that some of these images can't complete their processing?
                 continue
 
@@ -235,6 +236,22 @@ def ptf_images_factory(ptf_urls, ptf_downloader, datastore_factory, cache_dir, p
 @pytest.fixture(scope='session')
 def ptf_reference_images(ptf_images_factory):
     images = ptf_images_factory('2009-04-05', '2009-05-01', max_images=5)
+
+    yield images
+
+    with SmartSession() as session:
+        session.autoflush = False
+
+        for image in images:
+            image = session.merge(image)
+            image.exposure.delete_from_disk_and_database(session=session, commit=False)
+            image.delete_from_disk_and_database(session=session, commit=False, remove_downstream_data=True)
+        session.commit()
+
+
+@pytest.fixture(scope='session')
+def ptf_supernova_images(ptf_images_factory):
+    images = ptf_images_factory('2010-02-01', '2013-12-31', max_images=2)
 
     yield images
 
@@ -316,7 +333,7 @@ def ptf_aligned_images(request, cache_dir, data_dir, code_version):
 @pytest.fixture
 def ptf_ref(ptf_reference_images, ptf_aligned_images, coadder, cache_dir, data_dir, code_version):
     cache_dir = os.path.join(cache_dir, 'PTF')
-    cache_base_name = '187/PTF_20090405_073932_11_R_ComSci_BWED6R'
+    cache_base_name = '187/PTF_20090405_073932_11_R_ComSci_BWED6R_u-ywhkxr'
 
     pipe = CoaddPipeline()
     pipe.coadder = coadder  # use this one that has a test_parameter defined
@@ -402,7 +419,7 @@ def ptf_ref(ptf_reference_images, ptf_aligned_images, coadder, cache_dir, data_d
         ref.provenance.is_testing = True
         ref.provenance.update_id()
 
-        session.add(ref)
+        ref = session.merge(ref)
         session.commit()
 
     yield ref

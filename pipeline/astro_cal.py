@@ -72,14 +72,13 @@ class ParsAstroCalibrator(Parameters):
         )
         self.add_alias( 'max_resid', 'max_arcsec_residual' )
 
-        self.crossid_radius = self.add_par(
-            'crossid_radius',
+        self.crossid_radii = self.add_par(
+            'crossid_radii',
             [2.0],
             list,
-            ( 'Initial radius in arcsec for cross-identifications to match; this is a scamp-specific parameter, '
-              'passed to scamp via -CROSSID_RADIUS.  Pass the ones to try in order; the algorithm will try '
-              'these (inside the mag_range_catalog loop) until it gets a succesful WCS solution.'
-             ),
+            'List of initial radius in arcsec for cross-identifications to match; this is a scamp-specific parameter, '
+            'passed to scamp via -CROSSID_RADIUS.  Pass the ones to try in order; the algorithm will try '
+            'these (inside the mag_range_catalog loop) until it gets a successful WCS solution.',
             critical=True
         )
 
@@ -129,7 +128,7 @@ class AstroCalibrator:
         self.has_recalculated = False
     # ----------------------------------------------------------------------
 
-    def _solve_wcs_scamp( self, image, sources, catexp, crossid_rad=2. ):
+    def _solve_wcs_scamp( self, image, sources, catexp, crossid_radius=2. ):
         """Solve for the WCS of image, updating image.raw_header.
 
         If scamp does not succeed, will raise a SubprocessFailure
@@ -148,7 +147,7 @@ class AstroCalibrator:
           catexp: CatalogExcerpt
             Astrometric calibration catalog excerpt that overlaps image.
 
-          crossid_rad: float
+          crossid_radius: float
             The radius in arcseconds for the initial scamp match (not the final solution).
 
         Returns
@@ -171,12 +170,16 @@ class AstroCalibrator:
         sourcefile = pathlib.Path( sources.get_fullpath() )
         catfile = pathlib.Path( catexp.get_fullpath() )
 
-        wcs = improc.scamp._solve_wcs_scamp( sourcefile, catfile, crossid_rad=crossid_rad,
-                                             max_sources_to_use=self.pars.max_sources_to_use,
-                                             min_frac_matched=self.pars.min_frac_matched,
-                                             min_matched=self.pars.min_matched_stars,
-                                             max_arcsec_residual=self.pars.max_arcsec_residual,
-                                             magkey='MAG_G', magerrkey='MAGERR_G' )
+        wcs = improc.scamp.solve_wcs_scamp(
+            sourcefile,
+            catfile,
+            crossid_radius=crossid_radius,
+            max_sources_to_use=self.pars.max_sources_to_use,
+            min_frac_matched=self.pars.min_frac_matched,
+            min_matched=self.pars.min_matched_stars,
+            max_arcsec_residual=self.pars.max_arcsec_residual,
+            magkey='MAG_G', magerrkey='MAGERR_G',
+        )
 
         # Update image.raw_header with the new wcs.  Process this
         # through astropy.wcs.WCS to make sure everything is copacetic.
@@ -216,19 +219,19 @@ class AstroCalibrator:
                 exceptions.append(ex)
                 continue
 
-            for crossid_rad in self.pars.crossid_radius:
+            for radius in self.pars.crossid_radii:
                 try:
-                    wcs = self._solve_wcs_scamp( image, sources, catexp, crossid_rad=crossid_rad )
+                    wcs = self._solve_wcs_scamp( image, sources, catexp, crossid_radius=radius )
                     success = True
                     break
                 except SubprocessFailure as ex:
-                    _logger.info( f"Scamp failed for maxmag {maxmag} and crossid_rad {crossid_rad}, "
+                    _logger.info( f"Scamp failed for maxmag {maxmag} and crossid_rad {radius}, "
                                   f"trying the next crossid_rad" )
                     exceptions.append(ex)
                     continue
                 except BadMatchException as ex:
                     _logger.info( f"Scamp didn't produce a successful match for maxmag {maxmag} "
-                                  f"and crossid_rad {crossid_rad}; trying the next crossid_rad" )
+                                  f"and crossid_rad {radius}; trying the next crossid_rad" )
                     exceptions.append(ex)
                     continue
 
@@ -243,7 +246,7 @@ class AstroCalibrator:
         # Save these in case something outside wants to
         # probe them (e.g. tests)
         self.maxmag = maxmag
-        self.crossid_rad = crossid_rad
+        self.crossid_radius = radius
         self.catexp = catexp
 
         ds.wcs = WorldCoordinates( sources=sources, provenance=prov )

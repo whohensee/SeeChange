@@ -136,6 +136,11 @@ class DataStore:
         Can initialize based on exposure and section ids,
         or give a specific image id or coadd id.
 
+        If given an Image that is already loaded with related products
+        (SourceList, PSF, etc.) then these will also be added to the
+        datastore's attributes, to be checked against Provenance in the
+        usual way when the relevant getter is called (e.g., get_sources).
+
         Parameters
         ----------
         args: list
@@ -226,6 +231,11 @@ class DataStore:
                     if not isinstance(prov, Provenance):
                         raise ValueError(f'Provenance must be a Provenance object, got {type(prov)}')
                     self.upstream_provs.append(prov)
+
+        if self.image is not None:
+            for att in ['sources', 'psf', 'wcs', 'zp', 'detections', 'cutouts', 'measurements']:
+                if getattr(self.image, att, None) is not None:
+                    setattr(self, att, getattr(self.image, att))
 
         return output_session
 
@@ -389,7 +399,9 @@ class DataStore:
                 parameters=pars_dict,
                 upstreams=upstreams,
             )
-            prov = session.merge(prov)
+            db_prov = session.scalars(sa.select(Provenance).where(Provenance.id == prov.id)).first()
+            if db_prov is not None:  # only merge if this provenance already exists
+                prov = session.merge(prov)
 
         return prov
 
@@ -580,13 +592,9 @@ class DataStore:
         pipeline applications, to make sure the image
         object has all the data products it needs.
         """
-        image.sources = self.sources
-        image.psf = self.psf
-        image.wcs = self.wcs
-        image.zp = self.zp
-        image.detections = self.detections
-        image.cutouts = self.cutouts
-        image.measurements = self.measurements
+        for att in ['sources', 'psf', 'wcs', 'zp', 'detections', 'cutouts', 'measurements']:
+            if getattr(self, att, None) is not None:
+                setattr(image, att, getattr(self, att))
 
     def get_sources(self, provenance=None, session=None):
         """
@@ -624,6 +632,8 @@ class DataStore:
                 self.sources = None
                 self.wcs = None
                 self.zp = None
+
+        # TODO: do we need to test the SourceList Provenance has upstreams consistent with self.image.provenance?
 
         if provenance is None and self.sources is not None:
             if self.upstream_provs is not None:
@@ -877,9 +887,9 @@ class DataStore:
 
             if self.reference is not None:
                 if not (
-                        (self.reference.validity_start is not None or
+                        (self.reference.validity_start is None or
                          self.reference.validity_start <= image.observation_time) and
-                        (self.reference.validity_end is not None or
+                        (self.reference.validity_end is None or
                          self.reference.validity_end >= image.observation_time) and
                         self.reference.filter == image.filter and
                         self.reference.target == image.target and

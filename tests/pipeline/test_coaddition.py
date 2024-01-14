@@ -421,52 +421,57 @@ def test_coaddition_pipeline_inputs(ptf_reference_images):
 
 
 def test_coaddition_pipeline_outputs(ptf_reference_images, ptf_aligned_images):
-    pipe = CoaddPipeline()
-    coadd_image = pipe.run(ptf_reference_images, ptf_aligned_images)
+    try:
+        pipe = CoaddPipeline()
+        coadd_image = pipe.run(ptf_reference_images, ptf_aligned_images)
 
-    # check that the second list input was ingested
-    assert pipe.aligned_images == ptf_aligned_images
+        # check that the second list input was ingested
+        assert pipe.aligned_images == ptf_aligned_images
 
-    assert isinstance(coadd_image, Image)
-    assert coadd_image.filepath is None
-    assert coadd_image.type == 'ComSci'
-    assert coadd_image.provenance.id != ptf_reference_images[0].provenance.id
-    assert coadd_image.instrument == 'PTF'
-    assert coadd_image.telescope == 'P48'
-    assert coadd_image.filter == 'R'
-    assert coadd_image.section_id == '11'
-    assert coadd_image.start_mjd == min([im.start_mjd for im in ptf_reference_images])
-    assert coadd_image.end_mjd == max([im.end_mjd for im in ptf_reference_images])
-    assert coadd_image.provenance_id is not None
-    assert coadd_image.aligned_images == ptf_aligned_images  # use the same images from the input to pipeline
+        assert isinstance(coadd_image, Image)
+        assert coadd_image.filepath is None
+        assert coadd_image.type == 'ComSci'
+        assert coadd_image.provenance.id != ptf_reference_images[0].provenance.id
+        assert coadd_image.instrument == 'PTF'
+        assert coadd_image.telescope == 'P48'
+        assert coadd_image.filter == 'R'
+        assert coadd_image.section_id == '11'
+        assert coadd_image.start_mjd == min([im.start_mjd for im in ptf_reference_images])
+        assert coadd_image.end_mjd == max([im.end_mjd for im in ptf_reference_images])
+        assert coadd_image.provenance_id is not None
+        assert coadd_image.aligned_images == ptf_aligned_images  # use the same images from the input to pipeline
 
-    # check that all output products are there
-    assert isinstance(coadd_image.sources, SourceList)
-    assert isinstance(coadd_image.psf, PSF)
-    assert isinstance(coadd_image.wcs, WorldCoordinates)
-    assert isinstance(coadd_image.zp, ZeroPoint)
+        # check that all output products are there
+        assert isinstance(coadd_image.sources, SourceList)
+        assert isinstance(coadd_image.psf, PSF)
+        assert isinstance(coadd_image.wcs, WorldCoordinates)
+        assert isinstance(coadd_image.zp, ZeroPoint)
 
-    # check that the ZOGY PSF width is similar to the PSFex result
-    assert np.max(coadd_image.zogy_psf) == pytest.approx(np.max(coadd_image.psf.get_clip()), abs=0.01)
-    zogy_fwhm = estimate_psf_width(coadd_image.zogy_psf)
-    psfex_fwhm = estimate_psf_width(np.pad(coadd_image.psf.get_clip(), 20))  # pad so extract_psf_surrogate works
-    assert zogy_fwhm == pytest.approx(psfex_fwhm, rel=0.1)
+        # check that the ZOGY PSF width is similar to the PSFex result
+        assert np.max(coadd_image.zogy_psf) == pytest.approx(np.max(coadd_image.psf.get_clip()), abs=0.01)
+        zogy_fwhm = estimate_psf_width(coadd_image.zogy_psf)
+        psfex_fwhm = estimate_psf_width(np.pad(coadd_image.psf.get_clip(), 20))  # pad so extract_psf_surrogate works
+        assert zogy_fwhm == pytest.approx(psfex_fwhm, rel=0.1)
 
-    # check that the S/N is consistent with a coadd
-    flux_zp = [10 ** (0.4 * im.zp.zp) for im in ptf_reference_images]  # flux in ADU of a magnitude 0 star
-    bkgs = [im.bkg_rms_estimate for im in ptf_reference_images]
-    snrs = np.array(flux_zp) / np.array(bkgs)
-    mean_snr = np.mean(snrs)
+        # check that the S/N is consistent with a coadd
+        flux_zp = [10 ** (0.4 * im.zp.zp) for im in ptf_reference_images]  # flux in ADU of a magnitude 0 star
+        bkgs = [im.bkg_rms_estimate for im in ptf_reference_images]
+        snrs = np.array(flux_zp) / np.array(bkgs)
+        mean_snr = np.mean(snrs)
 
-    flux_zp_zogy = 10 ** (0.4 * coadd_image.zp.zp)
-    _, bkg_zogy = sigma_clipping(coadd_image.data)
-    snr_zogy = flux_zp_zogy / bkg_zogy
+        flux_zp_zogy = 10 ** (0.4 * coadd_image.zp.zp)
+        _, bkg_zogy = sigma_clipping(coadd_image.data)
+        snr_zogy = flux_zp_zogy / bkg_zogy
 
-    # zogy background noise is normalized by construction
-    assert bkg_zogy == pytest.approx(1.0, abs=0.1)
+        # zogy background noise is normalized by construction
+        assert bkg_zogy == pytest.approx(1.0, abs=0.1)
 
-    # S/N should be sqrt(N) better
-    assert snr_zogy == pytest.approx(mean_snr * np.sqrt(len(ptf_reference_images)), rel=0.1)
+        # S/N should be sqrt(N) better
+        assert snr_zogy == pytest.approx(mean_snr * np.sqrt(len(ptf_reference_images)), rel=0.1)
+
+    finally:
+        if 'coadd_image' in locals():
+            coadd_image.delete_from_disk_and_database(commit=True, remove_downstream_data=True)
 
 
 def test_coadded_reference(ptf_ref):

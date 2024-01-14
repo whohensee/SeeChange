@@ -916,15 +916,24 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
         if 'alignment' not in self.provenance.parameters:
             raise RuntimeError('Cannot align images without an "alignment" dictionary in the Provenance parameters!')
 
-        if self.provenance.parameters['alignment']['to_index'] == 'first':
+        to_index = self.provenance.parameters['alignment'].get('to_index')
+        if to_index == 'first':
             image_index = 0
-        elif self.provenance.parameters['alignment']['to_index'] == 'last':
+        elif to_index == 'last':
             image_index = -1
+        elif to_index == 'new':
+            image_index = self.new_image_index
+        elif to_index == 'ref':
+            image_index = self.ref_image_index  # this is not recommended!
+        else:
+            raise RuntimeError(
+                f'Got illegal value for "to_index" ({to_index}) in the Provenance parameters!'
+            )
 
         if self._aligner is None:
             self._aligner = ImageAligner(**self.provenance.parameters['alignment'])
         else:
-            self._aligner.pars.override(**self.provenance.parameters['alignment'])
+            self._aligner.pars.override(self.provenance.parameters['alignment'])
 
         # verify all products are loaded
         for im in self.upstream_images:
@@ -939,24 +948,14 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
 
         self._aligned_images = aligned
 
-        # also suggest a filepath for an image created from the aligned upstream images:
-        self._combined_filepath = None  # if we don't clear this, it gets loaded in invent filepath!
-        path = self.invent_filepath()
-        utag = hashlib.sha256()
-        for image in self.upstream_images:
-            utag.update(image.filepath.encode('utf-8'))
-        utag = base64.b32encode(utag.digest()).decode().lower()
-        utag = '_u-' + utag[:6]
-        path += utag
-
-        self._combined_filepath = path
-
     def _check_aligned_images(self):
         """Check that the aligned_images loaded in this Image are consistent.
 
         The aligned_images must have the same provenance parameters as the Image,
         and their "original_image_id" must point to the IDs of the upstream_images.
 
+        If they are inconsistent, they will be removed and the _aligned_images
+        attribute will be set to None to be lazy filled by _make_aligned_images().
         """
         if self._aligned_images is None:
             return
@@ -971,9 +970,14 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
         upstream_images_filepaths = [image.filepath for image in self.upstream_images]
 
         for image in self._aligned_images:
-            if self.provenance.parameters['alignment'] != image.header.get('alignment_parameters', None):
-                self._aligned_images = None
-                return
+            # im_pars will contain all the default keys and any overrides from self.provenance
+            im_pars = image.header.get('alignment_parameters', {})
+
+            # if self.provenance has non-default values, or if im_pars are missing any keys, remake all of them
+            for key, value in self.provenance.parameters['alignment'].items():
+                if key not in im_pars or im_pars[key] != value:
+                    self._aligned_images = None
+                    return
 
             if image.header['original_image_filepath'] not in upstream_images_filepaths:
                 self._aligned_images = None
@@ -1036,10 +1040,14 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
         (e.g., SourceList) will just append another string to the Image
         filename.
 
-        """
-        if self._combined_filepath is not None:
-            return self._combined_filepath
+        Coadded or difference images (that have a list of upstream_images)
+        will also be appended a "u-tag" which is just the letter u
+        (for "upstreams") follwed by the first 6 characters of the
+        SHA256 hash of the upstream image filepaths.  This is to make
+        sure that the filepath is unique for each combination of
+        upstream images.
 
+        """
         prov_hash = inst_name = im_type = date = time = filter = ra = dec = dec_int_pm = ''
         section_id = section_id_int = ra_int = ra_int_h = ra_frac = dec_int = dec_frac = 0
 
@@ -1085,7 +1093,7 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
         if name_convention is None:
             name_convention = default_convention
 
-        filename = name_convention.format(
+        filepath = name_convention.format(
             inst_name=inst_name,
             im_type=im_type,
             date=date,
@@ -1107,7 +1115,17 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
         # TODO: which elements of the naming convention are really necessary?
         #  and what is a good way to make sure the filename actually depends on them?
 
-        return filename
+        if self.upstream_images is not None and len(self.upstream_images) > 0:
+            utag = hashlib.sha256()
+            for image in self.upstream_images:
+                if image.filepath is None:
+                    raise RuntimeError('Cannot invent filepath when upstream image has no filepath!')
+                utag.update(image.filepath.encode('utf-8'))
+            utag = base64.b32encode(utag.digest()).decode().lower()
+            utag = '_u-' + utag[:6]
+            filepath += utag
+
+        return filepath
 
     def save(self, filename=None, only_image=False, just_update_header=True, **kwargs ):
         """Save the data (along with flags, weights, etc.) to disk.
@@ -1285,6 +1303,8 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
                     elif extension == '.flags.fits':
                         self._flags = read_fits_image(filename, output='data')
                         gotflags = True
+                    elif extension == '.score.fits':
+                        self._score = read_fits_image(filename, output='data')
                     else:
                         raise ValueError( f'Unknown image extension {extension}' )
                 if not ( gotim and gotweight and gotflags ):
@@ -1545,12 +1565,16 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
                 sa.select(PSF).where(PSF.image_id == self.id)
             ).all()
             downstreams += psfs
+            if self.psf is not None and self.psf not in psfs:  # if not in the session, could be duplicate!
+                downstreams.append(self.psf)
 
             # get all source lists that are related to this image (regardless of provenance)
             sources = session.scalars(
                 sa.select(SourceList).where(SourceList.image_id == self.id)
             ).all()
             downstreams += sources
+            if self.sources is not None and self.sources not in sources:  # if not in the session, could be duplicate!
+                downstreams.append(self.sources)
 
             wcses = []
             zps = []
@@ -1562,6 +1586,13 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
                 zps += session.scalars(
                     sa.select(ZeroPoint).where(ZeroPoint.sources_id == s.id)
                 ).all()
+            if self.wcs is not None and self.wcs not in wcses:  # if not in the session, could be duplicate!
+                wcses.append(self.wcs)
+            if self.zp is not None and self.zp not in zps:  # if not in the session, could be duplicate!
+                zps.append(self.zp)
+
+            downstreams += wcses
+            downstreams += zps
 
             # TODO: replace with a relationship to downstream_images (see issue #151)
             # now look for other images that were created based on this one

@@ -52,7 +52,7 @@ def test_warp_decam( decam_datastore, decam_reference ):
 
 def test_alignment_in_image( ptf_reference_images, code_version ):
     try:  # cleanup at the end
-        images_to_align = ptf_reference_images[:4]  # speed things up using fewer images
+        # ptf_reference_images = ptf_reference_images[:4]  # speed things up using fewer images
         prov = Provenance(
             code_version=code_version,
             parameters={'alignment': {'method': 'swarp', 'to_index': 'last'}, 'test_parameter': 'test_value'},
@@ -67,7 +67,7 @@ def test_alignment_in_image( ptf_reference_images, code_version ):
         else:
             raise ValueError(f"Unknown alignment reference index: {prov.parameters['alignment']['to_index']}")
 
-        new_image = Image.from_images(images_to_align, index=index)
+        new_image = Image.from_images(ptf_reference_images, index=index)
         new_image.provenance = prov
         new_image.provenance.upstreams = new_image.get_upstream_provenances()
         new_image.new_image = None
@@ -80,10 +80,10 @@ def test_alignment_in_image( ptf_reference_images, code_version ):
         assert match is not None
 
         aligned = new_image.aligned_images
-        assert new_image.upstream_images == images_to_align
-        assert len(aligned) == len(images_to_align)
-        assert np.array_equal(aligned[index].data, images_to_align[index].data)
-        ref = images_to_align[index]
+        assert new_image.upstream_images == ptf_reference_images
+        assert len(aligned) == len(ptf_reference_images)
+        assert np.array_equal(aligned[index].data, ptf_reference_images[index].data)
+        ref = ptf_reference_images[index]
 
         # check that images are aligned properly
         for image in new_image.aligned_images:
@@ -105,8 +105,8 @@ def test_alignment_in_image( ptf_reference_images, code_version ):
         with SmartSession() as session:
             loaded_image = session.scalars(sa.select(Image).where(Image.id == new_image.id)).first()
             assert loaded_image is not None
-            assert len(loaded_image.aligned_images) == len(images_to_align)
-            assert np.array_equal(loaded_image.aligned_images[-1].data, images_to_align[-1].data)
+            assert len(loaded_image.aligned_images) == len(ptf_reference_images)
+            assert np.array_equal(loaded_image.aligned_images[-1].data, ptf_reference_images[-1].data)
 
             # check that images are aligned properly
             for image in loaded_image.aligned_images:
