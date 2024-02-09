@@ -48,6 +48,29 @@ class DataStore:
     to be fetched from the database, and keep a cached version of the products for
     use downstream in the pipeline.
     """
+    attributes_to_save = [
+        'exposure',
+        'image',
+        'sources',
+        'psf',
+        'wcs',
+        'zp',
+        'sub_image',
+        'detections',
+        'cutouts',
+        'measurements'
+    ]
+
+    attributes_to_clear = [
+        'ref_image',
+        'sub_image',
+        'reference',
+        'exposure_id',
+        'section_id',
+        'image_id',
+        'session',
+    ]
+
     @staticmethod
     def from_args(*args, **kwargs):
         """
@@ -77,37 +100,36 @@ class DataStore:
     def __init__(self, *args, **kwargs):
         """
         See the parse_args method for details on how to initialize this object.
+
+        Please make sure to add any new attributes to the attributes_to_save list.
         """
         # these are data products that can be cached in the store
         self._exposure = None  # single image, entire focal plane
         self._section = None  # SensorSection
 
-        self._init_data_products()
+        self.upstream_provs = None  # provenances to override the upstreams if no upstream objects exist
 
-        # The database session parsed in parse_args; it could still be None even after parse_args
-        self.session = None
-        self.parse_args(*args, **kwargs)
-
-    def _init_data_products( self ):
+        # these all need to be added to the attributes_to_save list
         self.image = None  # single image from one sensor section
         self.sources = None  # extracted sources (a SourceList object, basically a catalog)
-        self.psf = None   # psf determined from the extracted sources
+        self.psf = None  # psf determined from the extracted sources
         self.wcs = None  # astrometric solution
         self.zp = None  # photometric calibration
-        self.ref_image = None  # to be used to make subtractions
-        self.sub_image = None  # subtracted image
         self.detections = None  # a SourceList object for sources detected in the subtraction image
         self.cutouts = None  # cutouts around sources
         self.measurements = None  # photometry and other measurements for each source
 
-        self.upstream_provs = None  # provenances to override the upstreams if no upstream objects exist
+        # these need to be added to the attributes_to_clear list
+        self.ref_image = None  # to be used to make subtractions
+        self.sub_image = None  # subtracted image
         self.reference = None  # the Reference object needed to make subtractions
-
-        # these are identifiers used to find the data products in the database
         self.exposure_id = None  # use this and section_id to find the raw image
         self.section_id = None  # corresponds to SensorSection.identifier (*not* .id)
-                                # use this and exposure_id to find the raw image
         self.image_id = None  # use this to specify an image already in the database
+
+        # The database session parsed in parse_args; it could still be None even after parse_args
+        self.session = None
+        self.parse_args(*args, **kwargs)
 
     @property
     def exposure( self ):
@@ -515,11 +537,11 @@ class DataStore:
             # (If all the ids are None, it'll match even if the actual
             # objects are wrong, but, oh well.)
             if (self.exposure_id is not None) and (self.section_id is not None):
-                if ( (self.image.exposure_id != self.exposure_id) or
+                if ( (self.image.exposure_id is not None and self.image.exposure_id != self.exposure_id) or
                      (self.image.section_id != self.section_id) ):
                     raise ValueError( "Image exposure/section id doesn't match what's expected!" )
             elif self.exposure is not None and self.section is not None:
-                if ( (self.image.exposure_id != self.exposure.id) or
+                if ( (self.image.exposure_id is not None and self.image.exposure_id != self.exposure.id) or
                      (self.image.section_id != self.section.identifier) ):
                     raise ValueError( "Image exposure/section id doesn't match what's expected!" )
             # If we get here, self.image is presumed to be good
@@ -587,7 +609,7 @@ class DataStore:
         return self.image  # could return none if no image was found
 
     def append_image_products(self, image):
-        """Append the image products to the image object.
+        """Append the image products to the image and sources objects.
         This is a convenience function to be used by the
         pipeline applications, to make sure the image
         object has all the data products it needs.
@@ -595,6 +617,10 @@ class DataStore:
         for att in ['sources', 'psf', 'wcs', 'zp', 'detections', 'cutouts', 'measurements']:
             if getattr(self, att, None) is not None:
                 setattr(image, att, getattr(self, att))
+        if image.sources is not None:
+            for att in ['wcs', 'zp']:
+                if getattr(self, att, None) is not None:
+                    setattr(image.sources, att, getattr(self, att))
 
     def get_sources(self, provenance=None, session=None):
         """
@@ -1306,65 +1332,87 @@ class DataStore:
             Note that this method calls session.commit()
 
         """
-        with SmartSession( session, self.session ) as session:
-            autoflush_state = session.autoflush
-            try:
-                # session.autoflush = False
-                for obj in self.get_all_data_products(output='list'):
-                    _logger.debug( f'save_and_commit consdering a {obj.__class__.__name__} with filepath '
-                                   f'{obj.filepath if isinstance(obj,FileOnDiskMixin) else "<none>"}' )
+        # save to disk whatever is FileOnDiskMixin
+        for att in self.attributes_to_save:
+            obj = getattr(self, att, None)
+            if obj is None:
+                continue
 
-                    if isinstance(obj, FileOnDiskMixin):
-                        mustsave = True
-                        # TODO : if some extensions have a None md5sum and others don't,
-                        #  right now we'll re-save everything.  Improve this to only
-                        #  save the necessary extensions.  (In practice, this should
-                        #  hardly ever come up.)
-                        if ( ( not force_save_everything )
-                             and
-                             ( ( obj.md5sum is not None )
-                               or ( ( obj.md5sum_extensions is not None )
-                                    and
-                                    ( all( [ i is not None for i in obj.md5sum_extensions ] ) )
-                                   )
-                              ) ):
-                            mustsave = False
+            if isinstance(obj, list):  # handle cutouts and measurements
+                # TODO: the measurements is not a problem because they are probably not going to live on disk.
+                #  The cuouts, on the other hand, should probably be saved together as a list into one file.
+                #  We should implement something to do that sort of batch save on the cutouts.
+                raise NotImplementedError( 'Saving lists of objects (cutouts) is not implemented yet.' )
 
-                        # Special case handling for update_image_header for existing images.
-                        # (Not needed if the image doesn't already exist, hence the not mustsave.)
-                        if isinstance( obj, Image ) and ( not mustsave ) and update_image_header:
-                            _logger.debug( 'Just updating image header.' )
-                            try:
-                                obj.save( only_image=True, just_update_header=True )
-                            except Exception as ex:
-                                _logger.error( f"Failed to update image header: {ex}" )
-                                raise ex
+            _logger.debug( f'save_and_commit considering a {obj.__class__.__name__} with filepath '
+                           f'{obj.filepath if isinstance(obj,FileOnDiskMixin) else "<none>"}' )
 
-                        elif mustsave:
-                            try:
-                                obj.save( overwrite=overwrite, exists_ok=exists_ok, no_archive=no_archive )
-                            except Exception as ex:
-                                _logger.error( f"Failed to save a {obj.__class__.__name__}: {ex}" )
-                                raise ex
+            if isinstance(obj, FileOnDiskMixin):
+                mustsave = True
+                # TODO : if some extensions have a None md5sum and others don't,
+                #  right now we'll re-save everything.  Improve this to only
+                #  save the necessary extensions.  (In practice, this should
+                #  hardly ever come up.)
+                if ( ( not force_save_everything )
+                     and
+                     ( ( obj.md5sum is not None )
+                       or ( ( obj.md5sum_extensions is not None )
+                            and
+                            ( all( [ i is not None for i in obj.md5sum_extensions ] ) )
+                           )
+                      ) ):
+                    mustsave = False
 
-                        else:
-                            _logger.debug( f'Not saving the {obj.__class__.__name__} because it already has '
-                                           f'a md5sum in the database' )
+                # Special case handling for update_image_header for existing images.
+                # (Not needed if the image doesn't already exist, hence the not mustsave.)
+                if isinstance( obj, Image ) and ( not mustsave ) and update_image_header:
+                    _logger.debug( 'Just updating image header.' )
+                    try:
+                        obj.save( only_image=True, just_update_header=True )
+                    except Exception as ex:
+                        _logger.error( f"Failed to update image header: {ex}" )
+                        raise ex
 
-                    obj = obj.recursive_merge(session)
-                    session.flush()
-                    if obj not in session:
-                        session.add(obj)
-                session.commit()
+                elif mustsave:
+                    try:
+                        obj.save( overwrite=overwrite, exists_ok=exists_ok, no_archive=no_archive )
+                    except Exception as ex:
+                        _logger.error( f"Failed to save a {obj.__class__.__name__}: {ex}" )
+                        raise ex
 
-                # This may well have updated some ids, as objects got added to the database
-                if self.exposure_id is None and self._exposure is not None:
-                    self.exposure_id = self._exposure.id
-                if self.image_id is None and self.image is not None:
-                    self.image_id = self.image.id
+                else:
+                    _logger.debug( f'Not saving the {obj.__class__.__name__} because it already has '
+                                   f'a md5sum in the database' )
 
-            finally:
-                session.autoflush = autoflush_state
+        # carefully merge all the objects including the products
+        with SmartSession(session, self.session) as session:
+            if self.image is not None:
+                self.image = self.image.merge_all(session)
+                for att in ['sources', 'psf', 'wcs', 'zp']:
+                    setattr(self, att, None)  # avoid automatically loading the image with non-merged products
+                for att in ['exposure', 'sources', 'psf', 'wcs', 'zp', '_aligned_images']:
+                    if getattr(self.image, att, None) is not None:
+                        setattr(self, att, getattr(self.image, att))
+
+            # This may well have updated some ids, as objects got added to the database
+            if self.exposure_id is None and self._exposure is not None:
+                self.exposure_id = self._exposure.id
+            if self.image_id is None and self.image is not None:
+                self.image_id = self.image.id
+
+            if self.sub_image is not None:
+                self.sub_image = self.sub_image.merge_all(session)  # merges the upstream_images and downstream products
+                self.ref.id = self.sub_image.ref_image_id  # just to make sure the ref has an ID for merging
+                for att in ['detections', 'cutouts', 'measurements']:
+                    if getattr(self.sub_image, att, None) is not None:
+                        setattr(self, att, getattr(self.sub_image, att))
+
+            self.psf = self.image.psf
+            self.sources = self.image.sources
+            self.wcs = self.image.wcs
+            self.zp = self.image.zp
+
+            session.commit()
 
     def delete_everything(self, session=None):
         """Delete everything associated with this sub-image.
@@ -1390,19 +1438,32 @@ class DataStore:
         with SmartSession( session, self.session ) as session:
             autoflush_state = session.autoflush
             try:
-                obj_list = self.get_all_data_products(output='list', omit_exposure=True)
-                for i, obj in enumerate(obj_list):  # first make sure all are merged
-                    obj_list[i] = obj.recursive_merge(session)
                 # no flush to prevent some foreign keys from being voided before all objects are deleted
                 session.autoflush = False
+                obj_list = self.get_all_data_products(output='list', omit_exposure=True)
+                for i, obj in enumerate(obj_list):  # first make sure all are merged
+                    if obj.id is not None:  # don't merge new objects, as that just "adds" them to DB!
+                        obj_list[i] = session.merge(obj)
+
                 for obj in obj_list:  # now do the deleting without flushing
                     if isinstance(obj, FileOnDiskMixin):
                         obj.delete_from_disk_and_database(session=session, commit=False)
+                    if obj in session and sa.inspect(obj).pending:
+                        session.expunge(obj)
                     if obj in session and sa.inspect(obj).persistent:
                         session.delete(obj)
+
+                    if hasattr(obj, 'provenance') and obj.provenance is not None and obj.provenance in session:
+                        session.expunge(obj.provenance)
+
                 session.commit()
+
             finally:
                 session.autoflush = autoflush_state
 
         # Make sure all data products are None so that they aren't used again now that they're gone
-        self._init_data_products()
+        for att in self.attributes_to_save:
+            setattr(self, att, None)
+
+        for att in self.attributes_to_clear:
+            setattr(self, att, None)

@@ -91,18 +91,16 @@ def test_sep_save_source_list(decam_small_image, provenance_base, extractor):
         assert os.path.isfile(filename)
 
         # check the naming convention
-        assert re.search(r'.*/\d{3}/c4d_\d{8}_\d{6}_.+_.+_.+_.{6}.sources\.npy', filename)
+        assert re.search(r'.*/\d{3}/c4d_\d{8}_\d{6}_.+_.+_.+_.{6}.sources_.{6}\.npy', filename)
 
         # check the file contents can be loaded successfully
         data = np.load(filename)
         assert np.array_equal(data, sources.data)
 
         with SmartSession() as session:
-            decam_small_image.recursive_merge(session)
-            sources.provenance = session.merge( sources.provenance )
+            sources = session.merge( sources )
             decam_small_image.save()  # pretend to save this file
             decam_small_image.exposure.save()
-            session.add(sources)
             session.commit()
             image_id = decam_small_image.id
             sources_id = sources.id
@@ -241,7 +239,7 @@ def test_run_psfex( decam_datastore, extractor ):
         tmppsfxmlfile.unlink( missing_ok=True )
 
 
-def test_extract_sources_sextractor( decam_datastore, extractor, blocking_plots ):
+def test_extract_sources_sextractor( decam_datastore, extractor, provenance_base, data_dir, blocking_plots ):
     ds = decam_datastore
 
     extractor.pars.method = 'sextractor'
@@ -286,6 +284,20 @@ def test_extract_sources_sextractor( decam_datastore, extractor, blocking_plots 
     assert sources.is_star.sum() == 337
     assert ( sources.good & sources.is_star ).sum() == 61
 
+    try:  # make sure saving the PSF and source list goes as expected, and cleanup at the end
+        psf.provenance = provenance_base
+        psf.save()
+        assert re.match(r'\d{3}/c4d_\d{8}_\d{6}_N1_g_Sci_.{6}.psf_.{6}', psf.filepath)
+        assert os.path.isfile( os.path.join(data_dir, psf.filepath + '.fits') )
+
+        sources.provenance = provenance_base
+        sources.save()
+        assert re.match(r'\d{3}/c4d_\d{8}_\d{6}_N1_g_Sci_.{6}.sources_.{6}.fits', sources.filepath)
+        assert os.path.isfile(os.path.join(data_dir, sources.filepath))
+
+    finally:  # cleanup
+        [os.remove(f) for f in psf.get_fullpath()]
+        os.remove( sources.get_fullpath() )
 
 # TODO : add tests that handle different combinations
 #  of measure_psf and psf being passed to the Detector constructor
@@ -344,23 +356,18 @@ def test_run_detection_sextractor( decam_datastore, extractor ):
     from sqlalchemy.exc import IntegrityError
 
     try:
-        # this fails because the sources' filename does not include the sources' provenance hash
-        # see issue #146
-        with pytest.raises(
-                IntegrityError,
-                match='duplicate key value violates unique constraint "ix_source_lists_filepath"'
-        ):
-            ds.save_and_commit()
+        ds.save_and_commit()
 
-            # Make sure all the files exist
-            archive = get_archive_object()
-            imdir = pathlib.Path( FileOnDiskMixin.local_path )
-            base = ds.image.filepath
-            relpaths = [ f'{base}{i}' for i in [ '.image.fits', '.weight.fits', '.flags.fits',
-                                                 '.sources.fits', '.psf', '.psf.xml' ] ]
-            for relp in relpaths:
-                assert ( imdir / relp ).is_file()
-                assert archive.get_info( relp ) is not None
+        # Make sure all the files exist
+        archive = get_archive_object()
+        imdir = pathlib.Path( FileOnDiskMixin.local_path )
+        relpaths = []
+        relpaths += [ds.image.filepath + ext for ext in ds.image.filepath_extensions]
+        relpaths += [ds.sources.filepath]
+        relpaths += [ds.psf.filepath + ext for ext in ds.psf.filepath_extensions]
+        for relp in relpaths:
+            assert ( imdir / relp ).is_file()
+            assert archive.get_info( relp ) is not None
 
     finally:
         ds.delete_everything()

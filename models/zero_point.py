@@ -3,6 +3,7 @@ import numpy as np
 import sqlalchemy as sa
 from sqlalchemy import orm
 from sqlalchemy.ext.associationproxy import association_proxy
+from sqlalchemy.schema import UniqueConstraint
 
 from models.base import Base, AutoIDMixin, HasBitFlagBadness
 from models.enums_and_bitflags import catalog_match_badness_inverse
@@ -10,6 +11,10 @@ from models.enums_and_bitflags import catalog_match_badness_inverse
 
 class ZeroPoint(Base, AutoIDMixin, HasBitFlagBadness):
     __tablename__ = 'zero_points'
+
+    __table_args__ = (
+        UniqueConstraint('sources_id', 'provenance_id', name='_zp_sources_provenance_uc'),
+    )
 
     sources_id = sa.Column(
         sa.ForeignKey('source_lists.id', ondelete='CASCADE', name='zero_points_source_list_id_fkey'),

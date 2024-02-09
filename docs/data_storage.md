@@ -237,33 +237,33 @@ some method like `Exposure.save()` to generate the file.
 
 Each `Exposure` object is associated with a single FITS file (or sometimes multiple files, for different sections). 
 Header information is loaded from the FITS file, but this information can be kept in three different places. 
-The first is the `header` property of the `Exposure` object. This is a dictionary that contains
+The first is the `info` property of the `Exposure` object. This is a dictionary that contains
 a small subset of the full FITS header. Generally only the properties we intend to query on will be saved here. 
-The choice of keywords that get copied into the `header` are the combination of the keys 
+The choice of keywords that get copied into the `info` dictionary are the combination of the keys 
 in `exposure.EXPOSURE_HEADER_KEYS` and `Instrument.get_auxiliary_exposure_header_keys()`. 
 The latter is used to let each `Instrument` subclass to define additional keywords that
-are useful to have in the header. 
-The `header` dictionary is saved to the database as a JSONB column.
-Since some of this information is saved as independent columns (like `exp_time`), the `header` column does not 
+are useful to have in the info dictionary. 
+The `info` dictionary is saved to the database as a JSONB column.
+Since some of this information is saved as independent columns (like `exp_time`), the `info` column does not 
 necessarily keep much information (information is not duplicated). 
-Note that this header is filled using the global `Exposure` header, not the header of individual sections.
-The keywords in this header are all lower-case, and are translated to standardized names using the
+Note that this dictionary is filled using the global `Exposure` header, not the header of individual sections.
+The keywords in this dictionary are all lower-case, and are translated to standardized names using the
 `_get_header_keyword_translations()` method of the `Instrument` class. This makes it easy to tell them apart
-from the raw header information (in upper case) which also uses instrument-specific keywords. 
-The value of the header values are also converted to standard units using the `_get_header_values_converters()`
+from the header information (in upper case) which also uses instrument-specific keywords. 
+The value of the `info` values are also converted to standard units using the `_get_header_values_converters()`
 
-In addition to the `header` column which is saved to the database, the `Exposure` also has a `raw_header` and
-a `section_headers` attributes. The `raw_header` is a dictionary-like object (using `astropy.io.fits.Header`) 
+In addition to the `info` column which is saved to the database, the `Exposure` also has a `header` and
+a `section_headers` attributes. The `header` is a dictionary-like object (using `astropy.io.fits.Header`) 
 that contains the full FITS header of the file.  
 This is not saved to the database, but is lazy loaded from the file when needed. 
-The raw headers use all upper case keywords.  
+The headers use all upper case keywords.  
 The `section_headers` property is a `SectionHeaders` object (also defined in `models/exposure.py`) 
 which acts like a dictionary that lazy loads the FITS header from file for a specific section when needed.
 In cases where multiple section data is saved in one FITS file, there would usually be a primary HDU that contains
 the global exposure header information, and additional extension HDUs with their own image data and headers. 
-In this case the `section_headers` are all different from the `raw_header`. 
+In this case the `section_headers` are all different from the Exposure's `header`. 
 If the raw data includes a separate FITS file for each section, 
-then each file would have a different raw header, 
+then each file would have a different header, 
 and the "exposure global header" would arbitrarily be the header of the first file. 
 If the instrument only has one section, this is trivially true as well. 
 
@@ -282,13 +282,13 @@ If sources are extracted into a `SourceList` object this can be saved into a `so
 The same is true for astrometric solution saved into a `WorldCoordinates` object in `wcs`
 and a photometric solution saved into a `ZeroPoint` object in `zp`.
 
-The `Image` object's `raw_header` property contains the section-specific header, copied directly from 
+The `Image` object's `header` property contains the section-specific header, copied directly from 
 the `Exposure` object's `section_headers` property. 
 Some header keywords may be added or modified in the pre-processing step. 
 This header is saved to the file, and not the database. 
-The `Image` object's `header` property contains a subset of the section-specific header. 
-Again, this header uses standardized names, in lower case, that are searchable on the database. 
-This header is produced during the pre-processing step and contains only the important (searchable) keywords, 
+The `Image` object's `info` attribute contains a subset of the section-specific header. 
+Again, this dictionary uses standardized names, in lower case, that are searchable on the database. 
+This `info` dictionary is produced during the pre-processing step and contains only the important (searchable) keywords, 
 but not those that are important enough to get their own columns in the `images` table
 (e.g., the MJD of the image). 
 
@@ -298,7 +298,7 @@ the files associated with an `Image` object are created by the pipeline.
 We can also choose to save all the different arrays (data, weight, flags, etc.) in different files, 
 or in the same file (using multiple extensions). This is defined in the config file using `storage.images.single_file`. 
 In either case, the additional arrays are saved with their own headers, which are all identical to the `Image` object's
-`raw_header` dictionary. 
+`header` dictionary. 
 
 
 ### Data archive

@@ -139,9 +139,6 @@ def test_data_flow(decam_exposure, decam_reference, decam_default_calibrators):
     ref = decam_reference
     sec_id = ref.section_id
     try:  # cleanup the file at the end
-        # with SmartSession() as session:
-        #     ref = ref.recursive_merge(session)
-        #     exposure = exposure.recursive_merge(session)
 
         p = Pipeline()
         assert p.extractor.pars.threshold != 3.14
@@ -193,7 +190,8 @@ def test_data_flow(decam_exposure, decam_reference, decam_default_calibrators):
 
                 obj = getattr(ds, attributes[-j-1])
                 with SmartSession() as session:
-                    obj = obj.recursive_merge(session=session)
+                    # obj = obj.recursive_merge(session=session)
+                    obj = session.merge(obj)
                     if isinstance(obj, FileOnDiskMixin):
                         obj.delete_from_disk_and_database(session=session, commit=True)
 

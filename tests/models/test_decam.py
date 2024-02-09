@@ -39,14 +39,14 @@ def test_decam_exposure(decam_filename):
     assert e.filepath == 'c4d_221104_074232_ori.fits.fz'
     assert e.filter == 'g DECam SDSS c0001 4720.0 1520.0'
     assert not e.from_db
-    assert e.header == {}
+    assert e.info == {}
     assert e.id is None
     assert e.target == 'DECaPS-West'
     assert e.project == '2022A-724693'
 
     # check that we can lazy load the header from file
-    assert len(e.raw_header) == 150
-    assert e.raw_header['NAXIS'] == 0
+    assert len(e.header) == 150
+    assert e.header['NAXIS'] == 0
 
     with pytest.raises(ValueError, match=re.escape('The section_id must be a string. ')):
         _ = e.data[0]
@@ -96,12 +96,12 @@ def test_image_from_decam_exposure(decam_filename, provenance_base, data_dir):
     assert im.id is None  # not yet on the DB
     assert im.filepath is None  # no file yet!
 
-    assert len(im.raw_header) == 98
-    assert im.raw_header['NAXIS'] == 2
-    assert im.raw_header['NAXIS1'] == 2160
-    assert im.raw_header['NAXIS2'] == 4146
-    assert 'BSCALE' not in im.raw_header
-    assert 'BZERO' not in im.raw_header
+    assert len(im.header) == 98
+    assert im.header['NAXIS'] == 2
+    assert im.header['NAXIS1'] == 2160
+    assert im.header['NAXIS2'] == 4146
+    assert 'BSCALE' not in im.header
+    assert 'BZERO' not in im.header
 
     # check we have the raw data copied into temporary attribute
     assert im.raw_data is not None
@@ -337,8 +337,8 @@ def test_linearity( decam_raw_image, decam_default_calibrators ):
 
             # This is here to uncomment for debugging purposes
             # from astropy.io import fits
-            # fits.writeto( 'trimmed.fits', im.data, im.raw_header, overwrite=True )
-            # fits.writeto( 'linearitied.fits', newdata, im.raw_header, overwrite=True )
+            # fits.writeto( 'trimmed.fits', im.data, im.header, overwrite=True )
+            # fits.writeto( 'linearitied.fits', newdata, im.header, overwrite=True )
 
             # Brighter pixels should all have gotten brighter
             # (as nonlinearity will suppress bright pixels )
@@ -381,7 +381,7 @@ def test_preprocessing_calibrator_files( decam_default_calibrators ):
             if linfile is None:
                 linfile = session.get( DataFile, info[ 'linearity_fileid' ] )
             else:
-                linfile = linfile.recursive_merge( session )
+                linfile = session.merge(linfile)
                 assert linfile == session.get( DataFile, info[ 'linearity_fileid' ] )
 
     # Make sure we can call it a second time and don't get "file exists"
@@ -395,8 +395,7 @@ def test_preprocessing_calibrator_files( decam_default_calibrators ):
 def test_overscan_sections( decam_raw_image, data_dir,  ):
     decam = get_instrument_instance( "DECam" )
 
-    # Need the full header, not what's stored in the database
-    ovsecs = decam.overscan_sections( decam_raw_image.raw_header )
+    ovsecs = decam.overscan_sections( decam_raw_image.header )
     assert ovsecs == [ { 'secname': 'A',
                          'biassec' : { 'x0': 6, 'x1': 56, 'y0': 0, 'y1': 4096 },
                          'datasec' : { 'x0': 56, 'x1': 1080, 'y0': 0, 'y1': 4096 }
@@ -410,8 +409,7 @@ def test_overscan_sections( decam_raw_image, data_dir,  ):
 def test_overscan_and_data_sections( decam_raw_image, data_dir ):
     decam = get_instrument_instance( "DECam" )
 
-    # Need the full header, not what's stored in the database
-    ovsecs = decam.overscan_and_data_sections( decam_raw_image.raw_header )
+    ovsecs = decam.overscan_and_data_sections( decam_raw_image.header )
     assert ovsecs == [ { 'secname': 'A',
                          'biassec' : { 'x0': 6, 'x1': 56, 'y0': 0, 'y1': 4096 },
                          'datasec' : { 'x0': 56, 'x1': 1080, 'y0': 0, 'y1': 4096 },
@@ -435,10 +433,10 @@ def test_overscan( decam_raw_image, data_dir ):
     with pytest.raises( RuntimeError, match='overscan_and_trim: pass either an Image as one argument' ):
         _ = decam.overscan_and_trim( 1, 2, 3 )
     with pytest.raises( TypeError, match="data isn't a numpy array" ):
-        _ = decam.overscan_and_trim( decam_raw_image.raw_header, 42 )
+        _ = decam.overscan_and_trim( decam_raw_image.header, 42 )
 
     rawdata = decam_raw_image.raw_data
-    trimmeddata = decam.overscan_and_trim( decam_raw_image.raw_header, rawdata )
+    trimmeddata = decam.overscan_and_trim( decam_raw_image.header, rawdata )
 
     assert trimmeddata.shape == ( 4096, 2048 )
 

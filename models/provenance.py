@@ -329,43 +329,6 @@ class Provenance(Base):
                 code_version = session.scalars(sa.select(CodeVersion).order_by(CodeVersion.id.desc())).first()
         return code_version
 
-    def recursive_merge(self, session, done_list=None):
-        """
-        Recursively merge this object, its CodeVersion,
-        and any upstream/downstream provenances into
-        the given session.
-
-        Parameters
-        ----------
-        session: SmartSession
-            SQLAlchemy session object to merge into.
-
-        Returns
-        -------
-        merged_provenance: Provenance
-            The merged provenance object.
-        """
-        if done_list is None:
-            done_list = set()
-
-        # if self in done_list:
-        #     return self
-
-        merged_self = safe_merge(session, self)
-
-        if merged_self in done_list:
-            return merged_self
-        else:
-            done_list.add(merged_self)
-
-        merged_self.code_version = safe_merge(session, merged_self.code_version)
-
-        merged_self.upstreams = [
-            u.recursive_merge(session, done_list=done_list) for u in merged_self.upstreams if u is not None
-        ]
-
-        return merged_self
-
 
 @event.listens_for(Provenance, "before_insert")
 def insert_new_dataset(mapper, connection, target):

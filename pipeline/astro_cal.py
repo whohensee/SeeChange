@@ -129,7 +129,7 @@ class AstroCalibrator:
     # ----------------------------------------------------------------------
 
     def _solve_wcs_scamp( self, image, sources, catexp, crossid_radius=2. ):
-        """Solve for the WCS of image, updating image.raw_header.
+        """Solve for the WCS of image, updating image.header.
 
         If scamp does not succeed, will raise a SubprocessFailure
         exception (see utils/exceptions.py).
@@ -138,7 +138,7 @@ class AstroCalibrator:
         ----------
           image: Image
             The image to solve the WCS for.  If the WCS solution
-            succeeds, then the raw_header field of the image will be
+            succeeds, then the header field of the image will be
             updated with the keywords that define the new WCS.
 
           sources: SourceList
@@ -181,9 +181,9 @@ class AstroCalibrator:
             magkey='MAG_G', magerrkey='MAGERR_G',
         )
 
-        # Update image.raw_header with the new wcs.  Process this
+        # Update image.header with the new wcs.  Process this
         # through astropy.wcs.WCS to make sure everything is copacetic.
-        image.raw_header.extend( wcs.to_header(), update=True )
+        image.header.extend( wcs.to_header(), update=True )
 
         return wcs
 
@@ -252,7 +252,7 @@ class AstroCalibrator:
         ds.wcs = WorldCoordinates( sources=sources, provenance=prov )
         ds.wcs.wcs = wcs
         if session is not None:
-            ds.wcs = ds.wcs.recursive_merge( session )
+            ds.wcs = session.merge( ds.wcs )
 
     # ----------------------------------------------------------------------
 

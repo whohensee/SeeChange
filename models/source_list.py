@@ -7,6 +7,7 @@ import sqlalchemy as sa
 from sqlalchemy import orm
 from sqlalchemy.ext.hybrid import hybrid_property
 from sqlalchemy.ext.associationproxy import association_proxy
+from sqlalchemy.schema import UniqueConstraint
 
 import astropy.table
 
@@ -34,6 +35,10 @@ class SourceList(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
     """
 
     __tablename__ = 'source_lists'
+
+    __table_args__ = (
+        UniqueConstraint('image_id', 'provenance_id', name='_source_list_image_provenance_uc'),
+    )
 
     _format = sa.Column(
         sa.SMALLINT,
@@ -141,6 +146,10 @@ class SourceList(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
         self._bitflag = 0
         self._info = None
         self._is_star = None
+        self.wcs = None
+        self.zp = None
+        self.cutouts = None
+        self.measurements = None
 
         # manually set all properties (columns or not)
         self.set_attributes_from_dict(kwargs)
@@ -159,6 +168,45 @@ class SourceList(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
         self._data = None
         self._info = None
         self._is_star = None
+
+        self.wcs = None
+        self.zp = None
+        self.cutouts = None
+        self.measurements = None
+
+    def merge_all(self, session):
+        """Use safe_merge to merge all the downstream products and assign them back to self.
+
+        This includes: wcs, zp, cutouts, measurements.
+        Make sure to first assign a merged image to self.image,
+        otherwise SQLA will use that relationship to merge a new image,
+        which will be different from the one we want to merge into.
+
+        Must provide a session to merge into. Need to commit at the end.
+
+        Returns the merged SourceList with its products on the same session.
+        """
+        new_sources = self.safe_merge(session=session)
+        session.flush()
+        for att in ['wcs', 'zp']:
+            sub_obj = getattr(self, att, None)
+            if sub_obj is not None:
+                sub_obj.sources = new_sources  # make sure to first point this relationship back to new_sources
+                sub_obj.sources_id = new_sources.id  # make sure to first point this relationship back to new_sources
+                if sub_obj not in session:
+                    sub_obj = sub_obj.safe_merge(session=session)
+                setattr(new_sources, att, sub_obj)
+
+        for att in ['cutouts', 'measurements']:
+            sub_obj = getattr(self, att, None)
+            if sub_obj is not None:
+                new_list = []
+                for item in sub_obj:
+                    item.sources = new_sources  # make sure to first point this relationship back to new_sources
+                    new_list.append(item.safe_merge(session=session))
+                setattr(new_sources, att, new_list)
+
+        return new_sources
 
     def __repr__(self):
         output = (
@@ -527,6 +575,8 @@ class SourceList(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
     def invent_filepath( self ):
         if self.image is None:
             raise RuntimeError( f"Can't invent a filepath for sources without an image" )
+        if self.provenance is None:
+            raise RuntimeError( f"Can't invent a filepath for sources without a provenance" )
 
         filename = self.image.filepath
         if filename is None:
@@ -535,7 +585,9 @@ class SourceList(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
         if filename.endswith(('.fits', '.h5', '.hdf5')):
             filename = os.path.splitext(filename)[0]
 
-        filename += '.sources'
+        filename += '.sources_'
+        self.provenance.update_id()
+        filename += self.provenance.id[:6]
         if self.format == 'sepnpy':
             filename += '.npy'
         elif self.format == 'sextrfits':

@@ -2,6 +2,8 @@
 import sqlalchemy as sa
 from sqlalchemy import orm
 from sqlalchemy.ext.hybrid import hybrid_property
+from sqlalchemy.schema import UniqueConstraint
+from sqlalchemy.ext.associationproxy import association_proxy
 
 from models.base import Base, SeeChangeBase, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed
 from models.enums_and_bitflags import CutoutsFormatConverter
@@ -10,6 +12,13 @@ from models.enums_and_bitflags import CutoutsFormatConverter
 class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed):
 
     __tablename__ = 'cutouts'
+
+    # a unique constraint on the provenance and the source list, but also on the index in the list
+    __table_args__ = (
+        UniqueConstraint(
+            'index_in_sources', 'sources_id', 'provenance_id', name='_cutouts_index_sources_provenance_uc'
+        ),
+    )
 
     _format = sa.Column(
         sa.SMALLINT,
@@ -36,12 +45,18 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed):
         sa.ForeignKey('source_lists.id', name='cutouts_source_list_id_fkey'),
         nullable=False,
         index=True,
-        doc="ID of the source list this cutout is associated with. "
+        doc="ID of the source list (of detections in the difference image) this cutout is associated with. "
     )
 
     sources = orm.relationship(
         'SourceList',
-        doc="The source list this cutout is associated with. "
+        doc="The source list (of detections in the difference image) this cutout is associated with. "
+    )
+
+    index_in_sources = sa.Column(
+        sa.Integer,
+        nullable=False,
+        doc="Index of this cutout in the source list (of detections in the difference image). "
     )
 
     new_image_id = sa.Column(
@@ -70,18 +85,8 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed):
         doc="The reference image this cutout is associated with. "
     )
 
-    sub_image_id = sa.Column(
-        sa.ForeignKey('images.id', name='cutouts_sub_image_id_fkey'),
-        nullable=False,
-        index=True,
-        doc="ID of the subtraction image this cutout is associated with. "
-    )
-
-    sub_image = orm.relationship(
-        'Image',
-        primaryjoin="Cutouts.sub_image_id==Image.id",
-        doc="The subtraction image this cutout is associated with. "
-    )
+    sub_image_id = association_proxy('sources', 'image_id')
+    sub_image = association_proxy('sources', 'image')
 
     pixel_x = sa.Column(
         sa.Integer,

@@ -53,7 +53,7 @@ def test_solve_wcs_scamp( ztf_gaiadr3_excerpt, ztf_datastore_uncommitted, astrom
         catexp.ds9_regfile( os.path.join(basename, 'catexp.reg'), radius=4 )
         ds.sources.ds9_regfile( os.path.join(basename, 'sources.reg'), radius=3 )
 
-    orighdr = ds.image._raw_header.copy()
+    orighdr = ds.image._header.copy()
 
     astrometor._solve_wcs_scamp( ds.image, ds.sources, catexp )
 
@@ -64,7 +64,7 @@ def test_solve_wcs_scamp( ztf_gaiadr3_excerpt, ztf_datastore_uncommitted, astrom
     allsame = True
     for i in [ 1, 2 ]:
         for j in range( 17 ):
-            diff = np.abs( ( orighdr[f'PV{i}_{j}'] - ds.image._raw_header[f'PV{i}_{j}'] ) / orighdr[f'PV{i}_{j}'] )
+            diff = np.abs( ( orighdr[f'PV{i}_{j}'] - ds.image._header[f'PV{i}_{j}'] ) / orighdr[f'PV{i}_{j}'] )
             if diff > 1e-6:
                 allsame = False
                 break
@@ -73,7 +73,7 @@ def test_solve_wcs_scamp( ztf_gaiadr3_excerpt, ztf_datastore_uncommitted, astrom
     #...but check that they are close
     wcsold = WCS( orighdr )
     scolds = wcsold.pixel_to_world( [ 0, 0, 1024, 1024 ], [ 0, 1024, 0, 1024 ] )
-    wcsnew = WCS( ds.image._raw_header )
+    wcsnew = WCS( ds.image._header )
     scnews = wcsnew.pixel_to_world( [ 0, 0, 1024, 1024 ], [ 0, 1024, 0, 1024 ] )
     for scold, scnew in zip( scolds, scnews ):
         assert scold.ra.value == pytest.approx( scnew.ra.value, abs=1./3600. )
@@ -152,8 +152,8 @@ def test_run_scamp( decam_datastore, astrometor ):
             md5.update( ifp.read() )
             assert uuid.UUID( md5.hexdigest() ) == foundim.md5sum_extensions[0]
         # This is probably redundant given the md5sum test we just did....
-        ds.image._raw_header = None
-        for kw in foundim.raw_header:
+        ds.image._header = None
+        for kw in foundim.header:
             # SIMPLE can't be an index to a Header.  (This is sort
             # of a weird thing in the astropy Header interface.)
             # BITPIX doesn't match because the ds.image raw header
@@ -162,7 +162,7 @@ def test_run_scamp( decam_datastore, astrometor ):
             # a float (BITPIX=-32).
             if kw in [ 'SIMPLE', 'BITPIX' ]:
                 continue
-            assert foundim.raw_header[kw] == ds.image.raw_header[kw]
+            assert foundim.header[kw] == ds.image.header[kw]
 
         # Make sure the new WCS got written to the FITS file
         with fits.open( foundim.get_fullpath()[0] ) as hdul:

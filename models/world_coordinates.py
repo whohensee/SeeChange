@@ -2,6 +2,7 @@
 import sqlalchemy as sa
 from sqlalchemy import orm
 from sqlalchemy.ext.associationproxy import association_proxy
+from sqlalchemy.schema import UniqueConstraint
 
 from astropy.wcs import WCS
 from astropy.io import fits
@@ -12,6 +13,10 @@ from models.enums_and_bitflags import catalog_match_badness_inverse
 
 class WorldCoordinates(Base, AutoIDMixin, HasBitFlagBadness):
     __tablename__ = 'world_coordinates'
+
+    __table_args__ = (
+        UniqueConstraint('sources_id', 'provenance_id', name='_wcs_sources_provenance_uc'),
+    )
 
     # This is a little profligate.  There will eventually be millions of
     # images, which means that there will be gigabytes of header data

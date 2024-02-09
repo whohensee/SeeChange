@@ -40,9 +40,8 @@ def make_sim_exposure():
 def add_file_to_exposure(exposure):
     fullname = exposure.get_fullpath()
     open(fullname, 'a').close()
-    exposure.nofile = False
 
-    yield exposure
+    yield exposure  # don't use this, but let it sit there until going out of scope of the test
 
     if fullname is not None and os.path.isfile(fullname):
         os.remove(fullname)
@@ -50,8 +49,8 @@ def add_file_to_exposure(exposure):
 
 def commit_exposure(exposure, session=None):
     with SmartSession(session) as session:
-        exposure = exposure.recursive_merge(session)
-        session.add(exposure)
+        exposure = session.merge(exposure)
+        exposure.nofile = True  # avoid calls to the archive to find this file
         session.commit()
 
     return exposure
@@ -63,13 +62,13 @@ def generate_exposure_fixture():
     def new_exposure():
         e = make_sim_exposure()
         add_file_to_exposure(e)
-        commit_exposure(e)
+        e = commit_exposure(e)
 
         yield e
 
         with SmartSession() as session:
-            e = e.recursive_merge(session)
-            if sa.inspect( e ).persistent:
+            e = session.merge(e)
+            if sa.inspect(e).persistent:
                 session.delete(e)
                 session.commit()
 
@@ -87,13 +86,13 @@ def sim_exposure_filter_array():
     e.filter = None
     e.filter_array = ['r', 'g', 'r', 'i']
     add_file_to_exposure(e)
-    commit_exposure(e)
+    e = commit_exposure(e)
 
     yield e
 
     if 'e' in locals():
         with SmartSession() as session:
-            e = e.recursive_merge(session)
+            e = session.merge(e)
             if sa.inspect( e ).persistent:
                 session.delete(e)
                 session.commit()
@@ -140,8 +139,8 @@ class ImageCleanup:
         if image.instrument is None:
             image.instrument = 'DemoInstrument'
 
-        if image._raw_header is None:
-            image._raw_header = fits.Header()
+        if image._header is None:
+            image._header = fits.Header()
 
         image.save(no_archive=not archive)
 
@@ -169,7 +168,8 @@ def generate_image_fixture(commit=True):
     def new_image(provenance_preprocessing):
         exp = make_sim_exposure()
         add_file_to_exposure(exp)
-        commit_exposure(exp)
+        if commit:
+            exp = commit_exposure(exp)
         exp.update_instrument()
 
         im = Image.from_exposure(exp, section_id=0)
@@ -180,9 +180,14 @@ def generate_image_fixture(commit=True):
         if commit:
             with SmartSession() as session:
                 im.provenance = provenance_preprocessing
-                im = im.recursive_merge(session)
                 im.save()
-                session.add(im)
+                merged_image = session.merge(im)
+                merged_image.raw_data = im.raw_data
+                merged_image.data = im.data
+                merged_image.flags = im.flags
+                merged_image.weight = im.weight
+                merged_image.header = im.header
+                im = merged_image
                 session.commit()
 
         yield im
@@ -222,12 +227,12 @@ def sim_reference(provenance_preprocessing, provenance_extra):
     dec = np.random.uniform(-90, 90)
     images = []
     with SmartSession() as session:
-        provenance_extra = provenance_extra.recursive_merge(session)
+        provenance_extra = session.merge(provenance_extra)
 
         for i in range(5):
             exp = make_sim_exposure()
             add_file_to_exposure(exp)
-            commit_exposure(exp, session)
+            exp = commit_exposure(exp, session)
             exp.filter = filter
             exp.target = target
             exp.project = "coadd_test"
@@ -241,7 +246,7 @@ def sim_reference(provenance_preprocessing, provenance_extra):
             im.ra = ra
             im.dec = dec
             im.save()
-            im = im.recursive_merge(session)
+            im.provenance = session.merge(im.provenance)
             session.add(im)
             images.append(im)
 
@@ -277,7 +282,7 @@ def sim_reference(provenance_preprocessing, provenance_extra):
 
     if 'ref' in locals():
         with SmartSession() as session:
-            ref = ref.recursive_merge(session)
+            ref = ref.merge_all(session)
             for im in ref.image.upstream_images:
                 im.exposure.delete_from_disk_and_database(session=session, commit=False)
                 im.delete_from_disk_and_database(session=session, commit=False)
@@ -312,13 +317,12 @@ def sim_sources(sim_image1):
 
     with SmartSession() as session:
         s.provenance = prov
-        s = s.recursive_merge(session)
         s.save()
-        session.add(s)
+        s = session.merge(s)
         session.commit()
 
     yield s
 
     with SmartSession() as session:
-        s = s.recursive_merge(session)
+        s = s.merge_all(session)
         s.delete_from_disk_and_database(session=session, commit=True)

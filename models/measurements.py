@@ -1,6 +1,7 @@
 
 import sqlalchemy as sa
 from sqlalchemy import orm
+from sqlalchemy.schema import UniqueConstraint
 
 from models.base import Base, AutoIDMixin, SpatiallyIndexed
 
@@ -8,6 +9,10 @@ from models.base import Base, AutoIDMixin, SpatiallyIndexed
 class Measurements(Base, AutoIDMixin, SpatiallyIndexed):
 
     __tablename__ = 'measurements'
+
+    __table_args__ = (
+        UniqueConstraint('cutouts_id', 'provenance_id', name='_measurements_cutouts_provenance_uc'),
+    )
 
     cutouts_id = sa.Column(
         sa.ForeignKey('cutouts.id', name='measurements_cutouts_id_fkey'),

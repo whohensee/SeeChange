@@ -1,17 +1,20 @@
 import pytest
 import hashlib
 
+import sqlalchemy as sa
+from sqlalchemy.exc import IntegrityError
+
 from astropy.io import fits
 from astropy.wcs import WCS
 
+from models.base import SmartSession
+from models.provenance import Provenance
 from models.world_coordinates import WorldCoordinates
 
 
-def test_world_coordinates( ztf_filepaths_image_sources_psf ):
-    image = ztf_filepaths_image_sources_psf[0]
-
-    with fits.open( image ) as ifp:
-        hdr = ifp[0].header
+def test_world_coordinates( ztf_datastore_uncommitted, provenance_base, provenance_extra ):
+    image = ztf_datastore_uncommitted.image
+    hdr = image.header
 
     origwcs = WCS( hdr )
     origscs = origwcs.pixel_to_world( [ 0, 0, 1024, 1024 ], [ 0, 1024, 0, 1024 ] )
@@ -32,3 +35,75 @@ def test_world_coordinates( ztf_filepaths_image_sources_psf ):
     for sc, origsc in zip( scs, origscs ):
         assert sc.ra.value == pytest.approx( origsc.ra.value, abs=0.01/3600. )
         assert sc.dec.value == pytest.approx( origsc.dec.value, abs=0.01/3600. )
+
+    # save the WCS to file and DB
+    with SmartSession() as session:
+        try:
+            provenance_base = session.merge(provenance_base)
+            provenance_extra = session.merge(provenance_extra)
+            image.sources = ztf_datastore_uncommitted.sources
+            image.sources.provenance = provenance_extra
+            image.sources.save()
+            image.psf.provenance = provenance_extra
+            image.psf.save()
+            image.provenance = provenance_base
+            image.save()
+            image = image.merge_all(session)
+
+            wcobj.sources = image.sources
+            wcobj.provenance = Provenance(
+                process='test_world_coordinates',
+                code_version=provenance_base.code_version,
+                parameters={'test_parameter': 'test_value'},
+                upstreams=[provenance_extra],
+                is_testing=True,
+            )
+
+            # TODO: will need to save the WCS object if we turn it into a FileOnDiskMixin
+            session.add(wcobj)
+
+            session.commit()
+
+            # add a second WCS object and make sure we cannot accidentally commit it, too
+            wcobj2 = WorldCoordinates()
+            wcobj2.header_excerpt = hdrkws
+            wcobj2.sources = image.sources
+            wcobj2.provenance = wcobj.provenance
+
+            with pytest.raises(
+                    IntegrityError,
+                    match='duplicate key value violates unique constraint "_wcs_sources_provenance_uc"'
+            ):
+                session.add(wcobj2)
+                session.commit()
+            session.rollback()
+
+            # if we change any of the provenance parameters we should be able to save it
+            wcobj2.provenance = Provenance(
+                process='test_world_coordinates',
+                code_version=provenance_base.code_version,
+                parameters={'test_parameter': 'new_test_value'},  # notice we've put another value here
+                upstreams=[provenance_extra],
+                is_testing=True,
+            )
+            session.add(wcobj2)
+            session.commit()
+
+        finally:
+
+            if 'wcobj' in locals():
+                # wcobj.delete_from_disk_and_database(session=session)
+                if sa.inspect(wcobj).persistent:
+                    session.delete(wcobj)
+                    image.wcs = None
+                    image.sources.wcs = None
+            if 'wcobj2' in locals():
+                # wcobj2.delete_from_disk_and_database(session=session)
+                if sa.inspect(wcobj2).persistent:
+                    session.delete(wcobj2)
+                    image.wcs = None
+                    image.sources.wcs = None
+            session.commit()
+
+            if 'image' in locals():
+                image.delete_from_disk_and_database(session=session, commit=True)

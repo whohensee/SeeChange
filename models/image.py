@@ -111,65 +111,46 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
         doc='Images used to produce a multi-image object, like a coadd or a subtraction. '
     )
 
-    ref_image_index = sa.Column(
-        sa.Integer,
+    downstream_images = orm.relationship(
+        'Image',
+        secondary=image_upstreams_association_table,
+        primaryjoin='images.c.id == image_upstreams_association.c.upstream_id',
+        secondaryjoin='images.c.id == image_upstreams_association.c.downstream_id',
+        overlaps="upstream_images",
+        cascade='save-update, merge, refresh-expire, expunge',
+        passive_deletes=True,
+        order_by='images.c.mjd',  # in chronological order of exposure start time
+        doc='Combined Images (like coadds or a subtractions) that use this image in their production. '
+    )
+
+    ref_image_id = sa.Column(
+        sa.ForeignKey('images.id', ondelete="SET NULL", name='images_ref_image_id_fkey'),
         nullable=True,
+        index=True,
         doc=(
-            "Index of the reference image used to produce this image, in the upstream_images list. "
+            "ID of the reference image used to produce this image, in the upstream_images list. "
         )
     )
 
-    @property
-    def ref_image(self):
-        if self.ref_image_index is None:
-            return None
-        if len(self.upstream_images) <= self.ref_image_index:
-            raise RuntimeError(f'Index {self.ref_image_index} is out of range for upstream images!')
-        return self.upstream_images[self.ref_image_index]
-
-    @ref_image.setter
-    def ref_image(self, value):
-        if value is None:
-            self.ref_image_index = None
-        else:
-            if not isinstance(value, Image):
-                raise ValueError(f"ref_image must be an Image object. Got {type(value)} instead.")
-            if value not in self.upstream_images:
-                raise ValueError(f"ref_image must be in the upstream_images list. Got {value} instead.")
-
-            # make sure the upstream_images list is sorted by mjd:
-            self.upstream_images.sort(key=lambda x: x.mjd)
-            self.ref_image_index = self.upstream_images.index(value)
-
-    new_image_index = sa.Column(
-        sa.Integer,
-        nullable=True,
+    ref_image = orm.relationship(
+        'Image',
+        primaryjoin='Image.ref_image_id == Image.id',
+        remote_side='Image.id',
+        cascade='save-update, merge, refresh-expire, expunge',
+        uselist=False,
+        lazy='selectin',
         doc=(
-            "Index of the new image used to produce a difference image, in the upstream_images list. "
+            "Reference image used to produce this image, in the upstream_images list. "
         )
     )
 
     @property
     def new_image(self):
-        if self.new_image_index is None:
+        """Get the image that is NOT the reference image. This only works on subtractions (with ref+new upstreams)"""
+        image = [im for im in self.upstream_images if im.id != self.ref_image_id]
+        if len(image) == 0 or len(image) > 1:
             return None
-        if len(self.upstream_images) <= self.new_image_index:
-            raise RuntimeError(f'Index {self.new_image_index} is out of range for upstream images!')
-        return self.upstream_images[self.new_image_index]
-
-    @new_image.setter
-    def new_image(self, value):
-        if value is None:
-            self.new_image_index = None
-        else:
-            if not isinstance(value, Image):
-                raise ValueError(f"new_image must be an Image object. Got {type(value)} instead.")
-            if value not in self.upstream_images:
-                raise ValueError(f"new_image must be in the upstream_images list. Got {value} instead.")
-
-            # make sure the upstream_images list is sorted by mjd:
-            self.upstream_images.sort(key=lambda x: x.mjd)
-            self.new_image_index = self.upstream_images.index(value)
+        return image[0]
 
     is_sub = sa.Column(
         sa.Boolean,
@@ -235,13 +216,13 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
         )
     )
 
-    header = sa.Column(
+    info = sa.Column(
         JSONB,
         nullable=False,
         default={},
         doc=(
-            "Header of the specific image for one section of the instrument. "
-            "Only keep a subset of the keywords, "
+            "Additional information on the this image. "
+            "Only keep a subset of the header keywords, "
             "and re-key them to be more consistent. "
         )
     )
@@ -316,7 +297,7 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
 
     section_id = sa.Column(
         sa.Text,
-        nullable=False,
+        nullable=True,
         index=True,
         doc='Section ID of the image, possibly inside a larger mosiaced exposure. '
     )
@@ -429,7 +410,7 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
         SeeChangeBase.__init__(self)  # don't pass kwargs as they could contain non-column key-values
 
         self.raw_data = None  # the raw exposure pixels (2D float or uint16 or whatever) not saved to disk!
-        self._raw_header = None  # the header data taken directly from the FITS file
+        self._header = None  # the header data taken directly from the FITS file
         self._data = None  # the underlying pixel data array (2D float array)
         self._flags = None  # the bit-flag array (2D int array)
         self._weight = None  # the inverse-variance array (2D float array)
@@ -446,6 +427,9 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
 
         self._instrument_object = None
         self._bitflag = 0
+
+        if 'header' in kwargs:
+            kwargs['_header'] = kwargs.pop('header')
 
         # manually set all properties (columns or not)
         for key, value in kwargs.items():
@@ -467,7 +451,7 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
         Base.init_on_load(self)
         FileOnDiskMixin.init_on_load(self)
         self.raw_data = None
-        self._raw_header = None
+        self._header = None
         self._data = None
         self._flags = None
         self._weight = None
@@ -487,8 +471,44 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
         if this_object_session is not None:  # if just loaded, should usually have a session!
             self.load_upstream_products(this_object_session)
 
+    def merge_all(self, session):
+        """Use safe_merge to merge all the downstream products and assign them back to self.
+
+        This includes: sources, psf, wcs, zp.
+        This will also merge relationships, such as exposure or upstream_images,
+        but that happens automatically using SQLA's magic.
+
+        Must provide a session to merge into. Need to commit at the end.
+
+        Returns the merged image with all its products on the same session.
+        """
+        new_image = self.safe_merge(session=session)
+        session.flush()
+        if self.sources is not None:
+            self.sources.image = new_image
+            self.sources.image_id = new_image.id
+            self.sources.provenance_id = self.sources.provenance.id if self.sources.provenance is not None else None
+            new_image.sources = self.sources.merge_all(session=session)
+            new_image.wcs = new_image.sources.wcs
+            new_image.zp = new_image.sources.zp
+            new_image.cutouts = new_image.sources.cutouts
+            new_image.measurements = new_image.sources.measurements
+            new_image._aligned_images = self._aligned_images
+
+        if self.psf is not None:
+            self.psf.image = new_image
+            self.psf.image_id = new_image.id
+            self.psf.provenance_id = self.psf.provenance.id if self.psf.provenance is not None else None
+            new_image.psf = self.psf.safe_merge(session=session)
+            if new_image.psf._bitflag is None:  # I don't know why this isn't set to 0 using the default
+                new_image.psf._bitflag = 0
+            if new_image.psf._upstream_bitflag is None:  # I don't know why this isn't set to 0 using the default
+                new_image.psf._upstream_bitflag = 0
+
+        return new_image
+
     def set_corners_from_header_wcs( self ):
-        wcs = WCS( self._raw_header )
+        wcs = WCS( self._header )
         ras = []
         decs = []
         data = self.raw_data if self.raw_data is not None else self.data
@@ -561,27 +581,28 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
             idx = exposure.instrument_object.get_section_filter_array_index(section_id)
             new.filter = exposure.filter_array[idx]
 
+        exposure.instrument_object.check_section_id(section_id)
         new.section_id = section_id
         new.raw_data = exposure.data[section_id]
         new.instrument_object = exposure.instrument_object
 
         # read the header from the exposure file's individual section data
-        new._raw_header = exposure.section_headers[section_id]
+        new._header = exposure.section_headers[section_id]
 
         # Because we will later be writing out float data (BITPIX=-32)
         # -- or whatever the type of raw_data is -- we have to make sure
         # there aren't any vestigal BSCALE and BZERO keywords in the
         # header.
         for delkw in [ 'BSCALE', 'BZERO' ]:
-            if delkw in new.raw_header:
-                del new.raw_header[delkw]
+            if delkw in new.header:
+                del new.header[delkw]
 
         # numpy array axis ordering is backwards from FITS ordering
         width = new.raw_data.shape[1]
         height = new.raw_data.shape[0]
 
         names = ['ra', 'dec'] + new.instrument_object.get_auxiliary_exposure_header_keys()
-        header_info = new.instrument_object.extract_header_info(new._raw_header, names)
+        header_info = new.instrument_object.extract_header_info(new._header, names)
         # TODO: get the important keywords translated into the searchable header column
 
         # figure out the RA/Dec of each image
@@ -591,7 +612,7 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
 
         # if not (which is true for most instruments!), try to read the WCS from the header:
         try:
-            wcs = WCS(new._raw_header)
+            wcs = WCS(new._header)
             sc = wcs.pixel_to_world(width // 2, height // 2)
             new.ra = sc.ra.to(u.deg).value
             new.dec = sc.dec.to(u.deg).value
@@ -608,7 +629,7 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
             new.ra = exposure.ra
             new.dec = exposure.dec
 
-        new.header = header_info  # save any additional header keys into a JSONB column
+        new.info = header_info  # save any additional header keys into a JSONB column
 
         # Figure out the 4 corners  Start by trying to use the WCS
         gotcorners = False
@@ -663,8 +684,8 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
             'flags',
             'score',
             'background',
+            'info',
             'header',
-            'raw_header',
         ]
         simple_attributes = [
             'ra',
@@ -686,8 +707,7 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
             'lim_mag_estimate',
             'bkg_mean_estimate',
             'bkg_rms_estimate',
-            'ref_image_index',
-            'new_image_index',
+            'ref_image_id',
             'is_coadd',
             'is_sub',
             '_bitflag',
@@ -717,10 +737,10 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
         """
         Create a new Image object from a list of other Image objects.
         This is the first step in making a multi-image (usually a coadd).
-        Do not use this to make subtractions! use from_ref_and_new instead.
+        Do not use this to make subtractions!  Use from_ref_and_new instead.
 
         The output image doesn't have any data, and is created with
-        nofile=True. It is up to the calling application to fill in the
+        nofile=True.  It is up to the calling application to fill in the
         data, flags, weight, etc. using the appropriate preprocessing tools.
 
         The Image objects used as inputs must have their own data products
@@ -756,29 +776,27 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
 
         output = Image(nofile=True)
 
-        # use the first image to apply these attributes (some must be uniform across images)
-        for att in ['section_id', 'instrument', 'telescope', 'type', 'filter', 'project', 'target']:
-            # TODO: should replace this condition with a check that RA and Dec are overlapping?
-            #  in that case: what do we consider close enough? how much overlap is reasonable?
-            #  another issue: what happens if the section_id is different, what would be the
-            #  value for the subtracted image? can it live without a value entirely?
-            #  the same goes for target. what about coadded images? can they have no section_id??
-            if att in ['filter', 'section_id', 'target']:  # check these values are the same across all images
-                values = set([str(getattr(image, att)) for image in images])
-                if len(values) != 1:
-                    raise ValueError(f"Cannot combine images with different {att} values: {values}")
-            setattr(output, att, getattr(images[index], att))
+        fail_if_not_consistent_attributes = ['filter']
+        copy_if_consistent_attributes = ['section_id', 'instrument', 'telescope', 'project', 'target', 'filter']
+        copy_by_index_attributes = []  # ['ra', 'dec', 'ra_corner_00', 'ra_corner_01', ...]
+        for att in ['ra', 'dec']:
+            copy_by_index_attributes.append(att)
+            for corner in ['00', '01', '10', '11']:
+                copy_by_index_attributes.append(f'{att}_corner_{corner}')
 
-        output.ra = images[index].ra
-        output.dec = images[index].dec
-        output.ra_corner_00 = images[index].ra_corner_00
-        output.ra_corner_01 = images[index].ra_corner_01
-        output.ra_corner_10 = images[index].ra_corner_10
-        output.ra_corner_11 = images[index].ra_corner_11
-        output.dec_corner_00 = images[index].dec_corner_00
-        output.dec_corner_01 = images[index].dec_corner_01
-        output.dec_corner_10 = images[index].dec_corner_10
-        output.dec_corner_11 = images[index].dec_corner_11
+        for att in fail_if_not_consistent_attributes:
+            if len(set([getattr(image, att) for image in images])) > 1:
+                raise ValueError(f"Cannot combine images with different {att} values: "
+                                 f"{[getattr(image, att) for image in images]}")
+
+        # only copy if attribute is consistent across upstreams, otherwise leave as None
+        for att in copy_if_consistent_attributes:
+            if len(set([getattr(image, att) for image in images])) == 1:
+                setattr(output, att, getattr(images[0], att))
+
+        # use the "index" to copy the attributes of that image to the output image
+        for att in copy_by_index_attributes:
+            setattr(output, att, getattr(images[index], att))
 
         # exposure time is usually added together
         output.exp_time = sum([image.exp_time for image in images])
@@ -788,8 +806,8 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
         output.end_mjd = max([image.end_mjd for image in images])  # exposure ends are not necessarily sorted
 
         # TODO: what about the header? should we combine them somehow?
+        output.info = images[index].info
         output.header = images[index].header
-        output.raw_header = images[index].raw_header
 
         base_type = images[index].type
         if not base_type.startswith('Com'):
@@ -798,7 +816,8 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
         output.upstream_images = images
 
         # mark as the reference the image used for alignment
-        output.ref_image_index = index
+        output.ref_image = images[index]
+        output.ref_image_id = images[index].id
 
         output._upstream_bitflag = 0
         for im in images:
@@ -818,7 +837,7 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
         This is the first step in making a difference image.
 
         The output image doesn't have any data, and is created with
-        nofile=True. It is up to the calling application to fill in the
+        nofile=True.  It is up to the calling application to fill in the
         data, flags, weight, etc. using the appropriate preprocessing tools.
 
         The Image objects used as inputs must have their own data products
@@ -872,18 +891,28 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
             # assign the values from the new image
             setattr(output, att, new_value)
 
+        fail_if_not_consistent_attributes = ['filter']
+
+        for att in fail_if_not_consistent_attributes:
+            if getattr(ref_image, att) != getattr(new_image, att):
+                raise ValueError(f"Cannot combine images with different {att} values: "
+                                 f"{getattr(ref_image, att)} and {getattr(new_image, att)}")
+
         if ref_image.mjd < new_image.mjd:
             output.upstream_images = [ref_image, new_image]
         else:
             output.upstream_images = [new_image, ref_image]
-        output.ref_image_index = output.upstream_images.index(ref_image)
-        output.new_image_index = output.upstream_images.index(new_image)
+
+        output.ref_image = ref_image
+        output.ref_image_id = ref_image.id
+
         output._upstream_bitflag = 0
         output._upstream_bitflag |= ref_image.bitflag
         output._upstream_bitflag |= new_image.bitflag
 
         # get some more attributes from the new image
-        for att in ['exp_time', 'mjd', 'end_mjd', 'header', 'raw_header', 'ra', 'dec',
+        for att in ['section_id', 'instrument', 'telescope', 'project', 'target',
+                    'exp_time', 'mjd', 'end_mjd', 'info', 'header', 'ra', 'dec',
                     'ra_corner_00', 'ra_corner_01', 'ra_corner_10', 'ra_corner_11',
                     'dec_corner_00', 'dec_corner_01', 'dec_corner_10', 'dec_corner_11' ]:
             output.__setattr__(att, getattr(new_image, att))
@@ -894,7 +923,6 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
 
         # Note that "data" is not filled by this method, also the provenance is empty!
         return output
-
 
     def _make_aligned_images(self):
         """Align the upstream_images to one of the images pointed to by image_index.
@@ -918,13 +946,13 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
 
         to_index = self.provenance.parameters['alignment'].get('to_index')
         if to_index == 'first':
-            image_index = 0
+            alignment_target = self.upstream_images[0]
         elif to_index == 'last':
-            image_index = -1
+            alignment_target = self.upstream_images[-1]
         elif to_index == 'new':
-            image_index = self.new_image_index
+            alignment_target = self.new_image  # only works for a subtraction (or a coadd with exactly 2 upstreams)
         elif to_index == 'ref':
-            image_index = self.ref_image_index  # this is not recommended!
+            alignment_target = self.ref_image  # this is not recommended!
         else:
             raise RuntimeError(
                 f'Got illegal value for "to_index" ({to_index}) in the Provenance parameters!'
@@ -942,7 +970,7 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
 
         aligned = []
         for i, image in enumerate(self.upstream_images):
-            new_image = self._aligner.run(image, self.upstream_images[image_index])
+            new_image = self._aligner.run(image, alignment_target)
             aligned.append(new_image)
             ImageAligner.temp_images.append(new_image)  # keep track of all these images for cleanup purposes
 
@@ -971,7 +999,7 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
 
         for image in self._aligned_images:
             # im_pars will contain all the default keys and any overrides from self.provenance
-            im_pars = image.header.get('alignment_parameters', {})
+            im_pars = image.info.get('alignment_parameters', {})
 
             # if self.provenance has non-default values, or if im_pars are missing any keys, remake all of them
             for key, value in self.provenance.parameters['alignment'].items():
@@ -979,7 +1007,7 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
                     self._aligned_images = None
                     return
 
-            if image.header['original_image_filepath'] not in upstream_images_filepaths:
+            if image.info['original_image_filepath'] not in upstream_images_filepaths:
                 self._aligned_images = None
                 return
 
@@ -1071,7 +1099,7 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
             try:
                 section_id_int = int(self.section_id)
             except ValueError:
-                section_id_int = 0
+                section_id_int = 0  # TODO: maybe replace with a placeholder like 99?
 
         if self.ra is not None:
             ra = self.ra
@@ -1115,15 +1143,18 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
         # TODO: which elements of the naming convention are really necessary?
         #  and what is a good way to make sure the filename actually depends on them?
 
-        if self.upstream_images is not None and len(self.upstream_images) > 0:
-            utag = hashlib.sha256()
-            for image in self.upstream_images:
-                if image.filepath is None:
-                    raise RuntimeError('Cannot invent filepath when upstream image has no filepath!')
-                utag.update(image.filepath.encode('utf-8'))
-            utag = base64.b32encode(utag.digest()).decode().lower()
-            utag = '_u-' + utag[:6]
-            filepath += utag
+        try:
+            if self.upstream_images is not None and len(self.upstream_images) > 0:
+                utag = hashlib.sha256()
+                for image in self.upstream_images:
+                    if image.filepath is None:
+                        raise RuntimeError('Cannot invent filepath when upstream image has no filepath!')
+                    utag.update(image.filepath.encode('utf-8'))
+                utag = base64.b32encode(utag.digest()).decode().lower()
+                utag = '_u-' + utag[:6]
+                filepath += utag
+        except DetachedInstanceError:
+            pass  # ignore situations where upstream_images is not loaded, it should not happen for a combined image
 
         return filepath
 
@@ -1205,7 +1236,7 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
         if format == 'fits':
             # save the imaging data
             extensions.append('.image.fits')
-            imgpath = save_fits_image_file(full_path, self.data, self.raw_header,
+            imgpath = save_fits_image_file(full_path, self.data, self.header,
                                            extname='image', single_file=single_file,
                                            just_update_header=just_update_header)
             files_written['.image.fits'] = imgpath
@@ -1224,7 +1255,7 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
                         extpath = save_fits_image_file(
                             full_path,
                             array,
-                            self.raw_header,
+                            self.header,
                             extname=array_name,
                             single_file=single_file
                         )
@@ -1277,7 +1308,7 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
             filename = self.get_fullpath()
             if not os.path.isfile(filename):
                 raise FileNotFoundError(f"Could not find the image file: {filename}")
-            self._data, self._raw_header = read_fits_image(filename, ext='image', output='both')
+            self._data, self._header = read_fits_image(filename, ext='image', output='both')
             self._flags = read_fits_image(filename, ext='flags')
             self._weight = read_fits_image(filename, ext='weight')
             self._background = read_fits_image(filename, ext='background')
@@ -1286,7 +1317,7 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
 
         else:  # load each data array from a separate file
             if self.filepath_extensions is None:
-                self._data, self._raw_header = read_fits_image( self.get_fullpath(), output='both' )
+                self._data, self._header = read_fits_image( self.get_fullpath(), output='both' )
             else:
                 gotim = False
                 gotweight = False
@@ -1295,7 +1326,7 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
                     if not os.path.isfile(filename):
                         raise FileNotFoundError(f"Could not find the image file: {filename}")
                     if extension == '.image.fits':
-                        self._data, self._raw_header = read_fits_image(filename, output='both')
+                        self._data, self._header = read_fits_image(filename, output='both')
                         gotim = True
                     elif extension == '.weight.fits':
                         self._weight = read_fits_image(filename, output='data')
@@ -1406,6 +1437,8 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
         with provenances consistent with what is saved in this Image's provenance
         and its own upstreams.
         """
+        if self.provenance is None:
+            return
         prov_ids = self.provenance.upstream_ids
         # check to make sure there is any need to load
         need_to_load = False
@@ -1594,7 +1627,6 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
             downstreams += wcses
             downstreams += zps
 
-            # TODO: replace with a relationship to downstream_images (see issue #151)
             # now look for other images that were created based on this one
             # ref: https://docs.sqlalchemy.org/en/20/orm/join_conditions.html#self-referential-many-to-many
             images = session.scalars(
@@ -1623,18 +1655,18 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
         self._data = value
 
     @property
-    def raw_header(self):
-        if self._raw_header is None and self.filepath is not None:
+    def header(self):
+        if self._header is None and self.filepath is not None:
             self.load()
-        if self._raw_header is None:
-            self._raw_header = fits.Header()
-        return self._raw_header
+        if self._header is None:
+            self._header = fits.Header()
+        return self._header
 
-    @raw_header.setter
-    def raw_header(self, value):
+    @header.setter
+    def header(self, value):
         if not isinstance(value, fits.Header):
             raise ValueError(f"data must be a fits.Header object. Got {type(value)} instead. ")
-        self._raw_header = value
+        self._header = value
 
     @property
     def flags(self):

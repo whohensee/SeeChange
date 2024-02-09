@@ -12,7 +12,7 @@ telescope: CTIO 4.0-m telescope
 section_id: N1            # instr/telesc/section_id not really right since this is from DECaPS DR coadd.
 project: DECaPS
 target: DECaPS-West
-header: {}
+info: {}
 preproc_bitflag: 0
 astro_cal_done: false
 _bitflag: 0

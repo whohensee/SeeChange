@@ -1547,7 +1547,7 @@ class Instrument:
         header: fits.Header
           The header of the image in question.
           NOTE: this needs to be the full header of the image,
-          i.e. Image.raw_header rather than Image.header.
+          i.e. Image.header rather than Image.info.
 
         Returns
         -------
@@ -1600,7 +1600,7 @@ class Instrument:
         Parameters
         ----------
         header: fits.Header
-          The header of the image in question; use Image.raw_header not Image.header.
+          The header of the image in question.
 
         Returns
         ------
@@ -1700,14 +1700,14 @@ class Instrument:
 
         If one: image
         image: Image
-          The Image to process.  Will use Image.raw_header for header
+          The Image to process.  Will use Image.header
           and Image.raw_data for data
 
           --- OR ---
 
         If two: header, data
         header: fits.Header
-          Image header.  Need the full header, i.e. Image.raw_header not Image.header.
+          Image header.  Need the full header, i.e. Image.header not Image.info.
         data: numpy array
           Image data.  Must not be trimmed, i.e. must include the overscan section
 
@@ -1741,7 +1741,7 @@ class Instrument:
             # in float32, or should we put in an option somewhere to
             # use float64?  That's probably a back-burner low-priority TODO.
             data = args[0].raw_data.astype( np.float32 )
-            header = args[0].raw_header
+            header = args[0].header
         elif len(args) == 2:
             if not isinstance( args[0], fits.Header ):
                 raise TypeError( "header isn't a fits.Header" )
@@ -1807,14 +1807,14 @@ class Instrument:
 
         If one: image
         image: Image
-          The Image to process.  Will use Image.raw_header for header
+          The Image to process.  Will use Image.header for header
           and Image.data for data
 
           --- OR ---
 
         If two: header, data
         header: fits.Header
-          Image header.  Need the full header, i.e. Image.raw_header not Image.header.
+          Image header.  Need the full header, i.e. Image.header not Image.info.
         data: numpy array
           Image data.  Must not be trimmed, i.e. must include the overscan section
 

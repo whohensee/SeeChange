@@ -466,7 +466,7 @@ class Detector:
             #  they're non-FITS files, we'll have to write them.  For
             #  simplicity, right now, just write the temp files, even though
             #  it might be redundant.
-            fits.writeto( tmpimage, image.data, header=image.raw_header )
+            fits.writeto( tmpimage, image.data, header=image.header )
             fits.writeto( tmpweight, image.weight )
             fits.writeto( tmpflags, image.flags )
 

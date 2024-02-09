@@ -3,9 +3,10 @@
 import os
 import time
 import pathlib
-import collections
 
 import numpy as np
+import sqlalchemy as sa
+
 import astropy.table
 import healpy
 from util import ldac
@@ -384,7 +385,13 @@ def fetch_GaiaDR3_excerpt( image, minstars=50, maxmags=22, magrange=None, sessio
                 if catexp.num_items >= minstars:
                     catexp.filepath = dbfile
                     catexp.save( localfile )
-                    session.add( catexp )
+                    existing_catexp = session.scalars(
+                        sa.select(CatalogExcerpt).where(CatalogExcerpt.filepath == dbfile)
+                    ).first()
+                    if existing_catexp is None:
+                        session.add( catexp )  # add if it doesn't exist
+                    else:
+                        raise RuntimeError('CatalogExcerpt already exists in the database!')
                     session.commit()
                     break
                 else:

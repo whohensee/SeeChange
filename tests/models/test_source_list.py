@@ -15,7 +15,7 @@ from models.source_list import SourceList
 
 def test_source_list_bitflag(sim_sources):
     with SmartSession() as session:
-        sim_sources = sim_sources.recursive_merge( session )
+        sim_sources = sim_sources.merge_all( session )
 
         # all these data products should have bitflag zero
         assert sim_sources.bitflag == 0
@@ -86,28 +86,33 @@ def test_source_list_bitflag(sim_sources):
         assert new_sources.badness == 'Saturation'
 
 
-def test_invent_filepath( provenance_base ):
-    imgargs = { 'instrument': 'DemoInstrument',
-                'section_id': 0,
-                'type': "Sci",
-                'format': "fits",
-                'ra': 12.3456,
-                'dec': -0.42,
-                'mjd': 61738.64,
-                'filter': 'r',
-                'provenance': provenance_base }
+def test_invent_filepath( provenance_base, provenance_extra ):
+    imgargs = {
+        'instrument': 'DemoInstrument',
+        'section_id': 0,
+        'type': "Sci",
+        'format': "fits",
+        'ra': 12.3456,
+        'dec': -0.42,
+        'mjd': 61738.64,
+        'filter': 'r',
+        'provenance': provenance_base,
+    }
+
+    hash1 = provenance_base.id[:6]
+    hash2 = provenance_extra.id[:6]
 
     image = Image( filepath="testing", **imgargs )
-    sources = SourceList( image=image, format='sextrfits' )
-    assert sources.invent_filepath() == f'{image.filepath}.sources.fits'
+    sources = SourceList( image=image, format='sextrfits', provenance=provenance_extra )
+    assert sources.invent_filepath() == f'{image.filepath}.sources_{hash2}.fits'
 
     image = Image( **imgargs )
-    sources = SourceList( image=image, format='sextrfits' )
-    assert sources.invent_filepath() == f'012/Demo_20271129_152136_0_r_Sci_{provenance_base.id[:6]}.sources.fits'
+    sources = SourceList( image=image, format='sextrfits', provenance=provenance_extra )
+    assert sources.invent_filepath() == f'012/Demo_20271129_152136_0_r_Sci_{hash1}.sources_{hash2}.fits'
 
     image = Image( filepath="this.is.a.test", **imgargs )
-    sources = SourceList( image=image, format='sextrfits' )
-    assert sources.invent_filepath() == 'this.is.a.test.sources.fits'
+    sources = SourceList( image=image, format='sextrfits', provenance=provenance_extra )
+    assert sources.invent_filepath() == f'this.is.a.test.sources_{hash2}.fits'
 
 
 def test_read_sextractor( ztf_filepath_sources ):

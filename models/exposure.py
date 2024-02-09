@@ -49,7 +49,7 @@ EXPOSURE_COLUMN_NAMES = [
 ]
 
 # these are header keywords that are not stored as columns of the Exposure table,
-# but are still useful to keep around inside the "header" JSONB column.
+# but are still useful to keep around inside the "info" JSONB column.
 EXPOSURE_HEADER_KEYS = ['gain']  # TODO: add more here
 
 
@@ -228,12 +228,12 @@ class Exposure(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagB
     def format(self, value):
         self._format = ImageFormatConverter.convert(value)
 
-    header = sa.Column(
+    info = sa.Column(
         JSONB,
         nullable=False,
         default={},
         doc=(
-            "Header of the raw exposure. "
+            "Subset of the raw exposure's header. "
             "Only keep a subset of the keywords, "
             "and re-key them to be more consistent. "
             "This will only include global values, "
@@ -340,10 +340,13 @@ class Exposure(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagB
 
         self._data = None  # the underlying image data for each section
         self._section_headers = None  # the headers for individual sections, directly from the FITS file
-        self._raw_header = None  # the global (exposure level) header, directly from the FITS file
+        self._header = None  # the global (exposure level) header, directly from the FITS file
         self.type = 'Sci'  # default, can override using kwargs
         self._instrument_object = None
         self._bitflag = 0
+
+        if 'header' in kwargs:
+            kwargs['_header'] = kwargs.pop('header')
 
         # manually set all properties (columns or not, but don't
         # overwrite instance methods) Do this once here, because some of
@@ -411,7 +414,7 @@ class Exposure(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagB
         FileOnDiskMixin.init_on_load(self)
         self._data = None
         self._section_headers = None
-        self._raw_header = None
+        self._header = None
         self._instrument_object = None
         session = object_session(self)
         if session is not None:
@@ -461,7 +464,7 @@ class Exposure(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagB
 
         # these additional keys go into the header only
         auxiliary_names = EXPOSURE_HEADER_KEYS + self.instrument_object.get_auxiliary_exposure_header_keys()
-        self.header = self.instrument_object.extract_header_info(
+        self.info = self.instrument_object.extract_header_info(
             header=raw_header_dictionary,
             names=auxiliary_names,
         )
@@ -667,18 +670,18 @@ class Exposure(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagB
         self._section_headers = value
 
     @property
-    def raw_header(self):
-        if self._raw_header is None:
-            self._raw_header = read_fits_image(self.get_fullpath(), ext=0, output='header')
-        if self._raw_header is None:
-            self._raw_header = fits.Header()
-        return self._raw_header
+    def header(self):
+        if self._header is None:
+            self._header = read_fits_image(self.get_fullpath(), ext=0, output='header')
+        if self._header is None:
+            self._header = fits.Header()
+        return self._header
 
-    @raw_header.setter
-    def raw_header(self, value):
+    @header.setter
+    def header(self, value):
         if not isinstance(value, fits.Header):
             raise ValueError(f"data must be a fits.Header object. Got {type(value)} instead. ")
-        self._raw_header = value
+        self._header = value
 
     def update_instrument(self, session=None):
         """
@@ -702,6 +705,8 @@ class Exposure(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagB
             If None, will open a new session
             and close it at the end of the function.
         """
+        if self.instrument is None:
+            return
         with SmartSession(session) as session:
             self.instrument_object.fetch_sections(session=session, dateobs=self.mjd)
 

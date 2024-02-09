@@ -253,7 +253,7 @@ def test_upstream_relationship( provenance_base, provenance_extra ):
             assert cv is not None
 
 
-def test_recursive_merge( provenance_base ):
+def test_cascade_merge( provenance_base ):
     try:
         with SmartSession() as session:
             session.add( provenance_base )
@@ -283,8 +283,8 @@ def test_recursive_merge( provenance_base ):
 
             # Now, in another session....
             with SmartSession() as different_session:
-                merged_p4 = p4.recursive_merge( different_session )
-                different_session.add( merged_p4 )
+                merged_p4 = different_session.merge(p4)
+
                 found = set()
                 for obj in different_session:
                     if isinstance( obj, Provenance ):

@@ -118,7 +118,7 @@ def provenance_decam_prep(code_version):
             is_testing=True,
         )
         p.update_id()
-        p = p.recursive_merge(session)
+        p = session.merge(p)
         session.commit()
 
     yield p
@@ -189,16 +189,21 @@ def decam_exposure(decam_filename, data_dir):
     exposure = Exposure( filepath=filename, instrument='DECam', **exphdrinfo )
     exposure.save()  # save to archive and get an MD5 sum
 
+    with SmartSession() as session:
+        session.add(exposure)
+        session.commit()
+
     yield exposure
 
-    # Just in case this exposure got loaded into the database
     exposure.delete_from_disk_and_database()
 
 
 @pytest.fixture
-def decam_raw_image( decam_exposure ):
+def decam_raw_image( decam_exposure, provenance_base ):
     image = Image.from_exposure(decam_exposure, section_id='N1')
     image.data = image.raw_data.astype(np.float32)
+    image.provenance = provenance_base
+    image.save()
 
     yield image
 
@@ -209,7 +214,8 @@ def decam_raw_image( decam_exposure ):
 def decam_small_image(decam_raw_image):
     image = decam_raw_image
     image.data = image.data[256:256+512, 256:256+512].copy()  # make it C-contiguous
-    return image
+
+    yield image
 
 
 @pytest.fixture
@@ -238,6 +244,9 @@ def decam_datastore(
         cache_dir=cache_dir,
         cache_base_name='115/c4d_20221104_074232_N1_g_Sci_FVOSOC'
     )
+    # This save is redundant, as the datastore_factory calls save_and_commit
+    # However, I leave this here because it is a good test that calling it twice
+    # does not cause any problems.
     ds.save_and_commit()
 
     yield ds
@@ -248,7 +257,7 @@ def decam_datastore(
 
 
 @pytest.fixture
-def decam_ref_datastore( provenance_base, persistent_dir, cache_dir, data_dir, datastore_factory ):
+def decam_ref_datastore( code_version, persistent_dir, cache_dir, data_dir, datastore_factory ):
     persistent_dir = os.path.join(persistent_dir, 'test_data/DECam_examples')
     cache_dir = os.path.join(cache_dir, 'DECam')
     filebase = 'DECaPS-West_20220112.g.32'
@@ -278,7 +287,14 @@ def decam_ref_datastore( provenance_base, persistent_dir, cache_dir, data_dir, d
         refyaml = yaml.safe_load( ifp )
 
     with SmartSession() as session:
-        prov = session.merge(provenance_base)
+        code_version = session.merge(code_version)
+        prov = Provenance(
+            process='preprocessing',
+            code_version=code_version,
+            parameters={},
+            upstreams=[],
+            is_testing=True,
+        )
         # check if this Image is already in the DB
         existing = session.scalars(
             sa.select(Image).where(Image.filepath == f'115/{filebase}')
@@ -319,8 +335,6 @@ def decam_ref_datastore( provenance_base, persistent_dir, cache_dir, data_dir, d
 def decam_reference(decam_ref_datastore):
     ds = decam_ref_datastore
     with SmartSession() as session:
-        ref = Reference()
-        ref.image = ds.image
         prov = Provenance(
             code_version=ds.image.provenance.code_version,
             process='reference',
@@ -334,8 +348,10 @@ def decam_reference(decam_ref_datastore):
             ],
             is_testing=True,
         )
-        prov.update_id()
         prov = session.merge(prov)
+
+        ref = Reference()
+        ref.image = ds.image
         ref.provenance = prov
         ref.validity_start = Time(50000, format='mjd', scale='utc').isot
         ref.validity_end = Time(65000, format='mjd', scale='utc').isot
@@ -344,7 +360,7 @@ def decam_reference(decam_ref_datastore):
         ref.target = ds.image.target
         ref.project = ds.image.project
 
-        ref = ref.recursive_merge(session)
+        ref = ref.merge_all(session=session)
         if not sa.inspect(ref).persistent:
             session.add(ref)
         session.commit()
@@ -353,7 +369,7 @@ def decam_reference(decam_ref_datastore):
 
     if 'ref' in locals():
         with SmartSession() as session:
-            ref = ref.recursive_merge(session)
+            ref = session.merge(ref)
             if sa.inspect(ref).persistent:
-                session.delete(ref.provenance)  # should also delete the reference
+                session.delete(ref.provenance)  # should also delete the reference image
             session.commit()

@@ -177,10 +177,9 @@ class ImageAligner:
         Returns
         -------
           Image
-            An image with the warped image.  image, raw_header, weight, and flags are all populated.
+            An Image with the warped image data.  image, header, weight, and flags are all populated.
 
         """
-
         tmppath = pathlib.Path( image.temp_path )
         tmpname = ''.join( random.choices( 'abcdefghijlkmnopqrstuvwxyz', k=10 ) )
         imagecat = tmppath / f'{tmpname}_image.sources.fits'
@@ -316,7 +315,7 @@ class ImageAligner:
 
             warpedim = self.image_source_warped_to_target(image, target)
 
-            warpedim.data, warpedim.raw_header = read_fits_image( outim, output="both" )
+            warpedim.data, warpedim.header = read_fits_image( outim, output="both" )
             warpedim.weight = read_fits_image(outwt)
             warpedim.flags = read_fits_image(outfl)
             warpedim.flags = np.rint(warpedim.flags).astype(np.uint16)  # convert back to integers
@@ -448,9 +447,9 @@ class ImageAligner:
             ],  # this does not really matter since we are not going to save this to DB!
         )
         warped_image.provenance_id = warped_image.provenance.id  # make sure this is filled even if not saved to DB
-        warped_image.header['original_image_id'] = source_image.id
-        warped_image.header['original_image_filepath'] = source_image.filepath  # verification of aligned images
-        warped_image.header['alignment_parameters'] = self.pars.get_critical_pars()
+        warped_image.info['original_image_id'] = source_image.id
+        warped_image.info['original_image_filepath'] = source_image.filepath  # verification of aligned images
+        warped_image.info['alignment_parameters'] = self.pars.get_critical_pars()
 
         upstream_bitflag = source_image.bitflag
         upstream_bitflag |= target_image.bitflag

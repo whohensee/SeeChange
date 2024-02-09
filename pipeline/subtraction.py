@@ -193,8 +193,15 @@ class Subtractor:
                 sub_image.provenance_id = prov.id
 
                 # make sure to grab the correct aligned images
-                new_image = sub_image.aligned_images[sub_image.new_image_index]
-                ref_image = sub_image.aligned_images[sub_image.ref_image_index]
+                new_image = [im for im in sub_image.aligned_images if im.mjd == sub_image.new_image.mjd]
+                if len(new_image) != 1:
+                    raise ValueError('Cannot find the new image in the aligned images')
+                new_image = new_image[0]
+
+                ref_image = [im for im in sub_image.aligned_images if im.mjd == sub_image.ref_image.mjd]
+                if len(ref_image) != 1:
+                    raise ValueError('Cannot find the reference image in the aligned images')
+                ref_image = ref_image[0]
 
                 if self.pars.method.lower() == 'naive':
                     outdict = self._subtract_naive(new_image, ref_image)

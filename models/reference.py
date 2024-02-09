@@ -265,3 +265,11 @@ class Reference(Base, AutoIDMixin):
                 elif len(zps) == 1:
                     self.image.zp = zps[0]
                     self.zp = zps[0]
+
+    def merge_all(self, session):
+        """Merge the reference into the session, along with Image and products. """
+
+        new_ref = session.merge(self)
+        new_ref.image = self.image.merge_all(session)
+
+        return new_ref

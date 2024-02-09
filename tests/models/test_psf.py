@@ -1,10 +1,13 @@
 import pytest
 import io
 import os
+import uuid
 import random
 import math
 import pathlib
 import subprocess
+
+from sqlalchemy.exc import IntegrityError
 
 import numpy as np
 from scipy.integrate import dblquad
@@ -13,7 +16,7 @@ import astropy.io
 from astropy.io import fits
 
 from util.config import Config
-from models.base import FileOnDiskMixin, _logger, CODE_ROOT, get_archive_object
+from models.base import SmartSession, FileOnDiskMixin, _logger, CODE_ROOT, get_archive_object
 from models.psf import PSF
 
 
@@ -232,6 +235,7 @@ def test_write_psfex_psf( ztf_filepaths_image_sources_psf ):
     tempname = ''.join( random.choices( 'abcdefghijklmnopqrstuvwxyz', k=10 ) )
     psfpath = f'{tempname}.psf'
     psffullpath = pathlib.Path( FileOnDiskMixin.local_path ) / psfpath
+    psffullpath = psffullpath.with_suffix('.psf.fits')
     psfxmlpath = f'{tempname}.psf.xml'
     psfxmlfullpath = pathlib.Path( FileOnDiskMixin.local_path ) / psfxmlpath
     sourcesfullpath = pathlib.Path( FileOnDiskMixin.local_path ) / f'{tempname}.cat'
@@ -242,7 +246,7 @@ def test_write_psfex_psf( ztf_filepaths_image_sources_psf ):
         assert psffullpath.is_file()
         assert psfxmlfullpath.is_file()
         archive = get_archive_object()
-        assert archive.get_info( psfpath ) is not None
+        assert archive.get_info( psfpath + '.fits' ) is not None
         assert archive.get_info( psfxmlpath ) is not None
 
         # See if we can read the psf we wrote back in
@@ -291,6 +295,48 @@ def test_write_psfex_psf( ztf_filepaths_image_sources_psf ):
         psffullpath.unlink( missing_ok=True )
         psfxmlfullpath.unlink( missing_ok=True )
         sourcesfullpath.unlink( missing_ok=True )
+
+
+def test_save_psf( ztf_datastore_uncommitted, provenance_base, provenance_extra ):
+    im = ztf_datastore_uncommitted.image
+    psf = ztf_datastore_uncommitted.psf
+
+    with SmartSession() as session:
+        try:
+            im.provenance = session.merge(provenance_base)
+            im.save()
+
+            prov = session.merge(provenance_base)
+            psf.provenance = prov
+            psf.save()
+            session.add(psf)
+            session.commit()
+
+            # make a copy of the PSF (we will not be able to save it, with the same image_id and provenance)
+            psf2 = PSF(format='psfex')
+            psf2._data = psf.data
+            psf2._header = psf.header
+            psf2._info = psf.info
+            psf2.image = psf.image
+            psf2.provenance = psf.provenance
+            psf2.fwhm_pixels = psf.fwhm_pixels * 2  # make it a little different
+            psf2.save(uuid.uuid4().hex[:10])
+
+            with pytest.raises(
+                    IntegrityError,
+                    match='duplicate key value violates unique constraint "psfs_image_id_provenance_index"'
+            ) as exp:
+                session.add(psf2)
+                session.commit()
+            session.rollback()
+
+        finally:
+            if 'psf' in locals():
+                psf.delete_from_disk_and_database(session=session)
+            if 'psf2' in locals():
+                psf2.delete_from_disk_and_database(session=session)
+            if 'im' in locals():
+                im.delete_from_disk_and_database(session=session)
 
 
 @pytest.mark.skipif( os.getenv('RUN_SLOW_TESTS') is None, reason="Set RUN_SLOW_TESTS to run this test" )

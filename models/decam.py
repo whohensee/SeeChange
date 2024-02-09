@@ -268,14 +268,14 @@ class DECam(Instrument):
     def average_gain( self, image, section_id=None ):
         if image is None:
             return Instrument.average_again( self, None, section_id=section_id )
-        return ( float( image.raw_header['GAINA'] ) + float( image.raw_header['GAINB'] ) ) / 2.
+        return ( float( image.header['GAINA'] ) + float( image.header['GAINB'] ) ) / 2.
 
     def average_saturation_limit( self, image, section_id=None ):
         if image is None:
             return Instrument.average_saturation_limit( self, image, section_id=section_id )
         # Although the method name is "average...", return the lower saturation
         #  limit to be conservative
-        return min( float( image.raw_header['SATURATA'] ), float( image.raw_header['SATURATB'] ) )
+        return min( float( image.header['SATURATA'] ), float( image.header['SATURATB'] ) )
 
     @classmethod
     def _get_fits_hdu_index_from_section_id(cls, section_id):
@@ -422,7 +422,7 @@ class DECam(Instrument):
                 image = Image( format='fits', type=dbtype, provenance=prov, instrument='DECam',
                                telescope='CTIO4m', filter=filter, section_id=section, filepath=str(filepath),
                                mjd=mjd, end_mjd=mjd,
-                               header={}, exp_time=0, ra=0., dec=0.,
+                               info={}, exp_time=0, ra=0., dec=0.,
                                ra_corner_00=0., ra_corner_01=0.,ra_corner_10=0., ra_corner_11=0.,
                                dec_corner_00=0., dec_corner_01=0., dec_corner_10=0., dec_corner_11=0.,
                                target="", project="" )
@@ -439,8 +439,7 @@ class DECam(Instrument):
                                           instrument='DECam',
                                           sensor_section=section,
                                           image=image )
-                calfile = calfile.recursive_merge( dbsess )
-                dbsess.add( calfile )
+                calfile = dbsess.merge(calfile)
                 dbsess.commit()
             else:
                 datafile = dbsess.scalars(sa.select(DataFile).where(DataFile.filepath == str(filepath))).first()
@@ -449,8 +448,8 @@ class DECam(Instrument):
                 if datafile is None:
                     datafile = DataFile( filepath=str(filepath), provenance=prov )
                     datafile.save( str(fileabspath) )
-                    datafile = datafile.recursive_merge( dbsess )
-                    dbsess.add( datafile )
+                    datafile = dbsess.merge(datafile)
+
                 # Linearity file applies for all chips, so load the database accordingly
                 for ssec in self._chip_radec_off.keys():
                     calfile = CalibratorFile( type='Linearity',
@@ -460,8 +459,8 @@ class DECam(Instrument):
                                               sensor_section=ssec,
                                               datafile=datafile
                                               )
-                    calfile = calfile.recursive_merge( dbsess )
-                    dbsess.add( calfile )
+                    calfile = dbsess.merge(calfile)
+
                 dbsess.commit()
 
         return calfile
@@ -475,7 +474,7 @@ class DECam(Instrument):
                 raise TypeError( 'linearity_correct: pass either an Image as one argument, '
                                  'or header and data as two arguments' )
             data = args[0].data
-            header = args[0].raw_header
+            header = args[0].header
         elif len(args) == 2:
             # if not isinstance( args[0], <whatever the right header datatype is>:
             #     raise TypeError( "header isn't a <header>" )
@@ -733,8 +732,7 @@ class DECamOriginExposures:
                 code_version=Provenance.get_code_version(session=dbsess),
                 is_testing=True,
             )
-            provenance = provenance.recursive_merge( dbsess )
-            dbsess.add( provenance )
+            provenance = dbsess.merge( provenance )
 
             downloaded = self.download_exposures( outdir=outdir, indexes=indexes,
                                                   clobber=clobber, existing_ok=existing_ok )
@@ -792,8 +790,7 @@ class DECamOriginExposures:
                                    **exphdrinfo )
                 dbpath = outdir / expobj.filepath
                 expobj.save( expfile )
-                expobj = expobj.recursive_merge( dbsess )
-                dbsess.add( expobj )
+                expobj = dbsess.merge(expobj)
                 dbsess.commit()
                 if delete_downloads and ( dbpath.resolve() != expfile.resolve() ):
                     expfile.unlink()

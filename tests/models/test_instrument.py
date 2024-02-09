@@ -280,7 +280,7 @@ def test_instrument_inheritance_full_example():
     assert isinstance(e.instrument_object, TestInstrument)
     assert e.exp_time == 0.025  # needs to be converted from ms to s
     assert e.mjd is not None
-    assert e.header.get('shutter_mode') == 'ROLLING'
+    assert e.info.get('shutter_mode') == 'ROLLING'
 
     # allow the instrument to update with SensorSections consistent with the exposure's MJD
     with SmartSession() as session:
