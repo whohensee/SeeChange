@@ -395,6 +395,7 @@ def ptf_ref(ptf_reference_images, ptf_aligned_images, coadder, cache_dir, data_d
         # we must load these images in order to save the reference image with upstreams
         coadd_image.upstream_images = ptf_reference_images
         coadd_image.provenance = im_prov
+        coadd_image.ref_image_id = ptf_reference_images[-1].id  # make sure to replace the ID with the new DB value
         assert coadd_image.provenance_id == coadd_image.provenance.id
 
         # get the PSF:

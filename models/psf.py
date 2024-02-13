@@ -240,7 +240,7 @@ class PSF(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
         fitsshape.reverse()
         fitsshape = str( tuple( fitsshape ) )
         format = f'{np.prod(self._data.shape)}E'
-        fitscol = fits.Column( name='PSF_MASK', format=format, dim=fitsshape, array=[ self._data ] )
+        fitscol = fits.Column(name='PSF_MASK', format=format, dim=fitsshape, array=[self._data])
         fitsrec = fits.FITS_rec.from_columns( fits.ColDefs( [ fitscol ] ) )
         hdu = fits.BinTableHDU( fitsrec, self._header )
         hdu.writeto( psfpath, overwrite=( 'overwrite' in kwargs and kwargs['overwrite'] ) )

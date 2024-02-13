@@ -265,6 +265,14 @@ def decam_ref_datastore( code_version, persistent_dir, cache_dir, data_dir, data
     urlmap = { '.image.fits': '.fits.fz',
                '.weight.fits': '.weight.fits.fz',
                '.flags.fits': '.bpm.fits.fz' }
+
+    # I added this mirror so the tests will pass, and we should remove it once the decam image goes back up to NERSC
+    dropbox_urls = {
+        '.image.fits': 'https://www.dropbox.com/scl/fi/x8rzwfpe4zgc8tz5mv0e2/DECaPS-West_20220112.g.32.image.fits?rlkey=5wse43bby3tce7iwo2e1fm5ru&dl=1',
+        '.weight.fits': 'https://www.dropbox.com/scl/fi/dfctqqj3rjt09wspvyzb3/DECaPS-West_20220112.g.32.weight.fits?rlkey=tubr3ld4srf59hp0cuxrv2bsv&dl=1',
+        '.flags.fits': 'https://www.dropbox.com/scl/fi/y693ckhcs9goj1t7s0dty/DECaPS-West_20220112.g.32.flags.fits?rlkey=fbdyxyzjmr3g2t9zctcil7106&dl=1',
+    }
+
     for ext in [ '.image.fits', '.weight.fits', '.flags.fits' ]:
         cache_path = os.path.join(cache_dir, f'115/{filebase}{ext}')
         fzpath = cache_path + '.fz'
@@ -273,10 +281,17 @@ def decam_ref_datastore( code_version, persistent_dir, cache_dir, data_dir, data
         else:  # need to download!
             url = ( f'https://portal.nersc.gov/cfs/m2218/decat/decat/templatecache/DECaPS-West_20220112.g/'
                     f'{filebase}{urlmap[ext]}' )
-            retry_download( url, fzpath )
-            res = subprocess.run( [ 'funpack', '-D', fzpath ] )
-            if res.returncode != 0:
-                raise SubprocessFailure( res )
+            try:
+                retry_download( url, fzpath )
+                if os.path.isfile(fzpath):
+                    res = subprocess.run( [ 'funpack', '-D', fzpath ] )
+                    if res.returncode != 0:
+                        raise SubprocessFailure(res)
+                else:
+                    raise FileNotFoundError(f'Cannot find downloaded file: {fzpath}')
+            except (SubprocessFailure, FileNotFoundError, RuntimeError) as e:
+                retry_download(dropbox_urls[ext], cache_path)
+
         destination = os.path.join(data_dir, f'115/{filebase}{ext}')
         os.makedirs(os.path.dirname(destination), exist_ok=True)
         shutil.copy2( cache_path, destination )
