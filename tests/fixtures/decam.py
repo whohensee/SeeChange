@@ -249,11 +249,21 @@ def decam_datastore(
     # does not cause any problems.
     ds.save_and_commit()
 
+    delete_list = [
+        ds.image, ds.sources, ds.psf, ds.wcs, ds.zp, ds.sub_image, ds.detections, ds.cutouts, ds.measurements
+    ]
+
     yield ds
 
     # cleanup
     if 'ds' in locals():
         ds.delete_everything()
+
+    # make sure that these individual objects have their files cleaned up,
+    # even if the datastore is cleared and all database rows are deleted.
+    for obj in delete_list:
+        if obj is not None and hasattr(obj, 'delete_from_disk_and_database'):
+            obj.delete_from_disk_and_database(archive=True)
 
 
 @pytest.fixture
@@ -341,9 +351,19 @@ def decam_ref_datastore( code_version, persistent_dir, cache_dir, data_dir, data
         ds.save_and_commit(session)
         session.commit()
 
+    delete_list = [
+        ds.image, ds.sources, ds.psf, ds.wcs, ds.zp, ds.sub_image, ds.detections, ds.cutouts, ds.measurements
+    ]
+
     yield ds
 
     ds.delete_everything()
+
+    # make sure that these individual objects have their files cleaned up,
+    # even if the datastore is cleared and all database rows are deleted.
+    for obj in delete_list:
+        if obj is not None and hasattr(obj, 'delete_from_disk_and_database'):
+            obj.delete_from_disk_and_database(archive=True)
 
 
 @pytest.fixture

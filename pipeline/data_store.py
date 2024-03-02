@@ -34,7 +34,7 @@ UPSTREAM_OBJECTS = {
     'extraction': 'sources',
     'astro_cal': 'wcs',
     'photo_cal': 'zp',
-    'reference': 'ref-image',
+    'reference': 'reference',
     'subtraction': 'sub_image',
     'detection': 'detections',
     'cutting': 'cutouts',
@@ -115,6 +115,8 @@ class DataStore:
         self.psf = None  # psf determined from the extracted sources
         self.wcs = None  # astrometric solution
         self.zp = None  # photometric calibration
+        self.reference = None  # the Reference object needed to make subtractions
+        self.sub_image = None  # subtracted image
         self.detections = None  # a SourceList object for sources detected in the subtraction image
         self.cutouts = None  # cutouts around sources
         self.measurements = None  # photometry and other measurements for each source
@@ -151,6 +153,18 @@ class DataStore:
                     self.exposure.instrument_object.fetch_sections()
                     self._section = self.exposure.instrument_object.get_section( self.section_id )
         return self._section
+
+    @property
+    def ref_image( self ):
+        if self.reference is not None:
+            return self.reference.image
+        return None
+
+    @ref_image.setter
+    def ref_image( self, value ):
+        if self.reference is None:
+            self.reference = Reference()
+        self.reference.image = value
 
     def parse_args(self, *args, **kwargs):
         """
@@ -1338,9 +1352,9 @@ class DataStore:
             if obj is None:
                 continue
 
-            if isinstance(obj, list):  # handle cutouts and measurements
+            if isinstance(obj, list) and len(obj) > 0:  # handle cutouts and measurements
                 # TODO: the measurements is not a problem because they are probably not going to live on disk.
-                #  The cuouts, on the other hand, should probably be saved together as a list into one file.
+                #  The cutouts, on the other hand, should probably be saved together as a list into one file.
                 #  We should implement something to do that sort of batch save on the cutouts.
                 raise NotImplementedError( 'Saving lists of objects (cutouts) is not implemented yet.' )
 
@@ -1389,8 +1403,8 @@ class DataStore:
             if self.image is not None:
                 self.image = self.image.merge_all(session)
                 for att in ['sources', 'psf', 'wcs', 'zp']:
-                    setattr(self, att, None)  # avoid automatically loading the image with non-merged products
-                for att in ['exposure', 'sources', 'psf', 'wcs', 'zp', '_aligned_images']:
+                    setattr(self, att, None)  # avoid automatically appending to the image self's non-merged products
+                for att in ['exposure', 'sources', 'psf', 'wcs', 'zp']:
                     if getattr(self.image, att, None) is not None:
                         setattr(self, att, getattr(self.image, att))
 
@@ -1401,11 +1415,11 @@ class DataStore:
                 self.image_id = self.image.id
 
             if self.sub_image is not None:
+                self.sub_image.new_image = self.image  # update with the now-merged image
                 self.sub_image = self.sub_image.merge_all(session)  # merges the upstream_images and downstream products
-                self.ref.id = self.sub_image.ref_image_id  # just to make sure the ref has an ID for merging
-                for att in ['detections', 'cutouts', 'measurements']:
-                    if getattr(self.sub_image, att, None) is not None:
-                        setattr(self, att, getattr(self.sub_image, att))
+                self.ref_image.id = self.sub_image.ref_image_id  # just to make sure the ref has an ID for merging
+                self.detections = self.sub_image.sources
+                # TODO: handle cutouts and measurements
 
             self.psf = self.image.psf
             self.sources = self.image.sources
@@ -1418,7 +1432,7 @@ class DataStore:
         """Delete everything associated with this sub-image.
 
         All data products in the data store are removed from the DB,
-        and all files on disk are deleted.
+        and all files on disk and in the archive are deleted.
 
         NOTE: does *not* delete the exposure.  (There may well be other
         data stores out there with different images from the same
@@ -1447,7 +1461,7 @@ class DataStore:
 
                 for obj in obj_list:  # now do the deleting without flushing
                     if isinstance(obj, FileOnDiskMixin):
-                        obj.delete_from_disk_and_database(session=session, commit=False)
+                        obj.delete_from_disk_and_database(session=session, commit=False, archive=True)
                     if obj in session and sa.inspect(obj).pending:
                         session.expunge(obj)
                     if obj in session and sa.inspect(obj).persistent:

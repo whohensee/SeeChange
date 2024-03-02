@@ -86,7 +86,8 @@ subtraction:
 
 detection:
   subtraction: true
-  threshold: 3
+  method: filter  # when using ZOGY subtraction, detection method must be "filter"!
+  threshold: 5.0
 
 cutting:
   cutout_size: 20

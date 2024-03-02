@@ -44,13 +44,13 @@ def check_datastore_and_database_have_everything(exp_id, sec_id, ref_id, session
     assert ds.sources.id == sl.id
 
     wcs = session.scalars(
-        sa.select(WorldCoordinates).where(WorldCoordinates.source_list_id == sl.id)
+        sa.select(WorldCoordinates).where(WorldCoordinates.sources_id == sl.id)
     ).first()
     assert wcs is not None
     assert ds.wcs.id == wcs.id
 
     zp = session.scalars(
-        sa.select(ZeroPoint).where(ZeroPoint.source_list_id == sl.id)
+        sa.select(ZeroPoint).where(ZeroPoint.sources_id == sl.id)
     ).first()
     assert zp is not None
     assert ds.zp.id == zp.id
@@ -98,7 +98,7 @@ def test_parameters( test_config ):
     assert not pipeline.preprocessor.pars['use_sky_subtraction']
     assert pipeline.astro_cal.pars['cross_match_catalog'] == 'GaiaDR3'
     assert pipeline.astro_cal.pars['catalog'] == 'GaiaDR3'
-    assert pipeline.subtractor.pars['method'] == 'naive'
+    assert pipeline.subtractor.pars['method'] == 'zogy'
 
     # Verify that manual override works for all parts of pipeline
     overrides = { 'preprocessing': { 'steps': [ 'overscan', 'linearity'] },
@@ -131,7 +131,6 @@ def test_parameters( test_config ):
             assert pipelinemod.pars[key] == val
 
 
-# TODO: need to finish this test (i.e., finish subtraction, source extraction from sub image, etc)
 def test_data_flow(decam_exposure, decam_reference, decam_default_calibrators, archive):
     """Test that the pipeline runs end-to-end."""
     exposure = decam_exposure
@@ -143,10 +142,8 @@ def test_data_flow(decam_exposure, decam_reference, decam_default_calibrators, a
         assert p.extractor.pars.threshold != 3.14
         assert p.detector.pars.threshold != 3.14
 
-        with pytest.raises(NotImplementedError, match="This needs to be updated for detection on a subtraction."):
-            # TODO: failure modes! if the run fails we never get a datastore back, and can't issue a delete_everything!
-            ds = p.run(exposure, sec_id)
-        return  # TODO: need to finish subtraction and detection etc and bring this back:
+        ds = p.run(exposure, sec_id)
+
         # commit to DB using this session
         with SmartSession() as session:
             ds.save_and_commit(session=session)
@@ -161,16 +158,16 @@ def test_data_flow(decam_exposure, decam_reference, decam_default_calibrators, a
             for process in expected_processes:
                 assert process in prov_processes
 
-            check_datastore_and_database_have_everything(exp_id, sec_id, ref_id, session, ds)
+            check_datastore_and_database_have_everything(exposure.id, sec_id, ref.image.id, session, ds)
 
-        # feed the pipeline the same data, but missing the upstream data
+        # feed the pipeline the same data, but missing the upstream data. TODO: add cutouts and measurements
         attributes = ['image', 'sources', 'wcs', 'zp', 'sub_image', 'detections']
 
         for i in range(len(attributes)):
-            for j in range(i):
+            for j in range(i + 1):
                 setattr(ds, attributes[j], None)  # get rid of all data up to the current attribute
-
-            ds = p.run(ds)
+            print(f'removing attributes up to {attributes[i]}')
+            ds = p.run(ds)  # for each iteration, we should be able to recreate the data
 
             # commit to DB using this session
             with SmartSession() as session:
@@ -178,25 +175,18 @@ def test_data_flow(decam_exposure, decam_reference, decam_default_calibrators, a
 
             # use a new session to query for the results
             with SmartSession() as session:
-                check_datastore_and_database_have_everything(exp_id, sec_id, ref_id, session, ds)
+                check_datastore_and_database_have_everything(exposure.id, sec_id, ref.image.id, session, ds)
 
-        # print(ds.image.filepath)
-        # print(ds.sub_image.filepath)
         # make sure we can remove the data from the end to the beginning and recreate it
         for i in range(len(attributes)):
             for j in range(i):
-                # print(f'i= {i}, j= {j}. Removing attribute: {attributes[-j-1]}')
-
                 obj = getattr(ds, attributes[-j-1])
-                with SmartSession() as session:
-                    # obj = obj.recursive_merge(session=session)
-                    obj = session.merge(obj)
-                    if isinstance(obj, FileOnDiskMixin):
-                        obj.delete_from_disk_and_database(session=session, commit=True)
+                if isinstance(obj, FileOnDiskMixin):
+                    obj.delete_from_disk_and_database(session=session, commit=True)
 
                 setattr(ds, attributes[-j-1], None)
 
-            ds = p.run(ds)
+            ds = p.run(ds)  # for each iteration, we should be able to recreate the data
 
             # commit to DB using this session
             with SmartSession() as session:
@@ -204,7 +194,7 @@ def test_data_flow(decam_exposure, decam_reference, decam_default_calibrators, a
 
             # use a new session to query for the results
             with SmartSession() as session:
-                check_datastore_and_database_have_everything(exp_id, sec_id, ref_id, session, ds)
+                check_datastore_and_database_have_everything(exposure.id, sec_id, ref.image.id, session, ds)
 
     finally:
         if 'ds' in locals():

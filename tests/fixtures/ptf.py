@@ -260,8 +260,11 @@ def ptf_supernova_images(ptf_images_factory):
 
         for image in images:
             image = session.merge(image)
-            image.exposure.delete_from_disk_and_database(session=session, commit=False)
+            # first delete the image and all it's products and the associated data (locally and on archive)
             image.delete_from_disk_and_database(session=session, commit=False, remove_downstream_data=True)
+            # only then delete the exposure, so it doesn't cascade delete the image and prevent deleting products
+            image.exposure.delete_from_disk_and_database(session=session, commit=False)
+
         session.commit()
 
 
@@ -336,7 +339,6 @@ def ptf_aligned_images(request, cache_dir, data_dir, code_version):
 @pytest.fixture
 def ptf_ref(ptf_reference_images, ptf_aligned_images, coadder, cache_dir, data_dir, code_version):
     cache_dir = os.path.join(cache_dir, 'PTF')
-    cache_base_name = '187/PTF_20090405_073932_11_R_ComSci_C2WFMZ_u-ywhkxr'
 
     pipe = CoaddPipeline()
     pipe.coadder = coadder  # use this one that has a test_parameter defined
@@ -353,6 +355,8 @@ def ptf_ref(ptf_reference_images, ptf_aligned_images, coadder, cache_dir, data_d
             code_version=code_version,
             is_testing=True,
         )
+
+        cache_base_name = f'187/PTF_20090405_073932_11_R_ComSci_{im_prov.id[:6]}_u-ywhkxr'
 
         psf_prov = Provenance(
             process='extraction',
@@ -458,3 +462,38 @@ def ptf_ref(ptf_reference_images, ptf_aligned_images, coadder, cache_dir, data_d
         ref_in_db = session.scalars(sa.select(Reference).where(Reference.id == ref.id)).first()
         assert ref_in_db is None  # should have been deleted by cascade when image is deleted
 
+
+@pytest.fixture
+def ptf_subtraction1(ptf_ref, ptf_supernova_images, subtractor, cache_dir):
+
+    cache_dir = os.path.join(cache_dir, 'PTF')
+    cache_path = os.path.join(cache_dir, '187/PTF_20100216_075004_11_R_Diff_VXUBFA_u-7ogkop.image.fits.json')
+
+    if os.path.isfile(cache_path):  # try to load this from cache
+        im = Image.copy_from_cache(cache_dir, cache_path)
+        im.upstream_images = [ptf_ref.image, ptf_supernova_images[0]]
+        im.ref_image_id = ptf_ref.image.id
+        prov = Provenance(
+            process='subtraction',
+            parameters=subtractor.pars.get_critical_pars(),
+            upstreams=im.get_upstream_provenances(),
+            code_version=ptf_ref.image.provenance.code_version,
+            is_testing=True,
+        )
+        im.provenance = prov
+
+    else:  # cannot find it on cache, need to produce it, using other fixtures
+        ds = subtractor.run(ptf_supernova_images[0])
+        ds.sub_image.save()
+
+        ds.sub_image.copy_to_cache(cache_dir)
+        im = ds.sub_image
+
+    # save the subtraction image to DB and the upstreams (if they are not already there)
+    with SmartSession() as session:
+        im = session.merge(im)
+        session.commit()
+
+    yield im
+
+    im.delete_from_disk_and_database(remove_downstream_data=True)

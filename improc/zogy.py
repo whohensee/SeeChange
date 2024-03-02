@@ -4,6 +4,7 @@
 
 import numpy as np
 import scipy
+from improc.bitmask_tools import dilate_bitflag
 
 
 def zogy_subtract(image_ref, image_new, psf_ref, psf_new, noise_ref, noise_new, flux_ref, flux_new, dx=None, dy=None):
@@ -265,6 +266,53 @@ def pad_to_shape(arr, shape, value=0):
     new_arr[tuple(slice(p, -pa) for p, pa in zip(pad, pad_after))] = arr
 
     return new_arr
+
+
+def zogy_add_weights_flags(ref_weight, new_weight, ref_flags, new_flags, ref_psf_fwhm, new_psf_fwhm):
+    """Combine the weight and flags images of the reference and new in a reasonable way,
+    accounting for PSF widening of the new image.
+
+    The weights are assumed to be 1/variance, so we will add the variance and then take the inverse.
+    Any points that have zero weight (in either image) will be given zero weight in the output,
+    and the appropriate flag will be or'd to the final flag image.
+
+    Will expand the flags of the new image based on max(ref_psf_fwhm, new_psf_fwhm).
+    Then the two flag images are or'd together.
+
+    Parameters
+    ----------
+    ref_weight: numpy.ndarray
+        The weight image of the reference image.
+    new_weight: numpy.ndarray
+        The weight image of the new image.
+    ref_flags: numpy.ndarray
+        The flag image of the reference image.
+    new_flags: numpy.ndarray
+        The flag image of the new image.
+    ref_psf_fwhm: float
+        The FWHM of the PSF of the reference image, in pixels!
+    new_psf_fwhm: float
+        The FWHM of the PSF of the new image, in pixels!
+
+    Returns
+    -------
+    outwt: numpy.ndarray
+        The combined weight image.
+    outfl: numpy.ndarray
+        The combined flag image.
+    """
+    # combine the weights
+    mask = (ref_weight == 0) | (new_weight == 0)
+    w1 = np.where(ref_weight == 0, 0, 1 / ref_weight)
+    w2 = np.where(new_weight == 0, 0, 1 / new_weight)
+    outwt = np.where(mask, 0, 1 / (w1 + w2))
+
+    # expand the flags of the new image
+    splash_pixels = int(np.ceil(max(ref_psf_fwhm, new_psf_fwhm)))
+    new_flags = dilate_bitflag(new_flags, iterations=splash_pixels)
+    outfl = mask | ref_flags | new_flags  # xor the flags (add zero-weight flag where needed)
+
+    return outwt, outfl
 
 
 if __name__ == "__main__":

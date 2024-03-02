@@ -8,7 +8,7 @@ from scipy.ndimage import gaussian_filter
 # import pylandau
 
 from pipeline.parameters import Parameters
-
+from improc.tools import make_gaussian
 
 class SimPars(Parameters):
 
@@ -2226,72 +2226,6 @@ class Simulator:
 
         self.truth = t
 
-
-def make_gaussian(sigma_x=2.0, sigma_y=None, rotation=0.0, norm=1, imsize=None):
-    """
-    Create a small image of a Gaussian centered around the middle of the image.
-
-    Parameters
-    ----------
-    sigma_x: float
-        The sigma width parameter.
-        If sigma_x and sigma_y are specified, this will be for the x-axis.
-    sigma_y: float or None
-        The sigma width parameter.
-        If None, will use sigma_x for both axes.
-    rotation: float
-        The rotation angle in degrees.
-        The Gaussian will be rotated counter-clockwise by this angle.
-        If sigma_y is equal to sigma_x (or None) this has no effect.
-    norm: int
-        Normalization of the Gaussian. Choose value:
-        0- do not normalize, peak will have a value of 1.0
-        1- normalize so the sum of the image is equal to 1.0
-        2- normalize the squares: the sqrt of the sum of squares is equal to 1.0
-    imsize: int or None
-        Number of pixels on a side for the output.
-        If None, will automatically choose the smallest odd integer that is larger than max(sigma_x, sigma_y) * 10.
-
-    Returns
-    -------
-    output: array
-        A 2D array of the Gaussian.
-    """
-    if sigma_y is None:
-        sigma_y = sigma_x
-
-    if imsize is None:
-        imsize = int(max(sigma_x, sigma_y) * 10)
-        if imsize % 2 == 0:
-            imsize += 1
-
-    if norm not in [0, 1, 2]:
-        raise ValueError('norm must be 0, 1, or 2')
-
-    x = np.arange(imsize)
-    y = np.arange(imsize)
-    x, y = np.meshgrid(x, y)
-
-    x0 = imsize // 2
-    y0 = imsize // 2
-    # TODO: what happens if imsize is even?
-
-    x = x - x0
-    y = y - y0
-
-    rotation = rotation * np.pi / 180.0  # TODO: add option to give rotation in different units?
-
-    x_rot = x * np.cos(rotation) - y * np.sin(rotation)
-    y_rot = x * np.sin(rotation) + y * np.cos(rotation)
-
-    output = np.exp(-0.5 * (x_rot ** 2 / sigma_x ** 2 + y_rot ** 2 / sigma_y ** 2))
-
-    if norm == 1:
-        output /= np.sum(output)
-    elif norm == 2:
-        output /= np.sqrt(np.sum(output ** 2))
-
-    return output
 
 
 if __name__ == "__main__":
