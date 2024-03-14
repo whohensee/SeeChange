@@ -298,6 +298,42 @@ class SeeChangeBase:
         """Get all data products that were created directly from this object (non-recursive)."""
         raise NotImplementedError('get_downstreams not implemented for this class')
 
+    def delete_from_database(self, session=None, commit=True):
+        """Remove the object from the database.
+
+        This does not remove any associated files (if this is a FileOnDiskMixin)
+        and does not remove the object from the archive.
+
+        Parameters
+        ----------
+        session: sqlalchemy session
+            The session to use for the deletion. If None, will open a new session,
+            which will also close at the end of the call.
+        commit: bool
+            Whether to commit the deletion to the database.
+            Default is True. When session=None then commit must be True,
+            otherwise the session will exit without committing
+            (in this case the function will raise a RuntimeException).
+        """
+        if session is None and not commit:
+            raise RuntimeError("When session=None, commit must be True!")
+
+        with SmartSession(session) as session:
+            info = sa.inspect(self)
+            need_commit = False
+            if info.persistent:
+                session.delete(self)
+                need_commit = True
+            elif info.pending:
+                session.expunge(self)
+                need_commit = True
+            elif info.detached:
+                session.execute(sa.delete(self.__class__).where(self.__class__.id == self.id))
+                need_commit = True
+
+            if commit and need_commit:
+                session.commit()
+
     def to_dict(self):
         """Translate all the SQLAlchemy columns into a dictionary.
 
@@ -665,13 +701,19 @@ class FileOnDiskMixin:
         # if the path is ok, also make the subfolders
         os.makedirs(path, exist_ok=True)
 
-    filepath = sa.Column(
-        sa.Text,
-        nullable=False,
-        index=True,
-        unique=True,
-        doc="Base path (relative to the data root) for a stored file"
-    )
+    @declared_attr
+    def filepath(cls):
+        uniqueness = True
+        if cls.__name__ in ['Cutouts']:
+            uniqueness = False
+        return sa.Column(
+            sa.Text,
+            nullable=False,
+            index=True,
+            unique=uniqueness,
+            doc="Base path (relative to the data root) for a stored file"
+        )
+
 
     filepath_extensions = sa.Column(
         sa.ARRAY(sa.Text),
@@ -683,7 +725,7 @@ class FileOnDiskMixin:
         sqlUUID(as_uuid=True),
         nullable=True,
         default=None,
-        doc = "md5sum of the file, provided by the archive server"
+        doc="md5sum of the file, provided by the archive server"
     )
 
     md5sum_extensions = sa.Column(
@@ -1332,7 +1374,6 @@ class FileOnDiskMixin:
             If True, will also delete the file from the archive.
             Default is True.
         """
-
         if session is None and not commit:
             raise RuntimeError("When session=None, commit must be True!")
 
@@ -1348,21 +1389,7 @@ class FileOnDiskMixin:
         self.filepath_extensions = None
         self.filepath = None
 
-        with SmartSession(session) as session:
-            info = sa.inspect(self)
-            need_commit = False
-            if info.persistent:
-                session.delete(self)
-                need_commit = True
-            elif info.pending:
-                session.expunge(self)
-                need_commit = True
-            elif info.detached:
-                session.execute(sa.delete(self.__class__).where(self.__class__.id == self.id))
-                need_commit = True
-
-            if commit and need_commit:
-                session.commit()
+        SeeChangeBase.delete_from_database(self, session=session, commit=commit)
 
 
 # load the default paths from the config

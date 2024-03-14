@@ -841,6 +841,10 @@ class Detector:
         xys = ndimage.center_of_mass(abs(image.data), labels, all_idx)
         x = np.array([xy[1] for xy in xys])
         y = np.array([xy[0] for xy in xys])
+        coords = image.wcs.wcs.pixel_to_world(x, y)
+        ra = [c.ra.value for c in coords]
+        dec = [c.dec.value for c in coords]
+
         label_fluxes = ndimage.sum(image.data, labels, all_idx)  # sum image values where labeled
 
         # run aperture and iterative PSF photometry
@@ -862,8 +866,8 @@ class Detector:
         # TODO: add a correct aperture photometry, instead of the label_fluxes which only sums the labeled pixels
 
         tab = astropy.table.Table(
-            [x, y, label_fluxes, fluxes, region_sizes, num_flagged, scores],
-            names=('x', 'y', 'flux', 'psf_flux', 'num_pixels', 'num_flagged', 'score'),
+            [ra, dec, x, y, label_fluxes, fluxes, region_sizes, num_flagged, scores],
+            names=('ra', 'dec', 'x', 'y', 'flux', 'psf_flux', 'num_pixels', 'num_flagged', 'score'),
             meta={'fwhm': fwhm, 'threshold': self.pars.threshold}
         )
 

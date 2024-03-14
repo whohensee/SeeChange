@@ -10,6 +10,8 @@ from models.image import Image
 
 from improc.zogy import zogy_subtract, zogy_add_weights_flags
 from improc.inpainting import Inpainter
+
+from improc.alignment import ImageAligner
 from improc.tools import sigma_clipping
 
 
@@ -50,6 +52,9 @@ class Subtractor:
     def __init__(self, **kwargs):
         self.pars = ParsSubtractor(**kwargs)
         self.inpainter = Inpainter(**self.pars.inpainting)
+        self.pars.inpainting = self.inpainter.pars.get_critical_pars()  # add Inpainter defaults into this dictionary
+        self.aligner = ImageAligner(**self.pars.alignment)
+        self.pars.alignment = self.aligner.pars.get_critical_pars()  # add ImageAligner defaults into this dictionary
 
         # this is useful for tests, where we can know if
         # the object did any work or just loaded from DB or datastore
@@ -270,6 +275,7 @@ class Subtractor:
                 sub_image.is_sub = True
                 sub_image.provenance = prov
                 sub_image.provenance_id = prov.id
+                sub_image.coordinates_to_alignment_target()  # make sure the WCS is aligned to the correct image
 
                 # make sure to grab the correct aligned images
                 new_image = [im for im in sub_image.aligned_images if im.mjd == sub_image.new_image.mjd]

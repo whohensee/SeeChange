@@ -92,7 +92,7 @@ def pytest_sessionfinish(session, exitstatus):
 
             # check that there's nothing left in the archive after tests cleanup
             if os.path.isdir(ARCHIVE_PATH):
-                files = os.listdir(ARCHIVE_PATH)
+                files = list(pathlib.Path(ARCHIVE_PATH).rglob('*'))
                 if len(files) > 0:
                     raise RuntimeError(f'There are files left in the archive after tests cleanup: {files}')
 

@@ -174,6 +174,8 @@ def make_cutouts(data, x, y, size=15):
     for i, (x0, y0) in enumerate(zip(x, y)):
         x0, y0 = int(np.round(x0)), int(np.round(y0))
         if x0 - down < 0:
+            if x0 + up < 0:
+                continue  # leave the cutout as NaNs
             left = 0
             offset_left = down - x0
         else:
@@ -181,6 +183,8 @@ def make_cutouts(data, x, y, size=15):
             offset_left = 0
 
         if x0 + up >= data.shape[1]:
+            if x0 - down >= data.shape[1]:
+                continue  # leave the cutout as NaNs
             right = data.shape[1]
             offset_right = size - (x0 + up - data.shape[1] + 1)
         else:
@@ -188,6 +192,8 @@ def make_cutouts(data, x, y, size=15):
             offset_right = size
 
         if y0 - down < 0:
+            if y0 + up < 0:
+                continue  # leave the cutout as NaNs
             bottom = 0
             offset_bottom = down - y0
         else:
@@ -195,6 +201,8 @@ def make_cutouts(data, x, y, size=15):
             offset_bottom = 0
 
         if y0 + up >= data.shape[0]:
+            if y0 - down >= data.shape[0]:
+                continue  # leave the cutout as NaNs
             top = data.shape[0]
             offset_top = size - (y0 + up - data.shape[0] + 1)
         else:

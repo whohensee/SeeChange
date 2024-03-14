@@ -7,8 +7,11 @@ from models.base import SmartSession, FileOnDiskMixin
 from models.provenance import Provenance
 from models.image import Image, image_upstreams_association_table
 from models.source_list import SourceList
+from models.psf import PSF
 from models.world_coordinates import WorldCoordinates
 from models.zero_point import ZeroPoint
+from models.cutouts import Cutouts
+from models.measurements import Measurements
 
 from pipeline.top_level import Pipeline
 
@@ -31,30 +34,53 @@ def check_datastore_and_database_have_everything(exp_id, sec_id, ref_id, session
     ds: datastore.DataStore
         The datastore object
     """
+    # find the image
     im = session.scalars(
-        sa.select(Image).where(Image.exposure_id == exp_id, Image.section_id == str(sec_id))
+        sa.select(Image).where(
+            Image.exposure_id == exp_id,
+            Image.section_id == str(sec_id),
+            Image.provenance_id == ds.image.provenance_id,
+        )
     ).first()
     assert im is not None
     assert ds.image.id == im.id
 
-    sl = session.scalars(
-        sa.select(SourceList).where(SourceList.image_id == im.id, SourceList.is_sub.is_(False))
+    # find the extracted sources
+    sources = session.scalars(
+        sa.select(SourceList).where(
+            SourceList.image_id == im.id,
+            SourceList.is_sub.is_(False),
+            SourceList.provenance_id == ds.sources.provenance_id,
+        )
     ).first()
-    assert sl is not None
-    assert ds.sources.id == sl.id
+    assert sources is not None
+    assert ds.sources.id == sources.id
 
+    # find the PSF
+    psf = session.scalars(
+        sa.select(PSF).where(PSF.image_id == im.id, PSF.provenance_id == ds.psf.provenance_id)
+    ).first()
+    assert psf is not None
+    assert ds.psf.id == psf.id
+
+    # find the WorldCoordinates object
     wcs = session.scalars(
-        sa.select(WorldCoordinates).where(WorldCoordinates.sources_id == sl.id)
+        sa.select(WorldCoordinates).where(
+            WorldCoordinates.sources_id == sources.id,
+            WorldCoordinates.provenance_id == ds.wcs.provenance_id,
+        )
     ).first()
     assert wcs is not None
     assert ds.wcs.id == wcs.id
 
+    # find the ZeroPoint object
     zp = session.scalars(
-        sa.select(ZeroPoint).where(ZeroPoint.sources_id == sl.id)
+        sa.select(ZeroPoint).where(ZeroPoint.sources_id == sources.id, ZeroPoint.provenance_id == ds.zp.provenance_id)
     ).first()
     assert zp is not None
     assert ds.zp.id == zp.id
 
+    # find the subtraction image
     aliased_table = sa.orm.aliased(image_upstreams_association_table)
     sub = session.scalars(
         sa.select(Image).join(
@@ -75,14 +101,30 @@ def check_datastore_and_database_have_everything(exp_id, sec_id, ref_id, session
     assert sub is not None
     assert ds.sub_image.id == sub.id
 
-    sl = session.scalars(
-        sa.select(SourceList).where(SourceList.image_id == sub.id, SourceList.is_sub.is_(True))
+    # find the detections SourceList
+    det = session.scalars(
+        sa.select(SourceList).where(
+            SourceList.image_id == sub.id,
+            SourceList.is_sub.is_(True),
+            SourceList.provenance_id == ds.detections.provenance_id,
+        )
     ).first()
 
-    assert sl is not None
-    assert ds.detections.id == sl.id
+    assert det is not None
+    assert ds.detections.id == det.id
 
-    # TODO: add the cutouts and measurements, but we need to produce them first!
+    # find the Cutouts list
+    cutouts = session.scalars(
+        sa.select(Cutouts).where(
+            Cutouts.sources_id == det.id,
+            Cutouts.provenance_id == ds.cutouts[0].provenance_id,
+        )
+    ).all()
+    assert len(cutouts) > 0
+    assert len(ds.cutouts) == len(cutouts)
+    assert set([c.id for c in ds.cutouts]) == set([c.id for c in cutouts])
+
+    # TODO: add the measurements, but we need to produce them first!
 
 
 def test_parameters( test_config ):
@@ -166,7 +208,7 @@ def test_data_flow(decam_exposure, decam_reference, decam_default_calibrators, a
         for i in range(len(attributes)):
             for j in range(i + 1):
                 setattr(ds, attributes[j], None)  # get rid of all data up to the current attribute
-            print(f'removing attributes up to {attributes[i]}')
+            # print(f'removing attributes up to {attributes[i]}')
             ds = p.run(ds)  # for each iteration, we should be able to recreate the data
 
             # commit to DB using this session

@@ -171,6 +171,25 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
         else:
             raise ValueError(f"The ref_image_id ({self.ref_image_id}) is not in the upstream_images list.")
 
+    @property
+    def new_aligned_image(self):
+        """Get the aligned image that is NOT the reference image.
+        This only works on subtractions (with ref+new upstreams).
+        Will lazy-calculate the aligned images, if they are missing.
+        """
+        image = [im for im in self.aligned_images if im.info['original_image_id'] != self.ref_image_id]
+        if len(image) == 0 or len(image) > 1:
+            return None
+        return image[0]
+
+    @property
+    def ref_aligned_image(self):
+        """Get the aligned reference image. Will lazy-calculate the aligned images, if they are missing. """
+        image = [im for im in self.aligned_images if im.info['original_image_id'] == self.ref_image_id]
+        if len(image) == 0:
+            return None
+        return image[0]
+
     is_sub = sa.Column(
         sa.Boolean,
         nullable=False,
@@ -457,7 +476,8 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
 
         self._aligner = None  # an ImageAligner object (lazy loaded using the provenance parameters)
         self._aligned_images = None  # a list of Images that are aligned to one image (lazy calculated, not committed)
-        self._nandata = None
+        self._nandata = None  # a copy of the image data, only with NaNs at each flagged point. Lazy calculated.
+        self._nanscore = None  # a copy of the image score, only with NaNs at each flagged point. Lazy calculated.
 
         self._instrument_object = None
         self._bitflag = 0
@@ -498,6 +518,7 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
         self._aligner = None
         self._aligned_images = None
         self._nandata = None
+        self._nanscore = None
 
         self._instrument_object = None
         this_object_session = orm.Session.object_session(self)
@@ -1036,6 +1057,39 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
             if image.info['original_image_filepath'] not in upstream_images_filepaths:
                 self._aligned_images = None
                 return
+
+    def _get_alignment_target_image(self):
+        """Get the image in upstream_images that is the target to which we align all other images. """
+        if self.provenance is None or self.provenance.parameters is None:
+            raise RuntimeError('Cannot get alignment target without a Provenance with legal parameters!')
+        if 'alignment' not in self.provenance.parameters:
+            raise RuntimeError(
+                'Cannot get alignment target without an "alignment" dictionary in the Provenance parameters!'
+            )
+
+        to_index = self.provenance.parameters['alignment'].get('to_index')
+        if to_index == 'first':
+            alignment_target = self.upstream_images[0]
+        elif to_index == 'last':
+            alignment_target = self.upstream_images[-1]
+        elif to_index == 'new':
+            alignment_target = self.new_image
+        elif to_index == 'ref':
+            alignment_target = self.ref_image
+        else:
+            raise RuntimeError(
+                f'Got illegal value for "to_index" ({to_index}) in the Provenance parameters!'
+            )
+
+        return alignment_target
+
+    def coordinates_to_alignment_target(self):
+        """Make sure the coordinates (RA,dec, corners and WCS) all match the alignment target image. """
+        target = self._get_alignment_target_image()
+        for att in ['ra', 'dec', 'wcs',
+                    'ra_corner_00', 'ra_corner_01', 'ra_corner_10', 'ra_corner_11',
+                    'dec_corner_00', 'dec_corner_01', 'dec_corner_10', 'dec_corner_11' ]:
+            self.__setattr__(att, getattr(target, att))
 
     @property
     def aligned_images(self):
@@ -1710,6 +1764,7 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
     @flags.setter
     def flags(self, value):
         self._nandata = None
+        self._nanscore = None
         self._flags = value
 
     @property
@@ -1743,6 +1798,7 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
 
     @score.setter
     def score(self, value):
+        self._nanscore = None
         self._score = value
 
     @property
@@ -1779,6 +1835,19 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
     @nandata.setter
     def nandata(self, value):
         self._nandata = value
+
+    @property
+    def nanscore(self):
+        """The image data, only masked with NaNs wherever the flag is not zero. """
+        if self._nanscore is None:
+            self._nanscore = self.score.copy()
+            if self.flags is not None:
+                self._nanscore[self.flags != 0] = np.nan
+        return self._nanscore
+
+    @nanscore.setter
+    def nanscore(self, value):
+        self._nanscore = value
 
     def show(self, **kwargs):
         """
