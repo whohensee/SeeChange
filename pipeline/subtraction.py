@@ -134,6 +134,16 @@ class Subtractor:
                 The ZOGY alpha image (the PSF flux image)
             zogy_alpha_err: np.ndarray
                 The ZOGY alpha error image (the PSF flux error image)
+            translient: numpy.ndarray
+                The "translational transient" score for moving
+                objects or slightly misaligned images.
+                See the paper: ... TODO: add reference once paper is out!
+            translient_sigma: numpy.ndarray
+                The translient score, converted to S/N units assuming a chi2 distribution.
+            translient_corr: numpy.ndarray
+                The source-noise-corrected translient score.
+            translient_corr_sigma: numpy.ndarray
+                The corrected translient score, converted to S/N units assuming a chi2 distribution.
         """
         new_image_data = new_image.data
         ref_image_data = ref_image.data
@@ -156,7 +166,7 @@ class Subtractor:
 
         new_image_data = self.inpainter.run(new_image_data, new_image.flags, new_image.weight)
 
-        out_tuple = zogy_subtract(
+        output = zogy_subtract(
             ref_image_data,
             new_image_data,
             ref_image_psf,
@@ -166,8 +176,11 @@ class Subtractor:
             ref_image_flux_zp,
             new_image_flux_zp,
         )
-        keys = ['outim', 'psf', 'zogy_score_uncorrected', 'score', 'alpha', 'alpha_err']
-        output = dict(zip(keys, out_tuple))
+        # rename for compatibility
+        output['outim'] = output.pop('sub_image')
+        output['zogy_score_uncorrected'] = output.pop('score')
+        output['score'] = output.pop('score_corr')
+        output['alpha_err'] = output.pop('alpha_std')
 
         outwt, outfl = zogy_add_weights_flags(
             ref_image.weight,
@@ -293,6 +306,8 @@ class Subtractor:
                 if 'alpha' in outdict and 'alpha_err' in outdict:
                     sub_image.psfflux = outdict['alpha']
                     sub_image.psffluxerr = outdict['alpha_err']
+
+                sub_image.subtraction_output = outdict  # save the full output for debugging
 
         ds.sub_image = sub_image
 

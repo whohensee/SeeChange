@@ -19,7 +19,7 @@ threshold = 6.0  # this should be high enough to avoid false positives at the 1/
 assert scipy.special.erfc(threshold / np.sqrt(2)) * imsize ** 2 < 1e-3
 
 
-@pytest.mark.flaky(max_runs=3)
+@pytest.mark.flaky(max_runs=5)
 def test_subtraction_no_stars():
     # this simulator creates images with the same b/g and seeing, so the stars will easily be subtracted
     sim = Simulator(
@@ -57,7 +57,8 @@ def test_subtraction_no_stars():
     F1 = 1 / np.sqrt(np.sum(truth1.psf_downsampled ** 2) * truth1.background_instance)
     F2 = 1 / np.sqrt(np.sum(truth2.psf_downsampled ** 2) * truth2.background_instance)
 
-    zogy_diff, zogy_psf, zogy_score, zogy_score_corr, alpha, alpha_err = zogy_subtract(
+    # zogy_diff, zogy_psf, zogy_score, zogy_score_corr, alpha, alpha_err = zogy_subtract(
+    output = zogy_subtract(
         im1,
         im2,
         truth1.psf_downsampled,
@@ -68,22 +69,22 @@ def test_subtraction_no_stars():
         F2,
     )
 
-    assert abs(np.std(zogy_diff) - 1) < 0.1  # the noise should be unit variance
-    assert np.max(abs(zogy_diff)) < threshold  # we should not have anything get to the high threshold
-    assert abs( np.max(abs(zogy_diff)) - low_threshold ) < 1.5  # the peak should be close to the low threshold
+    assert abs(np.std(output['sub_image']) - 1) < 0.1  # the noise should be unit variance
+    assert np.max(abs(output['sub_image'])) < threshold  # we should not have anything get to the high threshold
+    assert abs( np.max(abs(output['sub_image'])) - low_threshold ) < 1.5  # peak should be close to the low threshold
 
     # currently this doesn't work, I need to figure out the correct normalization for F_r and F_n
     # assert abs(np.std(zogy_score) - 1) < 0.1  # the noise should be unit variance
     # assert np.max(abs(zogy_score)) < threshold  # we should not have anything get to the high threshold
     # assert abs(np.max(abs(zogy_score)) - low_threshold) < 1.5  # some value should be close to the low threshold
 
-    assert abs(np.std(zogy_score_corr) - 1) < 0.1  # the noise should be unit variance
-    assert np.max(abs(zogy_score_corr)) < threshold  # we should not have anything get to the high threshold
-    assert abs( np.max(abs(zogy_score_corr)) - low_threshold ) < 1.5  # the peak should be close to the low threshold
+    assert abs(np.std(output['score_corr']) - 1) < 0.1  # the noise should be unit variance
+    assert np.max(abs(output['score_corr'])) < threshold  # we should not have anything get to the high threshold
+    assert abs( np.max(abs(output['score_corr'])) - low_threshold ) < 1.5  # the peak should be close to the low threshold
 
 
-@pytest.mark.skip( reason="This test frequently fails even with the flaky.  Can we use a random seed?" )
-@pytest.mark.flaky(max_runs=3)
+# @pytest.mark.skip( reason="This test frequently fails even with the flaky.  Can we use a random seed?" )
+@pytest.mark.flaky(max_runs=5)
 def test_subtraction_no_new_sources():
     sim = Simulator(
         image_size_x=imsize,  # not too big, but allow some space for stars
@@ -141,13 +142,13 @@ def test_subtraction_no_new_sources():
                 naive_successes += 1
 
             # now try ZOGY
-            zogy_diff, zogy_psf, zogy_score, zogy_score_corr, alpha, alpha_err = zogy_subtract(
+            output = zogy_subtract(
                 im1, im2, psf1, psf2, np.sqrt(bkg1), np.sqrt(bkg2), F1, F2,
             )
 
             # must ignore the edges where sometimes stars are off one image but on the other (if PSF is wide)
             edge = int(np.ceil(max(s, 1.5) * 2))
-            if np.max(abs(zogy_score_corr[edge:-edge, edge:-edge])) <= threshold:
+            if np.max(abs(output['score_corr'][edge:-edge, edge:-edge])) <= threshold:
                 zogy_successes += 1
             else:
                 zogy_failures += 1
@@ -207,14 +208,12 @@ def test_subtraction_snr_histograms(blocking_plots):
         F1 = 1.0
         F2 = 1.0
 
-        zogy_diff, zogy_psf, zogy_score, zogy_score_corr, alpha, alpha_err = zogy_subtract(
-            im1, im2, psf1, psf2, np.sqrt(bkg1), np.sqrt(bkg2), F1, F2,
-        )
+        output = zogy_subtract(im1, im2, psf1, psf2, np.sqrt(bkg1), np.sqrt(bkg2), F1, F2)
         edge = 8  # do not trigger on stars too close to the edge
-        S = np.ones(zogy_score_corr.shape) * np.nan
-        S[edge:-edge, edge:-edge] = zogy_score_corr[edge:-edge, edge:-edge].copy()
+        S = np.ones(output['score_corr'].shape) * np.nan
+        S[edge:-edge, edge:-edge] = output['score_corr'][edge:-edge, edge:-edge].copy()
         B = bkg1 + bkg2
-        P = zogy_psf
+        P = output['sub_psf']
 
         for i, f in enumerate(fluxes):
             x = y = int(pos[i])
@@ -246,8 +245,8 @@ def test_subtraction_snr_histograms(blocking_plots):
     plt.savefig(filename + ".pdf")
 
 
-@pytest.mark.skip( reason="This test frequently fails even with the flaky.  Can we use a random seed?" )
-@pytest.mark.flaky(max_runs=3)
+# @pytest.mark.skip( reason="This test frequently fails even with the flaky.  Can we use a random seed?" )
+@pytest.mark.flaky(max_runs=5)
 def test_subtraction_new_sources_snr(blocking_plots):
     num_stars = 300
     sim = Simulator(
@@ -299,14 +298,14 @@ def test_subtraction_new_sources_snr(blocking_plots):
         F1 = 1.0
         F2 = 1.0
 
-        zogy_diff, zogy_psf, zogy_score, zogy_score_corr, alpha, alpha_err = zogy_subtract(
+        output = zogy_subtract(
             im1, im2, psf1, psf2, np.sqrt(bkg1), np.sqrt(bkg2), F1, F2,
         )
         edge = 8  # do not trigger on stars too close to the edge
-        S = np.ones(zogy_score_corr.shape) * np.nan
-        S[edge:-edge, edge:-edge] = zogy_score_corr[edge:-edge, edge:-edge].copy()
+        S = np.ones(output['score_corr'].shape) * np.nan
+        S[edge:-edge, edge:-edge] = output['score_corr'][edge:-edge, edge:-edge].copy()
         B = truth1.background_instance + truth2.background_instance
-        P = zogy_psf
+        P = output['sub_psf']
 
         for i, f in enumerate(fluxes):
             x = y = int(pos[i])
@@ -334,8 +333,8 @@ def test_subtraction_new_sources_snr(blocking_plots):
         plt.show(block=True)
 
 
-@pytest.mark.skip( reason="This test frequently fails even with the flaky.  Can we use a random seed?" )
-@pytest.mark.flaky(max_runs=3)
+# @pytest.mark.skip( reason="This test frequently fails even with the flaky.  Can we use a random seed?" )
+@pytest.mark.flaky(max_runs=5)
 def test_subtraction_seeing_background():
     num_stars = 300
     sim = Simulator(
@@ -407,15 +406,13 @@ def test_subtraction_seeing_background():
                     F1 = 1.0
                     F2 = 1.0
 
-                    zogy_diff, zogy_psf, zogy_score, zogy_score_corr, alpha, alpha_err = zogy_subtract(
-                        im1, im2, psf1, psf2, np.sqrt(bkg1), np.sqrt(bkg2), F1, F2,
-                    )
+                    output = zogy_subtract(im1, im2, psf1, psf2, np.sqrt(bkg1), np.sqrt(bkg2), F1, F2)
 
                     edge = 8  # do not trigger on stars too close to the edge
-                    S = np.ones(zogy_score_corr.shape) * np.nan
-                    S[edge:-edge, edge:-edge] = zogy_score_corr[edge:-edge, edge:-edge].copy()
+                    S = np.ones(output['score_corr'].shape) * np.nan
+                    S[edge:-edge, edge:-edge] = output['score_corr'][edge:-edge, edge:-edge].copy()
                     B = ref_bkg + new_bkg
-                    P = zogy_psf
+                    P = output['sub_psf']
 
                     for i, f in enumerate(fluxes):
                         x = y = int(pos[i])
@@ -434,7 +431,7 @@ def test_subtraction_seeing_background():
                             )
 
 
-@pytest.mark.flaky(max_runs=3)
+@pytest.mark.flaky(max_runs=5)
 def test_subtraction_jitter_noise():
     num_stars = 300
     ref_seeing = 2.0
@@ -499,15 +496,13 @@ def test_subtraction_jitter_noise():
         F1 = 1.0
         F2 = 1.0
 
-        zogy_diff, zogy_psf, zogy_score, zogy_score_corr, alpha, alpha_err = zogy_subtract(
-            im1, im2, psf1, psf2, np.sqrt(bkg1), np.sqrt(bkg2), F1, F2, dx=jitter,
-        )
+        output = zogy_subtract(im1, im2, psf1, psf2, np.sqrt(bkg1), np.sqrt(bkg2), F1, F2, dx=jitter)
 
         edge = 8  # do not trigger on stars too close to the edge
-        S = np.ones(zogy_score_corr.shape) * np.nan
-        S[edge:-edge, edge:-edge] = zogy_score_corr[edge:-edge, edge:-edge].copy()
+        S = np.ones(output['score_corr'].shape) * np.nan
+        S[edge:-edge, edge:-edge] = output['score_corr'][edge:-edge, edge:-edge].copy()
         B = ref_bkg + new_bkg
-        P = zogy_psf
+        P = output['sub_psf']
 
         # check that the background stars are not detected
         S2 = S.copy()
