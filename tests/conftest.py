@@ -17,6 +17,8 @@ from models.exposure import Exposure
 
 from util.archive import Archive
 from util.util import remove_empty_folders
+from util.retrydownload import retry_download
+
 
 pytest_plugins = [
     'tests.fixtures.simulated',
@@ -95,6 +97,10 @@ def pytest_sessionfinish(session, exitstatus):
                 files = list(pathlib.Path(ARCHIVE_PATH).rglob('*'))
                 if len(files) > 0:
                     raise RuntimeError(f'There are files left in the archive after tests cleanup: {files}')
+
+@pytest.fixture(scope='session')
+def download_url():
+    return 'https://portal.nersc.gov/cfs/m4616/SeeChange_testing_data'
 
 
 # data that is included in the repo and should be available for tests
@@ -299,14 +305,16 @@ def archive(test_config, archive_path):
 
 
 @pytest.fixture( scope="module" )
-def catexp(data_dir, persistent_dir):
-    if not os.path.isfile(os.path.join(data_dir, "Gaia_DR3_151.0926_1.8312_17.0_19.0.fits")):
-        shutil.copy2(
-            os.path.join(persistent_dir, "test_data/Gaia_DR3_151.0926_1.8312_17.0_19.0.fits"),
-            os.path.join(data_dir, "Gaia_DR3_151.0926_1.8312_17.0_19.0.fits")
-        )
+def catexp(data_dir, cache_dir, download_url):
+    filename = "Gaia_DR3_151.0926_1.8312_17.0_19.0.fits"
+    cachepath = os.path.join(cache_dir, filename)
+    filepath = os.path.join(data_dir, filename)
 
-    filepath = os.path.join(data_dir, "Gaia_DR3_151.0926_1.8312_17.0_19.0.fits")
+    if not os.path.isfile(cachepath):
+        retry_download(os.path.join(download_url, filename), cachepath)
+
+    if not os.path.isfile(filepath):
+        shutil.copy2(cachepath, filepath)
 
     yield CatalogExcerpt.create_from_file( filepath, 'GaiaDR3' )
 
