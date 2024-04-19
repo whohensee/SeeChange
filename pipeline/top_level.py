@@ -1,3 +1,5 @@
+import psutil
+import numpy as np
 
 from pipeline.parameters import Parameters
 from pipeline.data_store import DataStore
@@ -93,33 +95,63 @@ class Pipeline:
         Will open a database session and grab any existing data,
         and calculate and commit any new data that did not exist.
         """
+        proc = psutil.Process()
+        origmem = proc.memory_info()
+        mem_array = []
 
         ds, session = DataStore.from_args(*args, **kwargs)
 
+        # breakpoint()  # .5g
+        freemem = proc.memory_info()
+        mem_array.append(freemem.rss - origmem.rss)
         # run dark/flat and sky subtraction tools, save the results as Image objects to DB and disk
         ds = self.preprocessor.run(ds, session)
 
+        # breakpoint() #.6g
+        freemem = proc.memory_info()
+        mem_array.append(freemem.rss - origmem.rss)
         # extract sources and make a SourceList from the regular image
         ds = self.extractor.run(ds, session)
 
+        # breakpoint() # peaked at 4.7G
+        freemem = proc.memory_info()
+        mem_array.append(freemem.rss - origmem.rss)
         # find astrometric solution, save WCS into Image object and FITS headers
         ds = self.astro_cal.run(ds, session)
 
+        # breakpoint()  # arouond 2g (nvm up to like 6.7q)
+        freemem = proc.memory_info()
+        mem_array.append(freemem.rss - origmem.rss)
         # cross-match against photometric catalogs and get zero point, save into Image object and FITS headers
         ds = self.photo_cal.run(ds, session)
 
+        # breakpoint()
+        freemem = proc.memory_info()
+        mem_array.append(freemem.rss - origmem.rss)
         # fetch reference images and subtract them, save SubtractedImage objects to DB and disk
         ds = self.subtractor.run(ds, session)
 
+        # breakpoint() # right before here we got beeg, about 5G
+        freemem = proc.memory_info()
+        mem_array.append(freemem.rss - origmem.rss)
         # find sources, generate a source list for detections
         ds = self.detector.run(ds, session)
 
+        # breakpoint()
+        freemem = proc.memory_info()
+        mem_array.append(freemem.rss - origmem.rss)
         # make cutouts of all the sources in the "detections" source list
         ds = self.cutter.run(ds, session)
 
+        # breakpoint()
+        freemem = proc.memory_info()
+        mem_array.append(freemem.rss - origmem.rss)
         # extract photometry, analytical cuts, and deep learning models on the Cutouts:
         ds = self.measurer.run(ds, session)
 
+        mem_array = np.array(mem_array)
+        mem_array = mem_array / 1024 / 1024 / 1024
+        # breakpoint()
         return ds
 
     def run_with_session(self):

@@ -2,6 +2,8 @@ import os
 import pytest
 import shutil
 import sqlalchemy as sa
+import numpy as np
+import psutil
 
 from models.base import SmartSession, FileOnDiskMixin, _logger
 from models.provenance import Provenance
@@ -175,6 +177,10 @@ def test_parameters( test_config ):
 
 def test_data_flow(decam_exposure, decam_reference, decam_default_calibrators, archive):
     """Test that the pipeline runs end-to-end."""
+    proc = psutil.Process()
+    origmem = proc.memory_info()
+    mem_array = []
+
     exposure = decam_exposure
 
     ref = decam_reference
@@ -185,6 +191,8 @@ def test_data_flow(decam_exposure, decam_reference, decam_default_calibrators, a
         assert p.detector.pars.threshold != 3.14
 
         ds = p.run(exposure, sec_id)
+        freemem = proc.memory_info()
+        mem_array.append(freemem.rss - origmem.rss)
 
         # commit to DB using this session
         with SmartSession() as session:
@@ -210,6 +218,8 @@ def test_data_flow(decam_exposure, decam_reference, decam_default_calibrators, a
                 setattr(ds, attributes[j], None)  # get rid of all data up to the current attribute
             # _logger.debug(f'removing attributes up to {attributes[i]}')
             ds = p.run(ds)  # for each iteration, we should be able to recreate the data
+            freemem = proc.memory_info()
+            mem_array.append(freemem.rss - origmem.rss)
 
             # commit to DB using this session
             with SmartSession() as session:
@@ -229,6 +239,8 @@ def test_data_flow(decam_exposure, decam_reference, decam_default_calibrators, a
                 setattr(ds, attributes[-j-1], None)
 
             ds = p.run(ds)  # for each iteration, we should be able to recreate the data
+            freemem = proc.memory_info()
+            mem_array.append(freemem.rss - origmem.rss)
 
             # commit to DB using this session
             with SmartSession() as session:
@@ -237,6 +249,9 @@ def test_data_flow(decam_exposure, decam_reference, decam_default_calibrators, a
             # use a new session to query for the results
             with SmartSession() as session:
                 check_datastore_and_database_have_everything(exposure.id, sec_id, ref.image.id, session, ds)
+        mem_array = np.array(mem_array)
+        mem_array = mem_array / 1024 / 1024 / 1024
+        breakpoint()
 
     finally:
         if 'ds' in locals():
@@ -286,3 +301,25 @@ def test_datastore_delete_everything(decam_datastore):
         assert session.scalars(
             sa.select(Measurements).where(Measurements.id == measurements_list[0].id)
         ).first() is None
+
+def test_data_flow_memory(decam_exposure, decam_reference, decam_default_calibrators, archive):
+    """Test that the pipeline runs end-to-end."""
+    exposure = decam_exposure
+
+    ref = decam_reference
+    sec_id = ref.section_id
+    try:  # cleanup the file at the end
+        p = Pipeline()
+        assert p.extractor.pars.threshold != 3.14
+        assert p.detector.pars.threshold != 3.14
+
+        ds = p.run(exposure, sec_id)
+
+
+    finally:
+        if 'ds' in locals():
+            ds.delete_everything()
+        # added this cleanup to make sure the temp data folder is cleaned up
+        # this should be removed after we add datastore failure modes (issue #150)
+        shutil.rmtree(os.path.join(os.path.dirname(exposure.get_fullpath()), '115'), ignore_errors=True)
+        shutil.rmtree(os.path.join(archive.test_folder_path, '115'), ignore_errors=True)
