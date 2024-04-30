@@ -182,8 +182,8 @@ def zogy_subtract(image_ref, image_new, psf_ref, psf_new, noise_ref, noise_new, 
     Z2_f = Z0 * np.fft.fftshift(k2) / m2  # make sure the zero frequency is in the corner
 
     # transform the subtracted image (and PSF, score) back to real space
-    D = np.real(np.fft.ifft2(D_f))
-    P_D = np.real(np.fft.ifft2(P_D_f))
+    # D = np.real(np.fft.ifft2(D_f))
+    # P_D = np.real(np.fft.ifft2(P_D_f))
     S = np.real(np.fft.ifft2(S_f))
     Z = np.imag(np.fft.ifft2(Z1_f)) ** 2 + np.imag(np.fft.ifft2(Z2_f)) ** 2  # this is Z^2 but we'll call it Z for short
 
@@ -236,8 +236,8 @@ def zogy_subtract(image_ref, image_new, psf_ref, psf_new, noise_ref, noise_new, 
     zero_mask = V_S == 0  # get rid of zeros
     V_S_sqrt = np.sqrt(V_S, where=~zero_mask)
     V_S_sqrt[zero_mask] = 1
-    S_corr = S / V_S_sqrt
-    Z_corr = Z / V_S
+    # S_corr = S / V_S_sqrt
+    # Z_corr = Z / V_S
 
     # PSF photometry part:
     # Eqs. 41-43 from paper
@@ -251,16 +251,16 @@ def zogy_subtract(image_ref, image_new, psf_ref, psf_new, noise_ref, noise_new, 
     alpha_std = V_S_sqrt / F_S
 
     # rename the outputs and fftshift back
-    sub_image = np.fft.fftshift(D)
-    sub_psf = np.fft.fftshift(P_D)
+    sub_image = np.fft.fftshift(np.real(np.fft.ifft2(D_f)))
+    sub_psf = np.fft.fftshift(np.real(np.fft.ifft2(P_D_f)))
     score = np.fft.fftshift(S)
-    score_corr = np.fft.fftshift(S_corr)
+    score_corr = np.fft.fftshift(S / V_S_sqrt)
     alpha = np.fft.fftshift(alpha)
     alpha_std = np.fft.fftshift(alpha_std)
 
     translient = np.fft.fftshift(Z)
     translient_sigma = norm.isf(chi2.sf(translient, df=2))
-    translient_corr = np.fft.fftshift(Z_corr)
+    translient_corr = np.fft.fftshift(Z / V_S)
     translient_corr_sigma = norm.isf(chi2.sf(translient_corr, df=2))
 
     return dict(
