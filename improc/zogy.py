@@ -149,8 +149,8 @@ def zogy_subtract(image_ref, image_new, psf_ref, psf_new, noise_ref, noise_new, 
         raise ValueError("noise_new must have the same shape as the new image.")
 
     # get the representative noise values
-    sigma_r = np.median(noise_ref[~nan_mask]) if isinstance(noise_ref, np.ndarray) else noise_ref 
-    sigma_n = np.median(noise_new[~nan_mask]) if isinstance(noise_new, np.ndarray) else noise_new 
+    sigma_r = np.median(noise_ref[~nan_mask]) if isinstance(noise_ref, np.ndarray) else noise_ref
+    sigma_n = np.median(noise_new[~nan_mask]) if isinstance(noise_new, np.ndarray) else noise_new
     nan_mask = None; del nan_mask # This fails to save memory for some reason
     # these are just shorthands for the flux normalization of each image
     F_r = flux_ref
