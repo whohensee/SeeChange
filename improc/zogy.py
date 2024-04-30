@@ -3,6 +3,7 @@
 # also got some useful ideas from the implementation here: https://github.com/pmvreeswijk/ZOGY/blob/main/zogy.py#L15721
 
 import numpy as np
+import psutil
 import scipy
 from scipy.stats.distributions import norm, chi2
 
@@ -113,6 +114,15 @@ def zogy_subtract(image_ref, image_new, psf_ref, psf_new, noise_ref, noise_new, 
             The corrected translient score, converted to S/N units assuming a chi2 distribution.
 
     """
+
+    proc = psutil.Process()
+    origmem = proc.memory_info()
+    mem_array = []
+    # array([0.        , 0.87232512, 1.87921203, 3.89255168, 4.29509427, 4.56368128, 4.85743002])
+    freemem = proc.memory_info()
+    mem_array.append(freemem.rss - origmem.rss)
+    # breakpoint()
+
     if dy is None:
         dy = dx  # assume equal astrometric noise if only dx is given
 
@@ -262,6 +272,11 @@ def zogy_subtract(image_ref, image_new, psf_ref, psf_new, noise_ref, noise_new, 
     translient_sigma = norm.isf(chi2.sf(translient, df=2))
     translient_corr = np.fft.fftshift(Z / V_S)
     translient_corr_sigma = norm.isf(chi2.sf(translient_corr, df=2))
+
+    freemem = proc.memory_info()
+    mem_array.append(freemem.rss - origmem.rss)
+    breakpoint()
+    # 5.6G before, peak was just before this
 
     return dict(
         sub_image=sub_image,
