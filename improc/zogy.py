@@ -134,7 +134,7 @@ def zogy_subtract(image_ref, image_new, psf_ref, psf_new, noise_ref, noise_new, 
     Pr = pad_to_shape(psf_ref, R.shape)
 
     # make sure all masked pixels in one image are masked in the other
-    nan_mask = np.isnan(R) | np.isnan(N) # TODO del
+    nan_mask = np.isnan(R) | np.isnan(N)
     if np.sum(~nan_mask) == 0:
         raise ValueError("All pixels are masked or no overlap between images.")
 
@@ -157,17 +157,17 @@ def zogy_subtract(image_ref, image_new, psf_ref, psf_new, noise_ref, noise_new, 
     F_n = flux_new
 
     # Fourier transform the images and the PSFs
-    R_f = np.fft.fft2(R) # TODO del big arr item=16
-    N_f = np.fft.fft2(N) # TODO del big arr item=16
-    P_r_f = np.fft.fft2(Pr) # TODO del big arr item=16
+    R_f = np.fft.fft2(R)
+    N_f = np.fft.fft2(N)
+    P_r_f = np.fft.fft2(Pr)
     Pr = None; del Pr
-    P_n_f = np.fft.fft2(Pn) # TODO del big arr item=16
+    P_n_f = np.fft.fft2(Pn)
     Pn = None; del Pn
-    P_r_f_abs2 = np.abs(P_r_f) ** 2 # TODO del normal arr
-    P_n_f_abs2 = np.abs(P_n_f) ** 2 # TODO del normal arr
+    P_r_f_abs2 = np.abs(P_r_f) ** 2
+    P_n_f_abs2 = np.abs(P_n_f) ** 2
 
     # now start calculating the main results, equations 12-16 from the paper:
-    F_D = F_r * F_n / np.sqrt(sigma_n ** 2 * F_r ** 2 + sigma_r ** 2 * F_n ** 2)  # eq 15 
+    F_D = F_r * F_n / np.sqrt(sigma_n ** 2 * F_r ** 2 + sigma_r ** 2 * F_n ** 2)  # eq 15
     denominator = sigma_n ** 2 * F_r ** 2 * P_r_f_abs2 + sigma_r ** 2 * F_n ** 2 * P_n_f_abs2  # eq 12's denominator
     # this can happen with certain rounding errors in the PSFs, but the numerator will also be zero, so it is ok:
     denominator[denominator == 0] = 1.0
@@ -222,7 +222,7 @@ def zogy_subtract(image_ref, image_new, psf_ref, psf_new, noise_ref, noise_new, 
     k_r_f = F_r * F_n ** 2 * np.conj(P_r_f) * P_n_f_abs2 / denominator
     P_r_f = None; del P_r_f
     k_r = np.real(np.fft.ifft2(k_r_f))
-    k_r2 = np.real(np.fft.ifft2(k_r_f)) ** 2
+    k_r2 = k_r ** 2
     k_r2_f = np.fft.fft2(k_r2)
     k_r = None; del k_r
     k_r2 = None; del k_r2
@@ -258,7 +258,6 @@ def zogy_subtract(image_ref, image_new, psf_ref, psf_new, noise_ref, noise_new, 
         V_S_n_ast = dx ** 2 * dS_n_dx ** 2 + dy ** 2 * dS_n_dy ** 2
 
         S_r = np.real(np.fft.ifft2(k_r_f * R_f))
-        
         dS_r_dy = S_r - np.roll(S_r, 1, axis=0)  # calculate the gradients
         dS_r_dx = S_r - np.roll(S_r, 1, axis=1)  # calculate the gradients
         V_S_r_ast = dx ** 2 * dS_r_dx ** 2 + dy ** 2 * dS_r_dy ** 2
@@ -266,9 +265,9 @@ def zogy_subtract(image_ref, image_new, psf_ref, psf_new, noise_ref, noise_new, 
         V_ast = V_S_r_ast + V_S_n_ast
     else:
         V_ast = 0
+        
     R_f = None; del R_f
     N_f = None; del N_f
-
     k_n_f = None; del k_n_f
     k_r_f = None; del k_r_f
 
@@ -282,7 +281,6 @@ def zogy_subtract(image_ref, image_new, psf_ref, psf_new, noise_ref, noise_new, 
     S_corr = S / V_S_sqrt
     Z_corr = Z / V_S
     V_S = None; del V_S
-    
 
     # PSF photometry part:
     # Eqs. 41-43 from paper
@@ -297,7 +295,6 @@ def zogy_subtract(image_ref, image_new, psf_ref, psf_new, noise_ref, noise_new, 
     alpha = S / F_S
     V_S_sqrt[zero_mask] = 0  # should we replace this with NaNs?
     alpha_std = V_S_sqrt / F_S
-    (proc, origmem, mem_array)
     V_S_sqrt = None; del V_S_sqrt
 
     # rename the outputs and fftshift back
