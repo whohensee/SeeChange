@@ -119,6 +119,14 @@ class ParsAstroCalibrator(Parameters):
             critical=True
         )
 
+        self.scamp_timeout = self.add_par(
+            'scamp_timeout',
+            300,
+            int,
+            'Timeout in seconds for scamp to run',
+            critical=True
+        )
+
         self._enforce_no_new_attrs = True
 
         self.override(kwargs)
@@ -188,6 +196,7 @@ class AstroCalibrator:
             min_matched=self.pars.min_matched_stars,
             max_arcsec_residual=self.pars.max_arcsec_residual,
             magkey='MAG_G', magerrkey='MAGERR_G',
+            timeout=self.pars.scamp_timeout,
         )
 
         # Update image.header with the new wcs.  Process this
