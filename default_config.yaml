@@ -126,6 +126,7 @@ measuring:
   streak_filter_angle_step: 5.0
   width_filter_multipliers: [0.25, 2.0, 5.0, 10.0]
   association_radius: 2.0
+  # change to proper threshold format
   thresholds:
     negatives: 0.3
     bad pixels: 1
