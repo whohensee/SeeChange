@@ -99,10 +99,10 @@ class ParsMeasurer(Parameters):
         self.thresholds = self.add_par(
             'thresholds',
             {
-                'negatives': 0.3,
-                'bad pixels': 1,
-                'offsets': 5.0,
-                'filter bank': 1,
+                'negatives': [0.3, 0.3],
+                'bad pixels': [1, 1],
+                'offsets': [5.0, 5.0],
+                'filter bank': [1, 1], # in default_config.yaml this is 1.0, not 1
             },
             dict,
             'Thresholds for the disqualifier scores. '
@@ -302,7 +302,7 @@ class Measurer:
 
                 saved_measurements = []
                 for m in measurements_list:
-                    if m.passes():  # all disqualifiers are below threshold
+                    if m.passes() != "delete":  # all disqualifiers are below threshold
                         saved_measurements.append(m)
 
                 # add the resulting measurements to the data store

@@ -352,10 +352,25 @@ class Measurements(Base, AutoIDMixin, SpatiallyIndexed):
         Note that if a threshold is missing or None, that disqualifier is not checked
         """
         # add logic for bad_deleted and good_bad thresholds
+        passing_status = "ok"
         for key, value in self.provenance.parameters['thresholds'].items():
-            if value is not None and self.disqualifier_scores[key] >= value:
-                return False
-        return True
+            # do we really need the None case?
+            if not (isinstance(value, list) and len(value) == 2):
+                breakpoint()
+                raise ValueError(f"Threshold values must be size 2 array with deletion and publishing boundary values. Input: {value}, type: {type(value)}, len: {len(value)}")
+            deletion_score = value[0]
+            bad_score = value[1]
+
+            if self.disqualifier_scores[key] >= deletion_score:
+                passing_status =  "delete"
+                break
+            if self.disqualifier_scores[key] >= bad_score:
+                breakpoint()
+                passing_status = "bad" # no break because another key could trigger "delete"
+
+            # if value is not None and self.disqualifier_scores[key] >= value:
+            #     return False
+        return passing_status
 
     def associate_object(self, session=None):
         """Find or create a new object and associate it with this measurement.
@@ -395,7 +410,7 @@ class Measurements(Base, AutoIDMixin, SpatiallyIndexed):
         """Get the image that was used to make this source list. """
         with SmartSession(session) as session:
             return session.scalars(sa.select(Cutouts).where(Cutouts.id == self.cutouts_id)).all()
-        
+
     def get_downstreams(self, session=None):
         """Get the downstreams of this Measurements"""
         return []

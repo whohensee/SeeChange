@@ -747,7 +747,7 @@ def datastore_factory(data_dir, pipeline_factory):
                 ds.all_measurements = Measurements.copy_list_from_cache(cache_dir, cache_name)
                 [setattr(m, 'provenance', prov) for m in ds.all_measurements]
                 [setattr(m, 'cutouts', c) for m, c in zip(ds.all_measurements, ds.cutouts)]
-                ds.measurements = [m for m in ds.all_measurements if m.passes()]
+                ds.measurements = [m for m in ds.all_measurements if m.passes() != "delete"]
                 [m.associate_object(session) for m in ds.measurements]  # create or find an object for each measurement
                 # no need to save list because Measurements is not a FileOnDiskMixin!
             else:  # cannot find measurements on cache
