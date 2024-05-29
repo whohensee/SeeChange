@@ -252,6 +252,13 @@ class Measurements(Base, AutoIDMixin, SpatiallyIndexed):
             "Given by the angle of the major axis of the distribution of counts in the aperture. "
     )
 
+    is_bad = sa.Column(
+        sa.Boolean,
+        nullable=False,
+        # default=False, #No default maybe to prevent accidental creation of wrong type?
+        doc='Boolean flag to indicate if the measurement failed one or more threshold value comparisons. '
+    )
+
     disqualifier_scores = sa.Column(
         JSONB,
         nullable=False,
@@ -353,23 +360,19 @@ class Measurements(Base, AutoIDMixin, SpatiallyIndexed):
         """
         # add logic for bad_deleted and good_bad thresholds
         passing_status = "ok"
-        for key, value in self.provenance.parameters['thresholds'].items():
-            # do we really need the None case?
-            if not (isinstance(value, list) and len(value) == 2):
-                breakpoint()
-                raise ValueError(f"Threshold values must be size 2 array with deletion and publishing boundary values. Input: {value}, type: {type(value)}, len: {len(value)}")
-            deletion_score = value[0]
-            bad_score = value[1]
 
-            if self.disqualifier_scores[key] >= deletion_score:
+        deletion_thresh = (None if self.provenance.parameters['deletion_thresholds'] is None
+                           else self.provenance.parameters['deletion_thresholds'])
+        mark_thresh = self.provenance.parameters['thresholds'] # thresholds above which measurement is marked 'bad'
+
+        for key, value in mark_thresh.items():
+            if deletion_thresh[key] is not None and self.disqualifier_scores[key] >= deletion_thresh[key]:
                 passing_status =  "delete"
                 break
-            if self.disqualifier_scores[key] >= bad_score:
-                breakpoint()
+            if mark_thresh[key] is not None and self.disqualifier_scores[key] >= mark_thresh[key]:
                 passing_status = "bad" # no break because another key could trigger "delete"
 
-            # if value is not None and self.disqualifier_scores[key] >= value:
-            #     return False
+        self.is_bad = not passing_status == "ok"
         return passing_status
 
     def associate_object(self, session=None):
@@ -383,6 +386,7 @@ class Measurements(Base, AutoIDMixin, SpatiallyIndexed):
 
         This should only be done for measurements that have passed all preliminary cuts,
         which mostly rules out obvious artefacts.
+        CHANGE THIS DOCSTRING TO MENTION NEW BEHAVIOR
         """
         from models.objects import Object  # avoid circular import
 
@@ -395,12 +399,14 @@ class Measurements(Base, AutoIDMixin, SpatiallyIndexed):
                     radunit='arcsec',
                 ),
                 Object.is_test.is_(self.provenance.is_testing),  # keep testing sources separate
+                Object.is_bad.is_(self.is_bad),    # keep good objects with good measurements
             )).first()
 
             if obj is None:  # no object exists, make one based on these measurements
                 obj = Object(
                     ra=self.ra,
                     dec=self.dec,
+                    is_bad=self.is_bad
                 )
                 obj.is_test = self.provenance.is_testing
 

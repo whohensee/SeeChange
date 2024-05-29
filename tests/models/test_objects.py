@@ -13,7 +13,7 @@ from models.objects import Object
 
 
 def test_object_creation():
-    obj = Object(ra=1.0, dec=2.0, is_test=True)
+    obj = Object(ra=1.0, dec=2.0, is_test=True, is_bad=False)
     with SmartSession() as session:
         session.add(obj)
         session.commit()

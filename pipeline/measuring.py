@@ -99,14 +99,23 @@ class ParsMeasurer(Parameters):
         self.thresholds = self.add_par(
             'thresholds',
             {
-                'negatives': [0.3, 0.3],
-                'bad pixels': [1, 1],
-                'offsets': [5.0, 5.0],
-                'filter bank': [1, 1], # in default_config.yaml this is 1.0, not 1
+                'negatives': 0.3,
+                'bad pixels': 1,
+                'offsets': 5.0,
+                'filter bank': 1, # in default_config.yaml this is 1.0, not 1
             },
             dict,
-            'Thresholds for the disqualifier scores. '
-            'If the score is higher than (or equal to) the threshold, the measurement is disqualified. '
+            'Failure thresholds for the disqualifier scores. '
+            'If the score is higher than (or equal to) the threshold, the measurement is marked as bad. '
+        )
+
+        # We want functionality for this to be none, so do not add it by default
+        self.deletion_thresholds = self.add_par(
+            'deletion_thresholds',
+            None,
+            (dict, None),
+            'Deletion thresholds for the disqualifier scores. '
+            'If the score is higher than (or equal to) the threshold, the measurement is not saved. '
         )
 
         self.association_radius = self.add_par(
@@ -302,8 +311,10 @@ class Measurer:
 
                 saved_measurements = []
                 for m in measurements_list:
+                    # passes() method sets the is_bad attribute of m rather than doing it explicitly here
                     if m.passes() != "delete":  # all disqualifiers are below threshold
                         saved_measurements.append(m)
+                    
 
                 # add the resulting measurements to the data store
                 ds.all_measurements = measurements_list  # debugging only

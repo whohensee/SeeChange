@@ -40,6 +40,13 @@ class Object(Base, AutoIDMixin, SpatiallyIndexed):
         doc='Boolean flag to indicate if the object is a fake object that has been artificially injected. '
     )
 
+    is_bad = sa.Column(
+        sa.Boolean,
+        nullable=False,
+        # default=False, #No default maybe to prevent accidental creation of wrong type?
+        doc='Boolean flag to indicate if the object is associated with measurements marked "bad". '
+    )
+
     measurements = orm.relationship(
         Measurements,
         back_populates='object',
