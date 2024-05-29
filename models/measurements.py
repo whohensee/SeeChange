@@ -269,8 +269,6 @@ class Measurements(Base, AutoIDMixin, SpatiallyIndexed):
             "The higher the score, the more likely the measurement is to be an artefact. "
     )
 
-    # add a column for ok/bad, possibly binary to save space?
-
     def __init__(self, **kwargs):
         SeeChangeBase.__init__(self)  # don't pass kwargs as they could contain non-column key-values
         self._cutouts_list_index = None  # helper (transient) attribute that helps find the right cutouts in a list
