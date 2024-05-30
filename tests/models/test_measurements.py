@@ -196,41 +196,6 @@ def test_threshold_flagging(ptf_datastore):
     # I'd also like to test that deletion_thresholds is a proper non-critical param
     # so that it can be changed without affecting the provenance
 
-    # with SmartSession() as session:
-    #     session.add(m) # might not be necessary, but i want to compare objects
-
-    #     prov=Provenance(
-    #         process=m.provenance.process,
-    #         upstreams=m.provenance.upstreams,
-    #         code_version=m.provenance.code_version,
-    #         parameters=m.provenance.parameters.copy(),
-    #         is_testing=True,
-    #     )
-    #     prov.parameters['test_parameter'] = uuid.uuid4().hex
-    #     prov.update_id()
-
-    #     new_measurements = []
-    #     for i in range(len(3)):
-    #         new_m = Measurements()
-    #         for key, value in m.__dict__.items():
-    #             if key not in [
-    #             '_sa_instance_state',
-    #             'id',
-    #             'created_at',
-    #             'modified',
-    #             'from_db',
-    #             'provenance',
-    #             'provenance_id',
-    #             'object',
-    #             'object_id',
-    #             ]:
-    #                 setattr(new_m, key, value)
-    #         new_m.provenance = prov
-    #         new_m.provenance_id = prov.id
-    #         new_measurements.append(new_m)
-
-    return None
-
 def test_measurements_forced_photometry(ptf_datastore):
     offset_max = 2.0
     for m in ptf_datastore.measurements:
