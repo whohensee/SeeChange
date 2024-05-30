@@ -409,7 +409,6 @@ class Measurements(Base, AutoIDMixin, SpatiallyIndexed, HasBitFlagBadness):
 
         Return a Bool that indicates whether or not the object should be saved to db
         """
-        # add logic for bad_deleted and good_bad thresholds
         passing_status = self.compare_to_thresholds()
         return not passing_status == "delete"
 
@@ -422,9 +421,12 @@ class Measurements(Base, AutoIDMixin, SpatiallyIndexed, HasBitFlagBadness):
         If no Object is found, a new one is created, and its coordinates will be identical
         to those of this Measurements object.
 
-        This should only be done for measurements that have passed all preliminary cuts,
-        which mostly rules out obvious artefacts.
-        CHANGE THIS DOCSTRING TO MENTION NEW BEHAVIOR
+        This should only be done for measurements that have passed deletion_threshold 
+        preliminary cuts, which mostly rules out obvious artefacts. However, measurements
+        which passed the deletion_threshold cuts but failed the threshold cuts should still
+        be allowed to use this method - in this case, they will create an object with
+        attribute is_bad set to True so they are available to review in the db.
+        
         """
         from models.object import Object  # avoid circular import
 

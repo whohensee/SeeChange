@@ -307,7 +307,6 @@ class Measurer:
                     m.provenance_id = prov.id
 
                     # Apply analytic cuts to each stamp image, to rule out artefacts.
-                    # change logic of this section to use the new threshold logic (save 'ok'/'bad', not 'delete')
                     m.disqualifier_scores = {}
                     if m.background != 0 and m.background_err > 0.1:
                         norm_data = (c.sub_nandata - m.background) / m.background_err  # normalize
