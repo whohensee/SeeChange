@@ -181,7 +181,7 @@ def get_all_database_objects(display=False, session=None):
     from models.zero_point import ZeroPoint
     from models.cutouts import Cutouts
     from models.measurements import Measurements
-    from models.objects import Object
+    from models.object import Object
     from models.calibratorfile import CalibratorFile
     from models.catalog_excerpt import CatalogExcerpt
     from models.reference import Reference
@@ -431,8 +431,15 @@ class SeeChangeBase:
             if isinstance(value, np.ndarray) and key in [
                 'aper_rads', 'aper_radii', 'aper_cors', 'aper_cor_radii',
                 'flux_apertures', 'flux_apertures_err', 'area_apertures',
+                'ra', 'dec',
             ]:
-                value = list(value)
+                if len(value.shape) > 0:
+                    value = list(value)
+                else:
+                    value = float(value)
+
+            if isinstance(value, np.number):
+                value = value.item()
 
             if key in ['modified', 'created_at'] and isinstance(value, datetime.datetime):
                 value = value.isoformat()
@@ -1933,17 +1940,17 @@ class HasBitFlagBadness:
         """
         # make sure this object is current:
         with SmartSession(session) as session:
+            merged_self = session.merge(self)
             new_bitflag = 0  # start from scratch, in case some upstreams have lost badness
-            for upstream in self.get_upstreams(session):
+            for upstream in merged_self.get_upstreams(session):
                 if hasattr(upstream, '_bitflag'):
                     new_bitflag |= upstream.bitflag
 
-            if hasattr(self, '_upstream_bitflag'):
-                self._upstream_bitflag = new_bitflag
-                session.add(self)
+            if hasattr(merged_self, '_upstream_bitflag'):
+                merged_self._upstream_bitflag = new_bitflag
 
             # recursively do this for all the other objects
-            for downstream in self.get_downstreams(session):
+            for downstream in merged_self.get_downstreams(session):
                 if hasattr(downstream, 'update_downstream_badness') and callable(downstream.update_downstream_badness):
                     downstream.update_downstream_badness(session=session, commit=False)
 

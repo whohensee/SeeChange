@@ -10,7 +10,7 @@ from improc.tools import make_gaussian
 
 from models.cutouts import Cutouts
 from models.measurements import Measurements
-from models.enums_and_bitflags import BitFlagConverter
+from models.enums_and_bitflags import BitFlagConverter, BadnessConverter
 
 from pipeline.parameters import Parameters
 from pipeline.data_store import DataStore
@@ -52,7 +52,7 @@ class ParsMeasurer(Parameters):
 
         self.analytical_cuts = self.add_par(
             'analytical_cuts',
-            ['negatives', 'bad pixels', 'offsets', 'filter bank'],
+            ['negatives', 'bad pixels', 'offsets', 'filter bank', 'bad_flag'],
             [list],
             'Which kinds of analytic cuts are used to give scores to this measurement. '
         )
@@ -80,6 +80,14 @@ class ParsMeasurer(Parameters):
             'The same types are ignored when running photometry. '
         )
 
+        self.bad_flag_exclude = self.add_par(
+            'bad_flag_exclude',
+            [],
+            list,
+            'List of strings of the bad flag types (i.e., bitflag) to exclude from the bad flag cut. '
+            'This includes things like image saturation, too many sources, etc. '
+        )
+
         self.streak_filter_angle_step = self.add_par(
             'streak_filter_angle_step',
             5.0,
@@ -102,6 +110,7 @@ class ParsMeasurer(Parameters):
                 'bad pixels': 1,
                 'offsets': 5.0,
                 'filter bank': 1,
+                'bad_flag': 1,
             },
             dict,
             'Thresholds for the disqualifier scores. '
@@ -211,23 +220,20 @@ class Measurer:
 
                     annulus_radii_pixels = self.pars.annulus_radii
                     if self.pars.annulus_units == 'fwhm':
-                        annulus_radii_pixels = [rad * c.source.image.get_psf().fwhm_pixels for rad in annulus_radii_pixels]
+                        fwhm = c.source.image.get_psf().fwhm_pixels
+                        annulus_radii_pixels = [rad * fwhm for rad in annulus_radii_pixels]
 
                     # TODO: consider if there are any additional parameters that photometry needs
                     output = iterative_cutouts_photometry(
                         c.sub_data,
                         c.sub_weight,
                         flags,
-                        m.psf,
                         radii=m.aper_radii,
                         annulus=annulus_radii_pixels,
                     )
 
-                    m.flux_psf = output['psf_flux']
-                    m.flux_psf_err = output['psf_err']
-                    m.area_psf = output['psf_area']
                     m.flux_apertures = output['fluxes']
-                    m.flux_apertures_err = [np.sqrt(output['variance'] * a) for a in output['areas']]  # TODO: add source noise??
+                    m.flux_apertures_err = [np.sqrt(output['variance']) * norm for norm in output['normalizations']]
                     m.aper_radii = output['radii']
                     m.area_apertures = output['areas']
                     m.background = output['background']
@@ -238,6 +244,42 @@ class Measurer:
                     m.elongation = output['elongation']
                     m.position_angle = output['angle']
 
+                    # update the coordinates using the centroid offsets
+                    x = c.x + m.offset_x
+                    y = c.y + m.offset_y
+                    ra, dec = m.cutouts.sources.image.new_image.wcs.wcs.pixel_to_world_values(x, y)
+                    m.ra = float(ra)
+                    m.dec = float(dec)
+
+                    # PSF photometry:
+                    # Two options: use the PSF flux from ZOGY, or use the new image PSF to measure the flux.
+                    # TODO: this is currently commented out since I don't know how to normalize this flux
+                    # if c.sub_psfflux is not None and c.sub_psffluxerr is not None:
+                    #     ix = int(np.round(m.offset_x + c.sub_data.shape[1] // 2))
+                    #     iy = int(np.round(m.offset_y + c.sub_data.shape[0] // 2))
+                    #
+                    #     # when offsets are so big it really doesn't matter what we put here, it will fail the cuts
+                    #     if ix < 0 or ix >= c.sub_psfflux.shape[1] or iy < 0 or iy >= c.sub_psfflux.shape[0]:
+                    #         m.flux_psf = np.nan
+                    #         m.flux_psf_err = np.nan
+                    #         m.area_psf = np.nan
+                    #     else:
+                    #         m.flux_psf = c.sub_psfflux[iy, ix]
+                    #         m.flux_psf_err = c.sub_psffluxerr[iy, ix]
+                    #         psf = c.sources.image.get_psf()
+                    #         m.area_psf = np.nansum(psf.get_clip(c.x, c.y))
+                    # else:
+                    if np.isnan(ra) or np.isnan(dec):
+                        flux = np.nan
+                        fluxerr = np.nan
+                        area = np.nan
+                    else:
+                        flux, fluxerr, area = m.get_flux_at_point(ra, dec, aperture='psf')
+                    m.flux_psf = flux
+                    m.flux_psf_err = fluxerr
+                    m.area_psf = area
+
+                    # decide on the "best" aperture
                     if self.pars.chosen_aperture == 'auto':
                         raise NotImplementedError('Automatic aperture selection is not yet implemented.')
                     if self.pars.chosen_aperture == 'psf':
@@ -250,6 +292,7 @@ class Measurer:
                         )
                     m.best_aperture = ap_index
 
+                    # update the provenance
                     m.provenance = prov
                     m.provenance_id = prov.id
 
@@ -290,6 +333,18 @@ class Measurer:
                     m.disqualifier_scores['offsets'] = offset
 
                     # TODO: add additional disqualifiers
+
+                    m._upstream_bitflag = 0
+                    m._upstream_bitflag |= c.bitflag
+
+                    ignore_bits = 0
+                    for badness in self.pars.bad_flag_exclude:
+                        ignore_bits |= 2 ** BadnessConverter.convert(badness)
+
+                    m.disqualifier_scores['bad_flag'] = np.bitwise_and(
+                        np.array(m.bitflag).astype('uint64'),
+                        ~np.array(ignore_bits).astype('uint64'),
+                    )
 
                     # make sure disqualifier scores don't have any numpy types
                     for k, v in m.disqualifier_scores.items():

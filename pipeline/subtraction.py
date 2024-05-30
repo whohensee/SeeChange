@@ -320,7 +320,7 @@ class Subtractor:
                         sub_image.psffluxerr = outdict['alpha_err']
                     if 'psf' in outdict:
                         # TODO: clip the array to be a cutout around the PSF, right now it is same shape as image!
-                        sub_image.zogy_psf = outdict['psf']  # not saved but can be useful for testing / source detection
+                        sub_image.zogy_psf = outdict['psf']  # not saved, can be useful for testing / source detection
                         if 'alpha' in outdict and 'alpha_err' in outdict:
                             sub_image.psfflux = outdict['alpha']
                             sub_image.psffluxerr = outdict['alpha_err']
