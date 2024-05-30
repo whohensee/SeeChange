@@ -193,8 +193,29 @@ def test_threshold_flagging(ptf_datastore):
     m.disqualifier_scores['negatives'] = 0.6 # set a value that will fail both
     assert m.compare_to_thresholds() == "delete"
 
+    # test what happens if we set deletion_thresholds to None
+    #   This should set deletion_threshold = threshold
+    m.provenance.parameters['deletion_thresholds'] = None
+
+    m.disqualifier_scores['negatives'] = 0.1 # set a value that will pass both
+    assert m.compare_to_thresholds() == "ok"
+
+    m.disqualifier_scores['negatives'] = 0.4 # set a value that will fail 
+    assert m.compare_to_thresholds() == "delete"
+
+    # test what happens if we set deletion_thresholds to an empty dict
+    #   This should cause it to be impossible to be marked "delete"
+    m.provenance.parameters['deletion_thresholds'] = {}
+
+    m.disqualifier_scores['negatives'] = 0.1 # set a value that will pass both
+    assert m.compare_to_thresholds() == "ok"
+
+    m.disqualifier_scores['negatives'] = 0.9 # set a value that will fail
+    assert m.compare_to_thresholds() == "bad"
+
     # I'd also like to test that deletion_thresholds is a proper non-critical param
     # so that it can be changed without affecting the provenance
+    # However, it seems like prov.id changes even when varying non-critical params
 
 def test_measurements_forced_photometry(ptf_datastore):
     offset_max = 2.0

@@ -375,6 +375,17 @@ class Measurements(Base, AutoIDMixin, SpatiallyIndexed, HasBitFlagBadness):
             - mark_thresh: represents values above which the object 
               will be have is_bad marked True (but saved)
 
+        If the deletion threshold in parameters is set to None, it will
+        use the regular threshold as the deletion threshold. If instead
+        the deletion threshold is an empty dictionary, no objects will
+        be marked "delete"
+        NOTE: Maybe this functionality is overkill? Instead, I could just
+        make it such that you cannot have deletion_thresholds None, but rather
+        it has to be a dictionary with all the keys set to a value of None to
+        trigger using the threshold as deletion_threshold.
+        This would work fine, but to never delete items you would have to
+        manually set impossible values rather than a simple empty dict.
+
         This function sets the is_bad attribute/column to its proper 
         values based on the above comparison.
 
@@ -386,15 +397,16 @@ class Measurements(Base, AutoIDMixin, SpatiallyIndexed, HasBitFlagBadness):
         """
         passing_status = "ok"
 
-        deletion_thresh = (None if self.provenance.parameters['deletion_thresholds'] is None
-                           else self.provenance.parameters['deletion_thresholds'])
         mark_thresh = self.provenance.parameters['thresholds'] # thresholds above which measurement is marked 'bad'
+        deletion_thresh = (mark_thresh if self.provenance.parameters['deletion_thresholds'] is None
+                           else self.provenance.parameters['deletion_thresholds'])
 
         for key, value in mark_thresh.items():
-            if deletion_thresh[key] is not None and self.disqualifier_scores[key] >= deletion_thresh[key]:
+            if deletion_thresh.get(key) is not None and self.disqualifier_scores[key] >= deletion_thresh[key]:
                 passing_status =  "delete"
                 break
             if mark_thresh[key] is not None and self.disqualifier_scores[key] >= mark_thresh[key]:
+                # I didn't use get here since its required - should fire an error if key isn't in the dict I think
                 passing_status = "bad" # no break because another key could trigger "delete"
 
         self.is_bad = not passing_status == "ok"
