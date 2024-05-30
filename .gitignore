@@ -7,11 +7,13 @@ tests/local_config.yaml
 tests/local_overrides.yaml
 tests/local_augments.yaml
 tests/improc/cache/*
-data/cache/*
+data/cache*
 data/DECam_default_calibrators
 .pytest.ini
 tests/plots
 tests/temp_data
+coadd.weight.fits
+tests/coadd.weight.fits
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

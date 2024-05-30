@@ -374,13 +374,20 @@ cutouts_badness_inverse = {EnumConverter.c(v): k for k, v in cutouts_badness_dic
 
 
 # join the badness:
-data_badness_dict = {0: 'good'}
+data_badness_dict = {}
 data_badness_dict.update(image_badness_dict)
 data_badness_dict.update(cutouts_badness_dict)
 data_badness_dict.update(source_list_badness_dict)
 data_badness_inverse = {EnumConverter.c(v): k for k, v in data_badness_dict.items()}
 if 0 in data_badness_inverse:
     raise ValueError('Cannot have a badness bitflag of zero. This is reserved for good data.')
+
+
+class BadnessConverter( EnumConverter ):
+    _dict = data_badness_dict
+    _allowed_values = data_badness_dict
+    _dict_filtered = None
+    _dict_inverse = None
 
 # bitflag for image preprocessing steps that have been done
 image_preprocessing_dict = {
