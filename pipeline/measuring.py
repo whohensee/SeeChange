@@ -311,10 +311,9 @@ class Measurer:
 
                 saved_measurements = []
                 for m in measurements_list:
-                    # passes() method sets the is_bad attribute of m rather than doing it explicitly here
-                    if m.passes() != "delete":  # all disqualifiers are below threshold
+                    # passes_deletion_threshold() method sets the is_bad attribute of m rather than doing it explicitly here
+                    if m.passes_deletion_threshold():  # all disqualifiers are below threshold
                         saved_measurements.append(m)
-                    
 
                 # add the resulting measurements to the data store
                 ds.all_measurements = measurements_list  # debugging only

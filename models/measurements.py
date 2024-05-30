@@ -351,12 +351,24 @@ class Measurements(Base, AutoIDMixin, SpatiallyIndexed):
 
         raise ValueError('Cutouts not found in the list. ')
 
-    def passes(self):
+    def compare_to_thresholds(self):
         """check if there are disqualifiers above the threshold
 
-        Note that if a threshold is missing or None, that disqualifier is not checked
+        Compares disqualifiers to two threshold dictionaries: 
+            - deletion_thresh: represents values above which the object
+              will be 'deleted' (not saved to database)
+            - mark_thresh: represents values above which the object 
+              will be have is_bad marked True (but saved)
+
+        This function sets the is_bad attribute/column to its proper 
+        values based on the above comparison.
+
+        returns one of three strings to indicate the result
+          - "ok"     : All disqualifiers below both thresholds
+          - "bad"    : Some disqualifiers above mark_thresh but all 
+                       below deletion_thresh
+          - "delete" : Some disqualifiers above deletion_thresh
         """
-        # add logic for bad_deleted and good_bad thresholds
         passing_status = "ok"
 
         deletion_thresh = (None if self.provenance.parameters['deletion_thresholds'] is None
@@ -372,6 +384,19 @@ class Measurements(Base, AutoIDMixin, SpatiallyIndexed):
 
         self.is_bad = not passing_status == "ok"
         return passing_status
+
+    # This could definitely have been one function, but it felt wrong to have a
+    #   function which is meant to be returning whether or not it passed also
+    #   be solely responsible for manipulating the column value
+    def passes_deletion_threshold(self):
+        """call self.compare_to_thresholds() check if there are disqualifiers above 
+        the thresholds and set the is_bad column attribute.
+
+        Return a Bool that indicates whether or not the object should be saved to db
+        """
+        # add logic for bad_deleted and good_bad thresholds
+        passing_status = self.compare_to_thresholds()
+        return not passing_status == "delete"
 
     def associate_object(self, session=None):
         """Find or create a new object and associate it with this measurement.

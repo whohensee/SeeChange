@@ -170,4 +170,66 @@ def test_measurements_cannot_be_saved_twice(ptf_datastore):
                 session.delete(m2)
                 session.commit()
 
+def test_threshold_flagging(ptf_datastore):
+    # get a copy of a single measurement
+    # create three new measurements based off it, and
+    #   set one to pass, one to fail mark, one to fail delete
+    # set the ds measurements to be just these three, then save and commit
+    # check we had the desired results
+    # also check that we can remove the dict, not change prov, and get expected behavior
 
+    measurements = ptf_datastore.measurements
+    m = measurements[0]  # grab the first one as an example
+
+    m.provenance.parameters['thresholds']['negatives'] = 0.3
+    m.provenance.parameters['deletion_thresholds']['negatives'] = 0.5
+
+    m.disqualifier_scores['negatives'] = 0.1 # set a value that will pass both
+    assert m.compare_to_thresholds() == "ok"
+
+    m.disqualifier_scores['negatives'] = 0.4 # set a value that will fail one
+    assert m.compare_to_thresholds() == "bad"
+
+    m.disqualifier_scores['negatives'] = 0.6 # set a value that will fail both
+    assert m.compare_to_thresholds() == "delete"
+
+    # I'd also like to test that deletion_thresholds is a proper non-critical param
+    # so that it can be changed without affecting the provenance
+
+
+
+    # with SmartSession() as session:
+    #     session.add(m) # might not be necessary, but i want to compare objects
+
+    #     prov=Provenance(
+    #         process=m.provenance.process,
+    #         upstreams=m.provenance.upstreams,
+    #         code_version=m.provenance.code_version,
+    #         parameters=m.provenance.parameters.copy(),
+    #         is_testing=True,
+    #     )
+    #     prov.parameters['test_parameter'] = uuid.uuid4().hex
+    #     prov.update_id()
+
+    #     new_measurements = []
+    #     for i in range(len(3)):
+    #         new_m = Measurements()
+    #         for key, value in m.__dict__.items():
+    #             if key not in [
+    #             '_sa_instance_state',
+    #             'id',
+    #             'created_at',
+    #             'modified',
+    #             'from_db',
+    #             'provenance',
+    #             'provenance_id',
+    #             'object',
+    #             'object_id',
+    #             ]:
+    #                 setattr(new_m, key, value)
+    #         new_m.provenance = prov
+    #         new_m.provenance_id = prov.id
+    #         new_measurements.append(new_m)
+
+    return None
+    
