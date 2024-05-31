@@ -176,7 +176,7 @@ def test_threshold_flagging(ptf_datastore, measurer):
     m = measurements[0]  # grab the first one as an example
 
     m.provenance.parameters['thresholds']['negatives'] = 0.3
-    measurer.pars.deletion_thresholds['negatives'] = 0.5   # different since non-critical
+    measurer.pars.deletion_thresholds['negatives'] = 0.5
 
     m.disqualifier_scores['negatives'] = 0.1 # set a value that will pass both
     assert measurer.compare_measurement_to_thresholds(m) == "ok"
