@@ -275,7 +275,7 @@ class Measurements(Base, AutoIDMixin, SpatiallyIndexed, HasBitFlagBadness):
     is_bad = sa.Column(
         sa.Boolean,
         nullable=False,
-        # default=False, #No default maybe to prevent accidental creation of wrong type?
+        index=True,
         doc='Boolean flag to indicate if the measurement failed one or more threshold value comparisons. '
     )
 
@@ -401,15 +401,16 @@ class Measurements(Base, AutoIDMixin, SpatiallyIndexed, HasBitFlagBadness):
         deletion_thresh = (mark_thresh if self.provenance.parameters['deletion_thresholds'] is None
                            else self.provenance.parameters['deletion_thresholds'])
 
-        for key, value in mark_thresh.items():
+        # I think this accomplishes what we wanted without having to fully loop over both dictionaries
+        combined_keys = np.unique(list(mark_thresh.keys()) + list(deletion_thresh.keys())) # unique keys from both
+        for key in combined_keys:
             if deletion_thresh.get(key) is not None and self.disqualifier_scores[key] >= deletion_thresh[key]:
                 passing_status =  "delete"
                 break
-            if mark_thresh[key] is not None and self.disqualifier_scores[key] >= mark_thresh[key]:
-                # I didn't use get here since its required - should fire an error if key isn't in the dict I think
+            if mark_thresh.get(key) is not None and self.disqualifier_scores[key] >= mark_thresh[key]:
                 passing_status = "bad" # no break because another key could trigger "delete"
 
-        self.is_bad = not passing_status == "ok"
+        self.is_bad = passing_status != "ok"
         return passing_status
 
     # This could definitely have been one function, but it felt wrong to have a

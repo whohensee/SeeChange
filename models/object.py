@@ -44,7 +44,7 @@ class Object(Base, AutoIDMixin, SpatiallyIndexed):
     is_bad = sa.Column(
         sa.Boolean,
         nullable=False,
-        # default=False, #No default maybe to prevent accidental creation of wrong type?
+        index=True,
         doc='Boolean flag to indicate if the object is associated with measurements marked "bad". '
     )
 

@@ -747,7 +747,14 @@ def datastore_factory(data_dir, pipeline_factory):
                 ds.all_measurements = Measurements.copy_list_from_cache(cache_dir, cache_name)
                 [setattr(m, 'provenance', prov) for m in ds.all_measurements]
                 [setattr(m, 'cutouts', c) for m, c in zip(ds.all_measurements, ds.cutouts)]
-                ds.measurements = [m for m in ds.all_measurements if m.passes_deletion_threshold()]
+
+                ds.measurements = []
+                for m in ds.all_measurements:
+                    threshold_comparison = p.measurer.compare_measurement_to_thresholds(m)
+                    if threshold_comparison != "delete":  # all disqualifiers are below threshold
+                        m.is_bad = True if threshold_comparison == "bad" else False # only possibilities left "ok", "bad"
+                        ds.measurements.append(m)
+                
                 [m.associate_object(session) for m in ds.measurements]  # create or find an object for each measurement
                 # no need to save list because Measurements is not a FileOnDiskMixin!
             else:  # cannot find measurements on cache

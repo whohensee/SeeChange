@@ -219,7 +219,7 @@ def test_separate_good_and_bad_objects(measurer, ptf_datastore):
     m = measurements[0]  # grab the first one as an example
 
     with SmartSession() as session:
-        session.add(m) # might not be necessary, but i want to compare objects
+        m = session.merge(m)
 
         prov=Provenance(
             process=m.provenance.process,

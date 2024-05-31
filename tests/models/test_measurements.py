@@ -16,6 +16,7 @@ from models.measurements import Measurements
 def test_measurements_attributes(measurer, ptf_datastore):
 
     ds = measurer.run(ptf_datastore.cutouts)
+    breakpoint()
     # check that the measurer actually loaded the measurements from db, and not recalculated
     assert len(ds.measurements) <= len(ds.cutouts)  # not all cutouts have saved measurements
     assert len(ds.measurements) == len(ptf_datastore.measurements)
@@ -170,52 +171,57 @@ def test_measurements_cannot_be_saved_twice(ptf_datastore):
                 session.delete(m2)
                 session.commit()
 
-def test_threshold_flagging(ptf_datastore):
-    # get a copy of a single measurement
-    # create three new measurements based off it, and
-    #   set one to pass, one to fail mark, one to fail delete
-    # set the ds measurements to be just these three, then save and commit
-    # check we had the desired results
-    # also check that we can remove the dict, not change prov, and get expected behavior
+def test_threshold_flagging(ptf_datastore, measurer):
 
     measurements = ptf_datastore.measurements
     m = measurements[0]  # grab the first one as an example
 
     m.provenance.parameters['thresholds']['negatives'] = 0.3
-    m.provenance.parameters['deletion_thresholds']['negatives'] = 0.5
+    measurer.pars.deletion_thresholds['negatives'] = 0.5   # different since non-critical
 
     m.disqualifier_scores['negatives'] = 0.1 # set a value that will pass both
-    assert m.compare_to_thresholds() == "ok"
+    assert measurer.compare_measurement_to_thresholds(m) == "ok"
 
     m.disqualifier_scores['negatives'] = 0.4 # set a value that will fail one
-    assert m.compare_to_thresholds() == "bad"
+    assert measurer.compare_measurement_to_thresholds(m) == "bad"
 
     m.disqualifier_scores['negatives'] = 0.6 # set a value that will fail both
-    assert m.compare_to_thresholds() == "delete"
+    assert measurer.compare_measurement_to_thresholds(m) == "delete"
 
-    # test what happens if we set deletion_thresholds to None
-    #   This should set deletion_threshold = threshold
-    m.provenance.parameters['deletion_thresholds'] = None
+    # test what happens if we set deletion_thresholds to unspecified
+    #   This should use threshold values as deletion_threshold values
+    measurer.pars.deletion_thresholds = {}
 
-    m.disqualifier_scores['negatives'] = 0.1 # set a value that will pass both
-    assert m.compare_to_thresholds() == "ok"
+    m.disqualifier_scores['negatives'] = 0.1 # set a value that will pass
+    assert measurer.compare_measurement_to_thresholds(m) == "ok"
 
-    m.disqualifier_scores['negatives'] = 0.4 # set a value that will fail 
-    assert m.compare_to_thresholds() == "delete"
+    m.disqualifier_scores['negatives'] = 0.4 # set a value that will fail
+    assert measurer.compare_measurement_to_thresholds(m) == "delete"
 
-    # test what happens if we set deletion_thresholds to an empty dict
-    #   This should cause it to be impossible to be marked "delete"
-    m.provenance.parameters['deletion_thresholds'] = {}
+    # I'm not sure how setting the value to infinity would look in the config yaml
+    # (so I could use a similar value in the test), but if we want to test it then
+    # I'm open to a more proper value
 
-    m.disqualifier_scores['negatives'] = 0.1 # set a value that will pass both
-    assert m.compare_to_thresholds() == "ok"
+    # test what happens if we set deletion_thresholds to very large numbers
+    #   This should effectively turn off deletion and only return 'ok' or 'bad'
+    measurer.pars.deletion_thresholds['negatives'] = 1000
+    m.disqualifier_scores['negatives'] = 0.1 # set a value that will pass
+    assert measurer.compare_measurement_to_thresholds(m) == "ok"
 
-    m.disqualifier_scores['negatives'] = 0.9 # set a value that will fail
-    assert m.compare_to_thresholds() == "bad"
+    m.disqualifier_scores['negatives'] = 0.4 # a value that would fail mark
+    assert measurer.compare_measurement_to_thresholds(m) == "bad"
 
-    # I'd also like to test that deletion_thresholds is a proper non-critical param
-    # so that it can be changed without affecting the provenance
-    # However, it seems like prov.id changes even when varying non-critical params
+    m.disqualifier_scores['negatives'] = 0.9 # a value that would fail both (earlier)
+    assert measurer.compare_measurement_to_thresholds(m) == "bad"
+
+    # test deletion_threshold varies as a non-critical parameter
+    provid = m.provenance.id
+    assert measurer.compare_measurement_to_thresholds(m) == "bad"  # from the previous test
+    assert m.provenance.id == provid
+
+    measurer.pars.deletion_thresholds['negatives'] = 0.5   # different since non-critical
+    assert measurer.compare_measurement_to_thresholds(m) == "delete"
+    assert m.provenance.id == provid  # check prov id hasn't changed
 
 def test_measurements_forced_photometry(ptf_datastore):
     offset_max = 2.0
