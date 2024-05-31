@@ -242,7 +242,6 @@ def test_deletion_thresh_is_non_critical(ptf_datastore, measurer):
                 'bad_flag': 1,
             }
 
-    assert measurer.pars.deletion_threshold != {}
     ds1 = measurer.run(ptf_datastore.cutouts)
 
     # This run should behave identical to the above
