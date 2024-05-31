@@ -366,65 +366,6 @@ class Measurements(Base, AutoIDMixin, SpatiallyIndexed, HasBitFlagBadness):
 
         raise ValueError('Cutouts not found in the list. ')
 
-    def compare_to_thresholds(self):
-        """check if there are disqualifiers above the threshold
-
-        Compares disqualifiers to two threshold dictionaries: 
-            - deletion_thresh: represents values above which the object
-              will be 'deleted' (not saved to database)
-            - mark_thresh: represents values above which the object 
-              will be have is_bad marked True (but saved)
-
-        If the deletion threshold in parameters is set to None, it will
-        use the regular threshold as the deletion threshold. If instead
-        the deletion threshold is an empty dictionary, no objects will
-        be marked "delete"
-        NOTE: Maybe this functionality is overkill? Instead, I could just
-        make it such that you cannot have deletion_thresholds None, but rather
-        it has to be a dictionary with all the keys set to a value of None to
-        trigger using the threshold as deletion_threshold.
-        This would work fine, but to never delete items you would have to
-        manually set impossible values rather than a simple empty dict.
-
-        This function sets the is_bad attribute/column to its proper 
-        values based on the above comparison.
-
-        returns one of three strings to indicate the result
-          - "ok"     : All disqualifiers below both thresholds
-          - "bad"    : Some disqualifiers above mark_thresh but all 
-                       below deletion_thresh
-          - "delete" : Some disqualifiers above deletion_thresh
-        """
-        passing_status = "ok"
-
-        mark_thresh = self.provenance.parameters['thresholds'] # thresholds above which measurement is marked 'bad'
-        deletion_thresh = (mark_thresh if self.provenance.parameters['deletion_thresholds'] is None
-                           else self.provenance.parameters['deletion_thresholds'])
-
-        # I think this accomplishes what we wanted without having to fully loop over both dictionaries
-        combined_keys = np.unique(list(mark_thresh.keys()) + list(deletion_thresh.keys())) # unique keys from both
-        for key in combined_keys:
-            if deletion_thresh.get(key) is not None and self.disqualifier_scores[key] >= deletion_thresh[key]:
-                passing_status =  "delete"
-                break
-            if mark_thresh.get(key) is not None and self.disqualifier_scores[key] >= mark_thresh[key]:
-                passing_status = "bad" # no break because another key could trigger "delete"
-
-        self.is_bad = passing_status != "ok"
-        return passing_status
-
-    # This could definitely have been one function, but it felt wrong to have a
-    #   function which is meant to be returning whether or not it passed also
-    #   be solely responsible for manipulating the column value
-    def passes_deletion_threshold(self):
-        """call self.compare_to_thresholds() check if there are disqualifiers above 
-        the thresholds and set the is_bad column attribute.
-
-        Return a Bool that indicates whether or not the object should be saved to db
-        """
-        passing_status = self.compare_to_thresholds()
-        return not passing_status == "delete"
-
     def associate_object(self, session=None):
         """Find or create a new object and associate it with this measurement.
 

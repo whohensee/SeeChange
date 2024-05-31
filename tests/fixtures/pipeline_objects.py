@@ -752,9 +752,9 @@ def datastore_factory(data_dir, pipeline_factory):
                 for m in ds.all_measurements:
                     threshold_comparison = p.measurer.compare_measurement_to_thresholds(m)
                     if threshold_comparison != "delete":  # all disqualifiers are below threshold
-                        m.is_bad = True if threshold_comparison == "bad" else False # only possibilities left "ok", "bad"
+                        m.is_bad = threshold_comparison == "bad"
                         ds.measurements.append(m)
-                
+
                 [m.associate_object(session) for m in ds.measurements]  # create or find an object for each measurement
                 # no need to save list because Measurements is not a FileOnDiskMixin!
             else:  # cannot find measurements on cache

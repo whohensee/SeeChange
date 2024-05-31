@@ -103,14 +103,13 @@ class ParsMeasurer(Parameters):
             'to compare against the real width (x1.0) when running psf width filter. '
         )
 
-        # update to the new dictionary format
         self.thresholds = self.add_par(
             'thresholds',
             {
                 'negatives': 0.3,
                 'bad pixels': 1,
                 'offsets': 5.0,
-                'filter bank': 1, # in default_config.yaml this is 1.0, not 1
+                'filter bank': 1,
                 'bad_flag': 1,
             },
             dict,
@@ -124,7 +123,7 @@ class ParsMeasurer(Parameters):
             dict,
             'Deletion thresholds for the disqualifier scores. '
             'If the score is higher than (or equal to) the threshold, the measurement is not saved. ',
-            # critical=False
+            critical=False
         )
 
         self.association_radius = self.add_par(
