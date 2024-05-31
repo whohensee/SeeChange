@@ -646,4 +646,3 @@ def sim_lightcurves(sim_sub_image_list, measurer):
     yield lightcurves
 
     # no cleanup for this one
-

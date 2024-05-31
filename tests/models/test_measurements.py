@@ -188,39 +188,26 @@ def test_threshold_flagging(ptf_datastore, measurer):
     assert measurer.compare_measurement_to_thresholds(m) == "delete"
 
     # test what happens if we set deletion_thresholds to unspecified
-    #   This should use threshold values as deletion_threshold values
+    #   This should not test at all for deletion
     measurer.pars.deletion_thresholds = {}
 
     m.disqualifier_scores['negatives'] = 0.1 # set a value that will pass
     assert measurer.compare_measurement_to_thresholds(m) == "ok"
 
-    m.disqualifier_scores['negatives'] = 0.4 # set a value that will fail
-    assert measurer.compare_measurement_to_thresholds(m) == "delete"
+    m.disqualifier_scores['negatives'] = 0.8 # set a value that will fail
+    assert measurer.compare_measurement_to_thresholds(m) == "bad"
 
-    # I'm not sure how setting the value to infinity would look in the config yaml
-    # (so I could use a similar value in the test), but if we want to test it then
-    # I'm open to a more proper value
-
-    # test what happens if we set deletion_thresholds to very large numbers
-    #   This should effectively turn off deletion and only return 'ok' or 'bad'
-    measurer.pars.deletion_thresholds['negatives'] = 1000
+    # test what happens if we set deletion_thresholds to None
+    #   This should set the deletion threshold same as threshold
+    measurer.pars.deletion_thresholds = None
     m.disqualifier_scores['negatives'] = 0.1 # set a value that will pass
     assert measurer.compare_measurement_to_thresholds(m) == "ok"
 
     m.disqualifier_scores['negatives'] = 0.4 # a value that would fail mark
-    assert measurer.compare_measurement_to_thresholds(m) == "bad"
+    assert measurer.compare_measurement_to_thresholds(m) == "delete"
 
     m.disqualifier_scores['negatives'] = 0.9 # a value that would fail both (earlier)
-    assert measurer.compare_measurement_to_thresholds(m) == "bad"
-
-    # test deletion_threshold varies as a non-critical parameter
-    provid = m.provenance.id
-    assert measurer.compare_measurement_to_thresholds(m) == "bad"  # from the previous test
-    assert m.provenance.id == provid
-
-    measurer.pars.deletion_thresholds['negatives'] = 0.5   # different since non-critical
     assert measurer.compare_measurement_to_thresholds(m) == "delete"
-    assert m.provenance.id == provid  # check prov id hasn't changed
 
 def test_deletion_thresh_is_non_critical(ptf_datastore, measurer):
 
