@@ -222,6 +222,38 @@ def test_threshold_flagging(ptf_datastore, measurer):
     assert measurer.compare_measurement_to_thresholds(m) == "delete"
     assert m.provenance.id == provid  # check prov id hasn't changed
 
+def test_deletion_thresh_is_non_critical(ptf_datastore, measurer):
+
+    # hard code in the thresholds to ensure no problems arise
+    # if the defaults for testing change
+    measurer.pars.threshold = {
+                'negatives': 0.3,
+                'bad pixels': 1,
+                'offsets': 5.0,
+                'filter bank': 1,
+                'bad_flag': 1,
+            }
+
+    measurer.pars.deletion_threshold = {
+                'negatives': 0.3,
+                'bad pixels': 1,
+                'offsets': 5.0,
+                'filter bank': 1,
+                'bad_flag': 1,
+            }
+
+    assert measurer.pars.deletion_threshold != {}
+    ds1 = measurer.run(ptf_datastore.cutouts)
+
+    # This run should behave identical to the above
+    measurer.pars.deletion_threshold = {}
+    ds2 = measurer.run(ptf_datastore.cutouts)
+
+    m1 = ds1.measurements[0]
+    m2 = ds2.measurements[0]
+
+    assert m1.provenance.id == m2.provenance.id
+
 def test_measurements_forced_photometry(ptf_datastore):
     offset_max = 2.0
     for m in ptf_datastore.measurements:
