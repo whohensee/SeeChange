@@ -232,7 +232,7 @@ def test_deletion_thresh_is_non_critical(ptf_datastore, measurer):
     ds1 = measurer.run(ptf_datastore.cutouts)
 
     # This run should behave identical to the above
-    measurer.pars.deletion_threshold = {}
+    measurer.pars.deletion_threshold = None
     ds2 = measurer.run(ptf_datastore.cutouts)
 
     m1 = ds1.measurements[0]
