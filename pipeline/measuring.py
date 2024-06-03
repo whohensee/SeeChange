@@ -445,7 +445,6 @@ class Measurer:
         deletion_thresh = ( mark_thresh if self.pars.deletion_thresholds is None
                            else self.pars.deletion_thresholds )
 
-        # I think this accomplishes what we wanted without having to fully loop over both dictionaries
         combined_keys = np.unique(list(mark_thresh.keys()) + list(deletion_thresh.keys())) # unique keys from both
         for key in combined_keys:
             if deletion_thresh.get(key) is not None and m.disqualifier_scores[key] >= deletion_thresh[key]:
