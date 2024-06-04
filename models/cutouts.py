@@ -71,6 +71,7 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagBa
         doc="The source list (of detections in the difference image) this cutouts object is associated with. "
     )
 
+    # move to measurements
     index_in_sources = sa.Column(
         sa.Integer,
         nullable=False,
@@ -80,12 +81,14 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagBa
     sub_image_id = association_proxy('sources', 'image_id')
     sub_image = association_proxy('sources', 'image')
 
+    # move to measurements
     x = sa.Column(
         sa.Integer,
         nullable=False,
         doc="X pixel coordinate of the center of the cutout. "
     )
 
+    # move to measurements
     y = sa.Column(
         sa.Integer,
         nullable=False,
@@ -114,16 +117,19 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagBa
         )
     )
 
+    # check if should be moved to measurements
     @property
     def new_image(self):
         """Get the aligned new image using the sub_image. """
         return self.sub_image.new_aligned_image
 
+    # check if should be moved to measurements
     @property
     def ref_image(self):
         """Get the aligned reference image using the sub_image. """
         return self.sub_image.ref_aligned_image
 
+    # update as cutoutsfile
     def __init__(self, *args, **kwargs):
         FileOnDiskMixin.__init__(self, *args, **kwargs)
         SeeChangeBase.__init__(self)  # don't pass kwargs as they could contain non-column key-values
@@ -153,6 +159,7 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagBa
             if hasattr(self, key):
                 setattr(self, key, value)
 
+    # update as cutoutsfile
     @orm.reconstructor
     def init_on_load(self):
         Base.init_on_load(self)
@@ -174,6 +181,7 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagBa
         self._new_weight = None
         self._new_flags = None
 
+    # update as cutoutsfile
     def __repr__(self):
         return (
             f"<Cutouts {self.id} "
@@ -189,6 +197,7 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagBa
 
         super().__setattr__(key, value)
 
+    # update as cutoutsfile
     @staticmethod
     def get_data_attributes(include_optional=True):
         names = ['source_row']
@@ -668,7 +677,7 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagBa
         """Get the detections SourceList that was used to make this cutout. """
         with SmartSession(session) as session:
             return session.scalars(sa.select(SourceList).where(SourceList.id == self.sources_id)).all()
-        
+
     def get_downstreams(self, session=None):
         """Get the downstream Measurements that were made from this Cutouts object. """
         from models.measurements import Measurements
@@ -791,4 +800,3 @@ for att in Cutouts.get_data_attributes():
             fset=lambda self, value, att=att: set_attribute(self, att, value),
         )
     )
-
