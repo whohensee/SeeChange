@@ -156,4 +156,3 @@ class Cutter:
             ds.catch_exception(e)
         finally:  # make sure datastore is returned to be used in the next step
             return ds
-
