@@ -81,20 +81,6 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagBa
     sub_image_id = association_proxy('sources', 'image_id')
     sub_image = association_proxy('sources', 'image')
 
-    # move to measurements
-    x = sa.Column(
-        sa.Integer,
-        nullable=False,
-        doc="X pixel coordinate of the center of the cutout. "
-    )
-
-    # move to measurements
-    y = sa.Column(
-        sa.Integer,
-        nullable=False,
-        doc="Y pixel coordinate of the center of the cutout. "
-    )
-
     provenance_id = sa.Column(
         sa.ForeignKey('provenances.id', ondelete="CASCADE", name='cutouts_provenance_id_fkey'),
         nullable=False,

@@ -218,6 +218,10 @@ class Measurer:
                     # before either of them is in the DB and then use the cutouts_id instead
                     m._cutouts_list_index = i
 
+                    # get all the information that used to be populated in cutting
+                    m.x = c.sources.x[c.index_in_sources]  # update once index_in_sources moved to m
+                    m.y = c.sources.y[c.index_in_sources]  # update once index_in_sources moved to m
+
                     m.aper_radii = c.sources.image.new_image.zp.aper_cor_radii  # zero point corrected aperture radii
 
                     ignore_bits = 0
@@ -254,8 +258,8 @@ class Measurer:
                     m.position_angle = output['angle']
 
                     # update the coordinates using the centroid offsets
-                    x = c.x + m.offset_x
-                    y = c.y + m.offset_y
+                    x = m.x + m.offset_x
+                    y = m.y + m.offset_y
                     ra, dec = m.cutouts.sources.image.new_image.wcs.wcs.pixel_to_world_values(x, y)
                     m.ra = float(ra)
                     m.dec = float(dec)

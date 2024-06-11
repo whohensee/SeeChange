@@ -237,6 +237,18 @@ class Measurements(Base, AutoIDMixin, SpatiallyIndexed, HasBitFlagBadness):
         doc="Areas of the apertures used for calculating flux. Remove a * background from the flux measurement. "
     )
 
+    x = sa.Column(
+        sa.Integer,
+        nullable=False,
+        doc="X pixel coordinate of the center of the cutout. "
+    )
+
+    y = sa.Column(
+        sa.Integer,
+        nullable=False,
+        doc="Y pixel coordinate of the center of the cutout. "
+    )
+
     offset_x = sa.Column(
         sa.REAL,
         nullable=False,
@@ -291,6 +303,8 @@ class Measurements(Base, AutoIDMixin, SpatiallyIndexed, HasBitFlagBadness):
 
     def __init__(self, **kwargs):
         SeeChangeBase.__init__(self)  # don't pass kwargs as they could contain non-column key-values
+
+        # replace this transient attribute with the real index once its moved to this obj
         self._cutouts_list_index = None  # helper (transient) attribute that helps find the right cutouts in a list
 
         # manually set all properties (columns or not)
