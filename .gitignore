@@ -12,6 +12,7 @@ data/DECam_default_calibrators
 .pytest.ini
 tests/plots
 tests/temp_data
+webap/static/rkwebutil.js
 coadd.weight.fits
 tests/coadd.weight.fits
 
