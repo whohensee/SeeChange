@@ -263,19 +263,20 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagBa
         """
         cutout = Cutouts()
         cutout.sources = detections
-        cutout.index_in_sources = source_index
-        cutout.source_row = dict(Table(detections.data)[source_index])
+        cutout.index_in_sources = source_index   # move to measurements
+        cutout.source_row = dict(Table(detections.data)[source_index]) # move to measurements probably
         for key, value in cutout.source_row.items():
             if isinstance(value, np.number):
                 cutout.source_row[key] = value.item()  # convert numpy number to python primitive
-        cutout.x = detections.x[source_index]
-        cutout.y = detections.y[source_index]
-        cutout.ra = cutout.source_row['ra']
-        cutout.dec = cutout.source_row['dec']
-        cutout.calculate_coordinates()
-        cutout.provenance = provenance
+        cutout.x = detections.x[source_index] # move to measurements
+        cutout.y = detections.y[source_index] # move to measurements
+        cutout.ra = cutout.source_row['ra'] # move to measurements
+        cutout.dec = cutout.source_row['dec'] # move to measurements
+        cutout.calculate_coordinates() # move to measurements
+        cutout.provenance = provenance # figure out how shifting all to measurements affects this line
 
         # add the data, weight, and flags to the cutout from kwargs
+        # figure out if these go to measurements
         for im in ['sub', 'ref', 'new']:
             for att in ['data', 'weight', 'flags']:
                 setattr(cutout, f'{im}_{att}', kwargs.get(f'{im}_{att}', None))
