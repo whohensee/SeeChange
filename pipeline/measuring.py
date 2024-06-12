@@ -8,6 +8,8 @@ from scipy import signal
 from improc.photometry import iterative_cutouts_photometry
 from improc.tools import make_gaussian
 
+from astropy.table import Table
+
 from models.cutouts import Cutouts
 from models.measurements import Measurements
 from models.enums_and_bitflags import BitFlagConverter, BadnessConverter
@@ -170,7 +172,7 @@ class Measurer:
                 args, kwargs, session = parse_session(*args, **kwargs)
                 ds = DataStore()
                 ds.cutouts = args[0]
-                ds.detections = ds.cutouts[0].sources
+                ds.detections = ds.cutouts.sources
                 ds.sub_image = ds.detections.image
                 ds.image = ds.sub_image.new_image
             else:
@@ -207,39 +209,45 @@ class Measurer:
                 cutouts = ds.get_cutouts(session=session)
 
                 # prepare the filter bank for this batch of cutouts
-                if self._filter_psf_fwhm is None or self._filter_psf_fwhm != cutouts[0].sources.image.get_psf().fwhm_pixels:
-                    self.make_filter_bank(cutouts[0].sub_data.shape[0], cutouts[0].sources.image.get_psf().fwhm_pixels)
+                if self._filter_psf_fwhm is None or self._filter_psf_fwhm != cutouts.sources.image.get_psf().fwhm_pixels:
+                    self.make_filter_bank(cutouts.co_list[0]["sub_data"].shape[0], cutouts.sources.image.get_psf().fwhm_pixels)
 
                 # go over each cutouts object and produce a measurements object
                 measurements_list = []
-                for i, c in enumerate(cutouts):
-                    m = Measurements(cutouts=c)
+                for i, co_dict in enumerate(cutouts.co_list):
+                    m = Measurements(cutouts=cutouts)
                     # make sure to remember which cutout belongs to this measurement,
                     # before either of them is in the DB and then use the cutouts_id instead
                     m._cutouts_list_index = i
 
                     # get all the information that used to be populated in cutting
-                    m.x = c.sources.x[c.index_in_sources]  # update once index_in_sources moved to m
-                    m.y = c.sources.y[c.index_in_sources]  # update once index_in_sources moved to m
+                    m.x = cutouts.sources.x[co_dict['source_index']]  # update once index_in_sources moved to m
+                    m.y = cutouts.sources.y[co_dict['source_index']]  # update once index_in_sources moved to m
+                    m.source_row = dict(Table(detections.data)[co_dict['source_index']]) # move to measurements probably
+                    for key, value in m.source_row.items():
+                        if isinstance(value, np.number):
+                            m.source_row[key] = value.item()  # convert numpy number to python primitive
+                    # m.ra = m.source_row['ra'] # done in one line below
+                    # m.dec = m.source_row['dec']
 
-                    m.aper_radii = c.sources.image.new_image.zp.aper_cor_radii  # zero point corrected aperture radii
+                    m.aper_radii = cutouts.sources.image.new_image.zp.aper_cor_radii  # zero point corrected aperture radii
 
                     ignore_bits = 0
                     for badness in self.pars.bad_pixel_exclude:
                         ignore_bits |= 2 ** BitFlagConverter.convert(badness)
 
                     # remove the bad pixels that we want to ignore
-                    flags = c.sub_flags.astype('uint16') & ~np.array(ignore_bits).astype('uint16')
+                    flags = co_dict['sub_flags'].astype('uint16') & ~np.array(ignore_bits).astype('uint16')
 
                     annulus_radii_pixels = self.pars.annulus_radii
                     if self.pars.annulus_units == 'fwhm':
-                        fwhm = c.source.image.get_psf().fwhm_pixels
+                        fwhm = cutouts.source.image.get_psf().fwhm_pixels
                         annulus_radii_pixels = [rad * fwhm for rad in annulus_radii_pixels]
 
                     # TODO: consider if there are any additional parameters that photometry needs
                     output = iterative_cutouts_photometry(
-                        c.sub_data,
-                        c.sub_weight,
+                        co_dict['sub_data'],
+                        co_dict['sub_weight'],
                         flags,
                         radii=m.aper_radii,
                         annulus=annulus_radii_pixels,
@@ -261,8 +269,9 @@ class Measurer:
                     x = m.x + m.offset_x
                     y = m.y + m.offset_y
                     ra, dec = m.cutouts.sources.image.new_image.wcs.wcs.pixel_to_world_values(x, y)
-                    m.ra = float(ra)
-                    m.dec = float(dec)
+                    m.ra = m.source_row['ra'] + float(ra)
+                    m.dec = m.source_row['dec'] + float(dec)
+                    m.calculate_coordinates()
 
                     # PSF photometry:
                     # Two options: use the PSF flux from ZOGY, or use the new image PSF to measure the flux.

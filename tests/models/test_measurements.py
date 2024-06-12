@@ -13,6 +13,9 @@ from models.cutouts import Cutouts
 from models.measurements import Measurements
 
 
+def test_xyz(cutter, measurer, ptf_datastore):
+    return None
+
 def test_measurements_attributes(measurer, ptf_datastore):
 
     ds = measurer.run(ptf_datastore.cutouts)

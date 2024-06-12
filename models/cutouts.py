@@ -138,6 +138,8 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagBa
         self._new_weight = None
         self._new_flags = None
 
+        self._co_list = None
+
         self._bitflag = 0
 
         # manually set all properties (columns or not)
@@ -167,14 +169,17 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagBa
         self._new_weight = None
         self._new_flags = None
 
+        self._co_list = None
+
+
     # update as cutoutsfile
     def __repr__(self):
         return (
             f"<Cutouts {self.id} "
             f"from SourceList {self.sources_id} "
-            f"(number {self.index_in_sources}) "
+            # f"(number {self.index_in_sources}) "
             f"from Image {self.sub_image_id} "
-            f"at x,y= {self.x}, {self.y}>"
+            # f"at x,y= {self.x}, {self.y}>"
         )
 
     def __setattr__(self, key, value):
@@ -187,6 +192,18 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagBa
     @staticmethod
     def get_data_attributes(include_optional=True):
         names = ['source_row']
+        for im in ['sub', 'ref', 'new']:
+            for att in ['data', 'weight', 'flags']:
+                names.append(f'{im}_{att}')
+
+        if include_optional:
+            names += ['sub_psfflux', 'sub_psffluxerr']
+
+        return names
+    
+    @staticmethod
+    def get_data__dict_attributes(include_optional=True):
+        names = ['source_index']
         for im in ['sub', 'ref', 'new']:
             for att in ['data', 'weight', 'flags']:
                 names.append(f'{im}_{att}')
@@ -221,6 +238,21 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagBa
             return None
         return np.where(self.new_flags > 0, np.nan, self.new_data)
 
+    # current preliminary implementation is a list of dicts
+    # the dicts have combinations of "sub_, ref_, new_"
+    # and "data, weight, flags"
+    # in addition to a "source_index" (which I think is always just
+    # their position in the list and maybe redundant)
+    @property
+    def co_list( self ):
+        if self._co_list is None and self.filepath is not None:
+            self.load()
+        return self._co_list
+
+    @co_list.setter
+    def co_list( self, value ):
+        self._co_list = value
+
     @staticmethod
     def from_detections(detections, source_index, provenance=None, **kwargs):
         """Create a Cutout object from a row in the SourceList.
@@ -254,8 +286,39 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagBa
         for key, value in cutout.source_row.items():
             if isinstance(value, np.number):
                 cutout.source_row[key] = value.item()  # convert numpy number to python primitive
-        cutout.x = detections.x[source_index] # move to measurements
-        cutout.y = detections.y[source_index] # move to measurements
+        # cutout.x = detections.x[source_index] # move to measurements - should be done
+        # cutout.y = detections.y[source_index] # move to measurements - should be done
+        cutout.ra = cutout.source_row['ra'] # move to measurements
+        cutout.dec = cutout.source_row['dec'] # move to measurements
+        cutout.calculate_coordinates() # move to measurements
+        cutout.provenance = provenance # figure out how shifting all to measurements affects this line
+
+        # add the data, weight, and flags to the cutout from kwargs
+        # figure out if these go to measurements
+        for im in ['sub', 'ref', 'new']:
+            for att in ['data', 'weight', 'flags']:
+                setattr(cutout, f'{im}_{att}', kwargs.get(f'{im}_{att}', None))
+
+        # update the bitflag
+        cutout._upstream_bitflag = detections.bitflag
+
+        return cutout
+
+    # can probably kill from detections once this is perfect and docstring is fixed
+    @staticmethod
+    def from_list(list, provenance=None, **kwargs):
+        """
+        Oh lordie this change gonna be a big one (copy and modify from from_detections)
+        """
+        cutout = Cutouts()
+        cutout.sources = detections
+        cutout.index_in_sources = source_index   # move to measurements
+        cutout.source_row = dict(Table(detections.data)[source_index]) # move to measurements probably
+        for key, value in cutout.source_row.items():
+            if isinstance(value, np.number):
+                cutout.source_row[key] = value.item()  # convert numpy number to python primitive
+        # cutout.x = detections.x[source_index] # move to measurements - should be done
+        # cutout.y = detections.y[source_index] # move to measurements - should be done
         cutout.ra = cutout.source_row['ra'] # move to measurements
         cutout.dec = cutout.source_row['dec'] # move to measurements
         cutout.calculate_coordinates() # move to measurements
@@ -335,7 +398,54 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagBa
         for key, value in self.source_row.items():
             target[key] = value
 
-    def save(self, filename=None, **kwargs):
+    # rename similar to above and delete above once working
+    def _save_dataset_dict_to_hdf5(self, co_dict, file, groupname):
+        """Save the dataset from this Cutouts dict list item into an HDF5 group for an open file.
+
+        Parameters
+        ----------
+        file: h5py.File
+            The open HDF5 file to save to.
+        groupname: str
+            The name of the group to save into. This should be "source_<number>"
+        """
+        if groupname in file:
+            del file[groupname]
+
+        # handle the data arrays
+        for key in co_dict.keys():
+            if key == 'source_index':
+                continue
+            data = co_dict.get(key)
+
+            if data is not None:
+                file.create_dataset(
+                    f'{groupname}/{key}',
+                    data=data,
+                    shape=data.shape,
+                    dtype=data.dtype,
+                    compression='gzip'
+                )
+
+        # handle the source index value
+        target = file[groupname].attrs
+        for key in target.keys():  # first clear the existing keys
+            del target[key]
+
+        # then add the new ones
+        target['source_index'] = co_dict['source_index']
+
+        # honestly not sure I care about the source row below
+        # # handle the source_row dictionary
+        # target = file[groupname].attrs
+        # for key in target.keys():  # first clear the existing keys
+        #     del target[key]
+
+        # # then add the new ones
+        # for key, value in self.source_row.items():
+        #     target[key] = value
+
+    def save(self, filename=None, overwrite=True, **kwargs):
         """Save a single Cutouts object into a file.
 
         Parameters
@@ -345,22 +455,31 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagBa
         kwargs: dict
             Any additional keyword arguments to pass to the FileOnDiskMixin.save method.
         """
-        raise NotImplementedError('Saving only a single cutout into a file is not supported. Use save_list instead.')
+        # consider more what to do in this case. Maybe default in init to []?
+        if self._co_list is None:
+            raise TypeError(f"No data in this cutouts object to save. self._co_list is type None")
 
-        if not self.has_data:
-            raise RuntimeError("The Cutouts data is not loaded. Cannot save.")
+        for co_dict in self._co_list:
+            if not isinstance(co_dict, dict):
+                raise TypeError("Each item of the list must be a dictionary")
 
-        if filename is not None:
-            self.filepath = filename
-        if self.filepath is None:
-            self.filepath = self.invent_filepath()
+        # consider using the has_data check below, maybe not needed with new structure
 
-        fullname = self.get_fullpath()
+        if filename is None:
+            filename = self.invent_filepath() # I think this sets self.filepath
+
+        self.filepath = filename
+
+        fullname = os.path.join(self.local_path, filename)
         self.safe_mkdir(os.path.dirname(fullname))
+
+        if not overwrite and os.path.isfile(fullname):
+            raise FileExistsError(f"The file {fullname} already exists and overwrite is False.")
 
         if self.format == 'hdf5':
             with h5py.File(fullname, 'a') as file:
-                self._save_dataset_to_hdf5(file, f'source_{self.index_in_sources}')
+                for co_dict in self._co_list:
+                    self._save_dataset_dict_to_hdf5(co_dict, file, f'source_{co_dict["source_index"]}')
         elif self.format == 'fits':
             raise NotImplementedError('Saving cutouts to fits is not yet implemented.')
         elif self.format in ['jpg', 'png']:
@@ -369,7 +488,9 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagBa
             raise TypeError(f"Unable to save cutouts file of type {self.format}")
 
         # make sure to also save using the FileOnDiskMixin method
-        super().save(fullname, **kwargs)
+        FileOnDiskMixin.save(self, fullname, overwrite=overwrite, **kwargs)
+
+        # raise NotImplementedError('Saving only a single cutout into a file is not supported. Use save_list instead.')
 
     @classmethod
     def save_list(cls, cutouts_list,  filename=None, overwrite=True, **kwargs):
@@ -445,6 +566,27 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagBa
 
         self.format = 'hdf5'
 
+    # this might be able to become a class method
+    def _load_dataset_dict_from_hdf5(self, file, groupname):
+        """Load the dataset from an HDF5 group into this Cutouts object.
+
+        Parameters
+        ----------
+        file: h5py.File
+            The open HDF5 file to load from.
+        groupname: str
+            The name of the group to load from. This should be "source_<number>"
+        """
+
+        co_dict = {}
+        for att in self.get_data__dict_attributes():
+            if att == 'source_index':
+                co_dict[att] = int(file[groupname][att])  # WHPR change this to get from attrs
+            elif att in file[groupname]:
+                co_dict[att] = np.array(file[f'{groupname}/{att}'])
+
+        # self.format = 'hdf5' # move this line to load
+
     def load(self, filepath=None):
         """Load the data for this cutout from a file.
 
@@ -454,18 +596,31 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagBa
             The (relative/full path) filename to load from.
             If not given, will use self.get_fullpath() to get the filename.
         """
+
         if filepath is None:
             filepath = self.get_fullpath()
 
+        self._co_list = []
+
         if self.format == 'hdf5':
             with h5py.File(filepath, 'r') as file:
+                breakpoint()  # need to figure out how to parse through here as a list
                 self._load_dataset_from_hdf5(file, f'source_{self.index_in_sources}')
-        elif self.format == 'fits':
-            raise NotImplementedError('Loading cutouts from fits is not yet implemented.')
-        elif self.format in ['jpg', 'png']:
-            raise NotImplementedError('Loading cutouts from jpg or png is not yet implemented.')
-        else:
-            raise TypeError(f"Unable to load cutouts file of type {self.format}")
+
+        # ----- old stuff below -----
+
+        # if filepath is None:
+        #     filepath = self.get_fullpath()
+
+        # if self.format == 'hdf5':
+        #     with h5py.File(filepath, 'r') as file:
+        #         self._load_dataset_from_hdf5(file, f'source_{self.index_in_sources}')
+        # elif self.format == 'fits':
+        #     raise NotImplementedError('Loading cutouts from fits is not yet implemented.')
+        # elif self.format in ['jpg', 'png']:
+        #     raise NotImplementedError('Loading cutouts from jpg or png is not yet implemented.')
+        # else:
+        #     raise TypeError(f"Unable to load cutouts file of type {self.format}")
 
     @classmethod
     def from_file(cls, filepath, source_number, **kwargs):
@@ -777,6 +932,7 @@ def set_attribute(object, att, value):
     setattr(object, f'_{att}', value)
 
 
+# probably need to get rid of this soon too
 # add "@property" functions to all the data attributes
 for att in Cutouts.get_data_attributes():
     setattr(

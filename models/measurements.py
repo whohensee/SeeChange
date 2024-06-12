@@ -189,7 +189,7 @@ class Measurements(Base, AutoIDMixin, SpatiallyIndexed, HasBitFlagBadness):
 
     @property
     def psf(self):
-        return self.cutouts.sources.image.get_psf().get_clip(x=self.cutouts.x, y=self.cutouts.y)
+        return self.cutouts.sources.image.get_psf().get_clip(x=self.x, y=self.y)
 
     @property
     def pixel_scale(self):
@@ -320,7 +320,7 @@ class Measurements(Base, AutoIDMixin, SpatiallyIndexed, HasBitFlagBadness):
             f"from SourceList {self.cutouts.sources_id} "
             f"(number {self.cutouts.index_in_sources}) "
             f"from Image {self.cutouts.sub_image_id} "
-            f"at x,y= {self.cutouts.x}, {self.cutouts.y}>"
+            f"at x,y= {self.x}, {self.y}>"
         )
 
     def __setattr__(self, key, value):
@@ -458,8 +458,8 @@ class Measurements(Base, AutoIDMixin, SpatiallyIndexed, HasBitFlagBadness):
         image_pixel_x = wcs.world_to_pixel_values(ra, dec)[0]
         image_pixel_y = wcs.world_to_pixel_values(ra, dec)[1]
 
-        offset_x = image_pixel_x - self.cutouts.x
-        offset_y = image_pixel_y - self.cutouts.y
+        offset_x = image_pixel_x - self.x
+        offset_y = image_pixel_y - self.y
 
         if abs(offset_x) > im.shape[1] / 2 or abs(offset_y) > im.shape[0] / 2:
             return np.nan, np.nan, np.nan  # quietly return NaNs for large offsets, they will fail the cuts anyway...

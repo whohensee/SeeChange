@@ -370,11 +370,9 @@ class DataStore:
             if key == 'detections' and not isinstance(value, SourceList):
                 raise ValueError(f'detections must be a SourceList object, got {type(value)}')
 
-            if key == 'cutouts' and not isinstance(value, list):
-                raise ValueError(f'cutouts must be a list of Cutout objects, got {type(value)}')
-
-            if key == 'cutouts' and not all([isinstance(c, Cutouts) for c in value]):
-                raise ValueError(f'cutouts must be a list of Cutouts objects, got list with {[type(c) for c in value]}')
+            if key == 'cutouts' and not isinstance(value, Cutouts):
+                # raise ValueError(f'cutouts must be a list of Cutout objects, got {type(value)}')
+                raise ValueError(f'cutouts must be a Cutouts object, got {type(value)}')
 
             if key == 'measurements' and not isinstance(value, list):
                 raise ValueError(f'measurements must be a list of Measurements objects, got {type(value)}')
@@ -1317,9 +1315,13 @@ class DataStore:
         process_name = 'cutting'
         # make sure the cutouts have the correct provenance
         if self.cutouts is not None:
-            if any([c.provenance is None for c in self.cutouts]):
-                raise ValueError('One of the Cutouts has no provenance!')
-            if provenance is not None and any([c.provenance.id != provenance.id for c in self.cutouts]):
+            # if any([c.provenance is None for c in self.cutouts]):
+            #     raise ValueError('One of the Cutouts has no provenance!')
+            if self.cutouts.provenance is None:
+                raise ValueError('The Cutouts has no provenance!')
+            # if provenance is not None and any([c.provenance.id != provenance.id for c in self.cutouts]):
+            #     self.cutouts = None
+            if provenance is not None and self.cutouts.provenance.id != provenance.id:
                 self.cutouts = None
 
         if provenance is None and self.cutouts is not None:
@@ -1331,8 +1333,10 @@ class DataStore:
                 raise ValueError(f'More than one "{process_name}" provenance found!')
             if len(provenances) == 1:
                 # a mismatch of provenance and cached cutouts:
-                if any([c.provenance.id != provenances[0].id for c in self.cutouts]):
-                    self.cutouts = None  # this must be an old cutouts list, need to get a new one
+                # if any([c.provenance.id != provenances[0].id for c in self.cutouts]):
+                #     self.cutouts = None  # this must be an old cutouts list, need to get a new one
+                if self.cutouts.provenance.id != provenances[0].id:
+                    self.cutouts = None # this must be an old cutouts list, need to get a new one
 
         # not in memory, look for it on the DB
         if self.cutouts is None:
@@ -1410,7 +1414,7 @@ class DataStore:
         if self.measurements is None:
             with SmartSession(session, self.session) as session:
                 cutouts = self.get_cutouts(session=session)
-                cutout_ids = [c.id for c in cutouts]
+                cutout_ids = [cutouts.id]  # this is inelegant, if it works come back and change it
 
                 # this happens when the measurements are required as an upstream (but aren't in memory)
                 if provenance is None:
@@ -1540,6 +1544,7 @@ class DataStore:
             if obj is None:
                 continue
 
+            # TODO need to change this as cutouts changes to just be a cutoutsfile
             if isinstance(obj, list) and len(obj) > 0:  # handle cutouts and measurements
                 if hasattr(obj[0], 'save_list'):
                     obj[0].save_list(obj, overwrite=overwrite, exists_ok=exists_ok, no_archive=no_archive)

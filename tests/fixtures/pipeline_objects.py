@@ -751,24 +751,26 @@ def datastore_factory(data_dir, pipeline_factory):
                 is_testing=True,
             )
             cache_name = os.path.join(cache_dir, cache_sub_name + f'.cutouts_{prov.id[:6]}.h5')
-            if ( not os.getenv( "LIMIT_CACHE_USAGE" ) ) and ( os.path.isfile(cache_name) ):
+            if ( not os.getenv( "LIMIT_CACHE_USAGE" ) ) and ( os.path.isfile(cache_name) ) and False: # WHPR delete this false
+                # WHPR after fixing load, fix cutouts here
                 SCLogger.debug('loading cutouts from cache. ')
                 ds.cutouts = copy_list_from_cache(Cutouts, cache_dir, cache_name)
-                ds.cutouts = Cutouts.load_list(os.path.join(ds.cutouts[0].local_path, ds.cutouts[0].filepath))
+                ds.cutouts = Cutouts.load_list(os.path.join(ds.cutouts.local_path, ds.cutouts.filepath))
                 [setattr(c, 'provenance', prov) for c in ds.cutouts]
                 [setattr(c, 'sources', ds.detections) for c in ds.cutouts]
                 Cutouts.save_list(ds.cutouts)  # make sure to save to archive as well
             else:  # cannot find cutouts on cache
                 ds = p.cutter.run(ds)
-                Cutouts.save_list(ds.cutouts)
+                # Cutouts.save_list(ds.cutouts)
+                ds.cutouts.save()
                 if not os.getenv( "LIMIT_CACHE_USAGE" ):
-                    copy_list_to_cache(ds.cutouts, cache_dir)
+                    copy_to_cache(ds.cutouts, cache_dir)
 
             ############ measuring to create measurements ############
             prov = Provenance(
                 code_version=code_version,
                 process='measuring',
-                upstreams=[ds.cutouts[0].provenance],
+                upstreams=[ds.cutouts.provenance],
                 parameters=p.measurer.pars.get_critical_pars(),
                 is_testing=True,
             )
