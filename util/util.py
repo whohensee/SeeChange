@@ -92,6 +92,7 @@ def remove_empty_folders(path, remove_root=True):
         if remove_root and not any(path.iterdir()):
             path.rmdir()
 
+
 def get_git_hash():
     """
     Get the commit hash of the current git repo.
@@ -111,6 +112,7 @@ def get_git_hash():
             git_hash = None
 
     return git_hash
+
 
 def get_latest_provenance(process_name, session=None):
     """
@@ -146,6 +148,7 @@ def get_latest_provenance(process_name, session=None):
         ).first()
 
     return prov
+
 
 def parse_dateobs(dateobs=None, output='datetime'):
     """
@@ -194,6 +197,7 @@ def parse_dateobs(dateobs=None, output='datetime'):
     else:
         raise ValueError(f'Unknown output type {output}')
 
+
 def parse_session(*args, **kwargs):
     """
     Parse the arguments and keyword arguments to find a SmartSession or SQLAlchemy session.
@@ -234,6 +238,7 @@ def parse_session(*args, **kwargs):
         session = kwargs.pop(key)
 
     return args, kwargs, session
+
 
 def read_fits_image(filename, ext=0, output='data'):
     """
@@ -283,6 +288,7 @@ def read_fits_image(filename, ext=0, output='data'):
         return data, header
     else:
         raise ValueError(f'Unknown output type "{output}", use "data", "header" or "both"')
+
 
 def save_fits_image_file(filename, data, header, extname=None, overwrite=True, single_file=False,
                          just_update_header=False):

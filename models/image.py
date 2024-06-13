@@ -482,6 +482,7 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
 
         self._instrument_object = None
         self._bitflag = 0
+        self.is_sub = False
 
         if 'header' in kwargs:
             kwargs['_header'] = kwargs.pop('header')
@@ -545,14 +546,14 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
             self.sources.provenance_id = self.sources.provenance.id if self.sources.provenance is not None else None
             new_image.sources = self.sources.merge_all(session=session)
 
-            new_image.wcs = new_image.sources.wcs
-            if new_image.wcs is not None:
+            if new_image.sources.wcs is not None:
+                new_image.wcs = new_image.sources.wcs
                 new_image.wcs.sources = new_image.sources
                 new_image.wcs.sources_id = new_image.sources.id
                 new_image.wcs.provenance_id = new_image.wcs.provenance.id if new_image.wcs.provenance is not None else None
 
-            new_image.zp = new_image.sources.zp
-            if new_image.zp is not None:
+            if new_image.sources.zp is not None:
+                new_image.zp = new_image.sources.zp
                 new_image.zp.sources = new_image.sources
                 new_image.zp.sources_id = new_image.sources.id
                 new_image.zp.provenance_id = new_image.zp.provenance.id if new_image.zp.provenance is not None else None
@@ -1797,7 +1798,7 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
 
         return upstreams
 
-    def get_downstreams(self, session=None):
+    def get_downstreams(self, session=None, siblings=False):
         """Get all the objects that were created based on this image. """
         # avoids circular import
         from models.source_list import SourceList
@@ -1808,9 +1809,7 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
         downstreams = []
         with SmartSession(session) as session:
             # get all psfs that are related to this image (regardless of provenance)
-            psfs = session.scalars(
-                sa.select(PSF).where(PSF.image_id == self.id)
-            ).all()
+            psfs = session.scalars(sa.select(PSF).where(PSF.image_id == self.id)).all()
             downstreams += psfs
             if self.psf is not None and self.psf not in psfs:  # if not in the session, could be duplicate!
                 downstreams.append(self.psf)

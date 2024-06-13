@@ -176,9 +176,10 @@ class Preprocessor:
             # We also include any overrides to calibrator files, as that indicates
             # that something individual happened here that's different from
             # normal processing of the image.
-            provdict = dict( self.pars.get_critical_pars() )
-            provdict['preprocessing_steps' ] = self._stepstodo
-            prov = ds.get_provenance(self.pars.get_process_name(), provdict, session=session)
+            # Fix this as part of issue #147
+            # provdict = dict( self.pars.get_critical_pars() )
+            # provdict['preprocessing_steps' ] = self._stepstodo
+            prov = ds.get_provenance('preprocessing', self.pars.get_critical_pars(), session=session)
 
             # check if the image already exists in memory or in the database:
             image = ds.get_image(prov, session=session)

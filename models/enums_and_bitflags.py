@@ -418,12 +418,10 @@ class BitFlagConverter( EnumConverter ):
     _dict_inverse = None
 
 
-# the list of possible processing steps from a section of an exposure up to measurments, r/b scores, and report
+# the list of possible processing steps from a section of an exposure up to measurements, r/b scores, and report
 process_steps_dict = {
     1: 'preprocessing',  # creates an Image from a section of the Exposure
     2: 'extraction',     # creates a SourceList from an Image, and a PSF
-    3: 'astro_cal',      # creates a WorldCoordinates from a SourceList
-    4: 'photo_cal',       # creates a ZeroPoint from a WorldCoordinates
     5: 'subtraction',    # creates a subtraction Image
     6: 'detection',      # creates a SourceList from a subtraction Image
     7: 'cutting',        # creates Cutouts from a subtraction Image
