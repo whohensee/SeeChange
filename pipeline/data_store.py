@@ -1550,6 +1550,7 @@ class DataStore:
             # TODO need to change this as cutouts changes to just be a cutoutsfile
             if isinstance(obj, list) and len(obj) > 0:  # handle cutouts and measurements
                 if hasattr(obj[0], 'save_list'):
+                    raise ValueError("AFTER CUTOUTS IS NO LONGER A LIST, SHOULD NEVER GET HERE!")
                     obj[0].save_list(obj, overwrite=overwrite, exists_ok=exists_ok, no_archive=no_archive)
                 continue
 
@@ -1640,7 +1641,6 @@ class DataStore:
                 if self.measurements is not None:
                     for i, m in enumerate(self.measurements):
                         # use the new, merged cutouts
-                        # self.measurements[i].cutouts = self.measurements[i].find_cutouts_in_list(self.cutouts)
                         self.measurements[i].cutouts = self.cutouts # only one now
                         self.measurements[i].associate_object(session)
                         self.measurements[i] = session.merge(self.measurements[i])

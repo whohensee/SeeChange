@@ -14,8 +14,8 @@ from models.measurements import Measurements
 
 
 def test_xyz(cutter, measurer, ptf_datastore):
-    breakpoint()
-    ds = measurer.run(ptf_datastore.cutouts)
+    # breakpoint()
+    # ds = measurer.run(ptf_datastore.cutouts)
     return None
 
 def test_measurements_attributes(measurer, ptf_datastore):

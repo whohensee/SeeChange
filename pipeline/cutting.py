@@ -73,8 +73,6 @@ class Cutter:
             prov = ds.get_provenance(self.pars.get_process_name(), self.pars.get_critical_pars(), session=session)
 
             # try to find some measurements in memory or in the database:
-            # cutout_list = ds.get_cutouts(prov, session=session)  # UNCOMMENT AFTER WORKING
-            cutout_list = None
             cutouts = ds.get_cutouts(prov, session=session)
 
             # WHPR revisit here to decide if None or [] is a better default for co_list
@@ -90,7 +88,6 @@ class Cutter:
                 if detections is None:
                     raise ValueError(f'Cannot find a source list corresponding to the datastore inputs: {ds.get_inputs()}')
 
-                cutout_list = []
                 x = detections.x
                 y = detections.y
                 sz = self.pars.cutout_size
@@ -114,40 +111,14 @@ class Cutter:
                 new_stamps_weight = make_cutouts(ds.sub_image.new_aligned_image.weight, x, y, sz, fillvalue=0)
                 new_stamps_flags = make_cutouts(ds.sub_image.new_aligned_image.flags, x, y, sz, fillvalue=0)
 
-                # ----- WHPR Old working stuff below ----- #
-                # for i, source in enumerate(detections.data):
-                #     # get the cutouts
-                #     cutout = Cutouts.from_detections(detections, i, provenance=prov)
-                #     cutout.sub_data = sub_stamps_data[i]
-                #     cutout.sub_weight = sub_stamps_weight[i]
-                #     cutout.sub_flags = sub_stamps_flags[i]
-                #     # TODO TODO figure out if I should move this comment over
-                #     # TODO: figure out if we can actually use this flux (maybe renormalize it)
-                #     # if sub_stamps_psfflux is not None and sub_stamps_psffluxerr is not None:
-                #     #     cutout.sub_psfflux = sub_stamps_psfflux[i]
-                #     #     cutout.sub_psffluxerr = sub_stamps_psffluxerr[i]
-
-                #     cutout.ref_data = ref_stamps_data[i]
-                #     cutout.ref_weight = ref_stamps_weight[i]
-                #     cutout.ref_flags = ref_stamps_flags[i]
-
-                #     cutout.new_data = new_stamps_data[i]
-                #     cutout.new_weight = new_stamps_weight[i]
-                #     cutout.new_flags = new_stamps_flags[i]
-
-                #     cutout._upstream_bitflag = 0
-                #     cutout._upstream_bitflag |= detections.bitflag
-
-                #     cutout_list.append(cutout)
-
-                # ----- Old working stuff above ----- #
                 # ----- WHPR New experimental stuff below ----- #
-                cutouts = Cutouts.from_detections(detections, 0, provenance=prov)
+                cutouts = Cutouts.from_detections(detections, provenance=prov)
 
                 cutouts._upstream_bitflag = 0
                 cutouts._upstream_bitflag |= detections.bitflag
 
                 cutouts.co_list = []
+                # cutouts.co_dict = {}
                 for i, source in enumerate(detections.data):
                     data_dict = {}
                     data_dict["source_index"] = i
@@ -164,22 +135,11 @@ class Cutter:
                     data_dict["new_flags"] = new_stamps_flags[i]
 
                     cutouts.co_list.append(data_dict)
+                    # cutouts.co_dict[f"source_index_{i}"]
 
                 # ----- New experimental stuff above ----- #
 
-
-
-            # add the resulting list to the data store
-            # for cutout in cutout_list:
-            #     if cutout.provenance is None:
-            #         cutout.provenance = prov
-            #     else:
-            #         if cutout.provenance.id != prov.id:
-            #             raise ValueError(
-            #                 f'Provenance mismatch for cutout {cutout.provenance.id[:6]} '
-            #                 f'and preset provenance {prov.id[:6]}!'
-            #             )
-
+            # add the resulting Cutouts to the data store
             if cutouts.provenance is None:
                 cutouts.provenance = prov
             else:
@@ -189,7 +149,6 @@ class Cutter:
                             f'and preset provenance {prov.id[:6]}!'
                         )
 
-            # ds.cutouts = cutout_list
             ds.cutouts = cutouts
 
             ds.runtimes['cutting'] = time.perf_counter() - t_start

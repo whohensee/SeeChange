@@ -751,17 +751,16 @@ def datastore_factory(data_dir, pipeline_factory):
                 is_testing=True,
             )
             cache_name = os.path.join(cache_dir, cache_sub_name + f'.cutouts_{prov.id[:6]}.h5')
-            if ( not os.getenv( "LIMIT_CACHE_USAGE" ) ) and ( os.path.isfile(cache_name) ) and False: # WHPR delete this false
-                # WHPR after fixing load, fix cutouts here
+            if ( not os.getenv( "LIMIT_CACHE_USAGE" ) ) and ( os.path.isfile(cache_name) ):
                 SCLogger.debug('loading cutouts from cache. ')
-                ds.cutouts = copy_list_from_cache(Cutouts, cache_dir, cache_name)
-                ds.cutouts = Cutouts.load_list(os.path.join(ds.cutouts.local_path, ds.cutouts.filepath))
-                [setattr(c, 'provenance', prov) for c in ds.cutouts]
-                [setattr(c, 'sources', ds.detections) for c in ds.cutouts]
-                Cutouts.save_list(ds.cutouts)  # make sure to save to archive as well
+                ds.cutouts = copy_from_cache(Cutouts, cache_dir, cache_name) # this grabs the whole co_list
+                                                                             # even before load()...that ok?
+                ds.cutouts.load()
+                setattr(ds.cutouts, 'provenance', prov)
+                setattr(ds.cutouts, 'sources', ds.detections)
+                ds.cutouts.save()
             else:  # cannot find cutouts on cache
                 ds = p.cutter.run(ds)
-                # Cutouts.save_list(ds.cutouts)
                 ds.cutouts.save()
                 if not os.getenv( "LIMIT_CACHE_USAGE" ):
                     copy_to_cache(ds.cutouts, cache_dir)
@@ -795,7 +794,7 @@ def datastore_factory(data_dir, pipeline_factory):
                 # no need to save list because Measurements is not a FileOnDiskMixin!
             else:  # cannot find measurements on cache
                 ds = p.measurer.run(ds)
-                breakpoint()
+                # breakpoint()
                 copy_list_to_cache(ds.all_measurements, cache_dir, cache_name)  # must provide filepath!
 
             ds.save_and_commit(session=session)

@@ -651,8 +651,8 @@ class FileOnDiskMixin:
     @declared_attr
     def filepath(cls):
         uniqueness = True
-        if cls.__name__ in ['Cutouts']:
-            uniqueness = False
+        # if cls.__name__ in ['Cutouts']:
+        #     uniqueness = False
         return sa.Column(
             sa.Text,
             nullable=False,

@@ -40,7 +40,6 @@ class Measurements(Base, AutoIDMixin, SpatiallyIndexed, HasBitFlagBadness):
         doc="The cutouts object that this measurements object is associated with. "
     )
 
-    # move to measurements
     index_in_sources = sa.Column(
         sa.Integer,
         nullable=False,
@@ -457,22 +456,6 @@ class Measurements(Base, AutoIDMixin, SpatiallyIndexed, HasBitFlagBadness):
 
         raise ValueError('Filter number too high for the filter bank. ')
 
-    # kill this function soon
-    def find_cutouts_in_list(self, cutouts_list):
-        """Given a list of cutouts, find the one that matches this object. """
-        # this is faster, and works without needing DB indices to be set
-        if self._cutouts_list_index is not None:
-            return cutouts_list[self._cutouts_list_index]
-
-        # after loading from DB (or merging) we must use the cutouts_id to associate these
-        if self.cutouts_id is not None:
-            for i, cutouts in enumerate(cutouts_list):
-                if cutouts.id == self.cutouts_id:
-                    self._cutouts_list_index = i
-                    return cutouts
-
-        raise ValueError('Cutouts not found in the list. ')
-
     def associate_object(self, session=None):
         """Find or create a new object and associate it with this measurement.
 
@@ -544,6 +527,7 @@ class Measurements(Base, AutoIDMixin, SpatiallyIndexed, HasBitFlagBadness):
         if aperture == 'psf':
             aperture = -1
 
+        # breakpoint()
         im = self.sub_nandata  # the cutouts image we are working with (includes NaNs for bad pixels)
 
         wcs = self.cutouts.sources.image.new_image.wcs.wcs
@@ -634,9 +618,11 @@ def load_attribute(object, att):
     if not hasattr(object, f'_{att}'):
         raise AttributeError(f"The object {object} does not have the attribute {att}.")
     if getattr(object, f'_{att}') is None:
-        if object.cutouts.filepath is None:
+        if object.cutouts.co_list is None and object.cutouts.filepath is None:
             return None  # objects just now created and not saved cannot lazy load data!
-        object.cutouts.load()  # can lazy-load all data
+        # object.cutouts.load()  # can lazy-load all data  # THIS LINE MIGHT BE TERRIBLE!!! (also unnecessary)
+        if [entry for entry in object.cutouts.co_list if entry['source_index'] == object.index_in_sources] == []:
+            raise ValueError("No matching entry in co_list of Cutouts for this measurement")
         object.get_data_from_cutouts()
 
     # after data is filled, should be able to just return it

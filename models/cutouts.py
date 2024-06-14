@@ -24,14 +24,14 @@ from models.enums_and_bitflags import CutoutsFormatConverter, cutouts_badness_in
 from models.source_list import SourceList
 
 
-class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagBadness):
+class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
 
     __tablename__ = 'cutouts'
 
     # a unique constraint on the provenance and the source list, but also on the index in the list
     __table_args__ = (
         UniqueConstraint(
-            'index_in_sources', 'sources_id', 'provenance_id', name='_cutouts_index_sources_provenance_uc'
+            'sources_id', 'provenance_id', name='_cutouts_sources_provenance_uc'
         ),
     )
 
@@ -71,13 +71,6 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagBa
         doc="The source list (of detections in the difference image) this cutouts object is associated with. "
     )
 
-    # delete once good
-    index_in_sources = sa.Column(
-        sa.Integer,
-        nullable=False,
-        doc="Index of this cutout in the source list (of detections in the difference image). "
-    )
-
     sub_image_id = association_proxy('sources', 'image_id')
     sub_image = association_proxy('sources', 'image')
 
@@ -103,13 +96,13 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagBa
         )
     )
 
-    # check if should be moved to measurements
+    # check if should be moved to measurements - I think not
     @property
     def new_image(self):
         """Get the aligned new image using the sub_image. """
         return self.sub_image.new_aligned_image
 
-    # check if should be moved to measurements
+    # check if should be moved to measurements - I think not
     @property
     def ref_image(self):
         """Get the aligned reference image using the sub_image. """
@@ -177,9 +170,7 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagBa
         return (
             f"<Cutouts {self.id} "
             f"from SourceList {self.sources_id} "
-            # f"(number {self.index_in_sources}) "
             f"from Image {self.sub_image_id} "
-            # f"at x,y= {self.x}, {self.y}>"
         )
 
     def __setattr__(self, key, value):
@@ -237,7 +228,7 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagBa
         self._co_list = value
 
     @staticmethod
-    def from_detections(detections, source_index, provenance=None, **kwargs):
+    def from_detections(detections, provenance=None, **kwargs):
         """Create a Cutout object from a row in the SourceList.
 
         The SourceList must have a valid image attribute, and that image should have exactly two
@@ -264,54 +255,23 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagBa
         """
         cutout = Cutouts()
         cutout.sources = detections
-        cutout.index_in_sources = source_index   # move to measurements
-        cutout.source_row = dict(Table(detections.data)[source_index]) # move to measurements probably
-        for key, value in cutout.source_row.items():
-            if isinstance(value, np.number):
-                cutout.source_row[key] = value.item()  # convert numpy number to python primitive
+        # cutout.source_row = dict(Table(detections.data)[0]) # WHPR this should all go once spatially indexed removed
+        # for key, value in cutout.source_row.items():
+        #     if isinstance(value, np.number):
+        #         cutout.source_row[key] = value.item()  # convert numpy number to python primitive
         # cutout.x = detections.x[source_index] # move to measurements - should be done
         # cutout.y = detections.y[source_index] # move to measurements - should be done
-        cutout.ra = cutout.source_row['ra'] # move to measurements
-        cutout.dec = cutout.source_row['dec'] # move to measurements
-        cutout.calculate_coordinates() # move to measurements
+        # cutout.ra = cutout.source_row['ra'] # move to measurements
+        # cutout.dec = cutout.source_row['dec'] # move to measurements
+        # cutout.calculate_coordinates() # move to measurements
         cutout.provenance = provenance # figure out how shifting all to measurements affects this line
+        cutout.provenance_id = provenance.id # I couldn't find this being set anywhere else?
 
         # add the data, weight, and flags to the cutout from kwargs
         # figure out if these go to measurements
-        for im in ['sub', 'ref', 'new']:
-            for att in ['data', 'weight', 'flags']:
-                setattr(cutout, f'{im}_{att}', kwargs.get(f'{im}_{att}', None))
-
-        # update the bitflag
-        cutout._upstream_bitflag = detections.bitflag
-
-        return cutout
-
-    # can probably kill from detections once this is perfect and docstring is fixed
-    @staticmethod
-    def from_list(list, provenance=None, **kwargs):
-        """
-        Oh lordie this change gonna be a big one (copy and modify from from_detections)
-        """
-        cutout = Cutouts()
-        cutout.sources = detections
-        cutout.index_in_sources = source_index   # move to measurements
-        cutout.source_row = dict(Table(detections.data)[source_index]) # move to measurements probably
-        for key, value in cutout.source_row.items():
-            if isinstance(value, np.number):
-                cutout.source_row[key] = value.item()  # convert numpy number to python primitive
-        # cutout.x = detections.x[source_index] # move to measurements - should be done
-        # cutout.y = detections.y[source_index] # move to measurements - should be done
-        cutout.ra = cutout.source_row['ra'] # move to measurements
-        cutout.dec = cutout.source_row['dec'] # move to measurements
-        cutout.calculate_coordinates() # move to measurements
-        cutout.provenance = provenance # figure out how shifting all to measurements affects this line
-
-        # add the data, weight, and flags to the cutout from kwargs
-        # figure out if these go to measurements
-        for im in ['sub', 'ref', 'new']:
-            for att in ['data', 'weight', 'flags']:
-                setattr(cutout, f'{im}_{att}', kwargs.get(f'{im}_{att}', None))
+        # for im in ['sub', 'ref', 'new']:
+            # for att in ['data', 'weight', 'flags']:
+                # setattr(cutout, f'{im}_{att}', kwargs.get(f'{im}_{att}', None))
 
         # update the bitflag
         cutout._upstream_bitflag = detections.bitflag
@@ -440,6 +400,7 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagBa
         """
         # consider more what to do in this case. Maybe default in init to []?
         if self._co_list is None:
+            return None
             raise TypeError(f"No data in this cutouts object to save. self._co_list is type None")
 
         for co_dict in self._co_list:
@@ -449,7 +410,7 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagBa
         # consider using the has_data check below, maybe not needed with new structure
 
         if filename is None:
-            filename = self.invent_filepath() # I think this sets self.filepath
+            filename = self.invent_filepath()
 
         self.filepath = filename
 
@@ -472,64 +433,6 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagBa
 
         # make sure to also save using the FileOnDiskMixin method
         FileOnDiskMixin.save(self, fullname, overwrite=overwrite, **kwargs)
-
-        # raise NotImplementedError('Saving only a single cutout into a file is not supported. Use save_list instead.')
-
-    @classmethod
-    def save_list(cls, cutouts_list,  filename=None, overwrite=True, **kwargs):
-        """Save a list of Cutouts objects into a file.
-
-        Parameters
-        ----------
-        cutouts_list: list of Cutouts
-            The list of Cutouts objects to save.
-        filename: str, optional
-            The (relative/full path) filename to save to. If not given, will use the default filename.
-        overwrite: bool
-            If True, will overwrite the file if it already exists.
-            If False, will raise an error if the file already exists.
-        kwargs: dict
-            Any additional keyword arguments to pass to the File
-        """
-        if not isinstance(cutouts_list, list):
-            raise TypeError("The input must be a list of Cutouts objects.")
-        if len(cutouts_list) == 0:
-            return  # silently do nothing
-
-        for cutout in cutouts_list:
-            if not isinstance(cutout, cls):
-                raise TypeError("The input must be a list of Cutouts objects.")
-            if not cutout.has_data:
-                raise RuntimeError("The Cutouts data is not loaded. Cannot save.")
-
-        if filename is None:
-            filename = cutouts_list[0].invent_filepath()
-
-        fullname = os.path.join(cutouts_list[0].local_path, filename)
-        cutouts_list[0].safe_mkdir(os.path.dirname(fullname))
-
-        if not overwrite and os.path.isfile(fullname):
-            raise FileExistsError(f"The file {fullname} already exists and overwrite is False.")
-
-        if cutouts_list[0].format == 'hdf5':
-            with h5py.File(fullname, 'a') as file:
-                for cutout in cutouts_list:
-                    cutout._save_dataset_to_hdf5(file, f'source_{cutout.index_in_sources}')
-                    cutout.filepath = filename
-        elif cutouts_list[0].format == 'fits':
-            raise NotImplementedError('Saving cutouts to fits is not yet implemented.')
-        elif cutouts_list[0].format in ['jpg', 'png']:
-            raise NotImplementedError('Saving cutouts to jpg or png is not yet implemented.')
-        else:
-            raise TypeError(f"Unable to save cutouts file of type {cutouts_list[0].format}")
-
-        # make sure to also save using the FileOnDiskMixin method
-        FileOnDiskMixin.save(cutouts_list[0], fullname, overwrite=overwrite, **kwargs)
-
-        # after saving one object as a FileOnDiskMixin, all the others should have the same md5sum
-        if cutouts_list[0].md5sum is not None:
-            for cutout in cutouts_list:
-                cutout.md5sum = cutouts_list[0].md5sum
 
     def _load_dataset_from_hdf5(self, file, groupname):
         """Load the dataset from an HDF5 group into this Cutouts object.
@@ -608,117 +511,6 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagBa
         #     raise NotImplementedError('Loading cutouts from jpg or png is not yet implemented.')
         # else:
         #     raise TypeError(f"Unable to load cutouts file of type {self.format}")
-
-    @classmethod
-    def from_file(cls, filepath, source_number, **kwargs):
-        """Create a Cutouts object from a file.
-
-        Will try to guess the format based on the file extension.
-
-        Parameters
-        ----------
-        filepath: str
-            The (relative/full path) filename to load from.
-        source_number: int
-            The index of the source in the source list from which to create the cutout.
-            This relates to the internal storage in file. For HDF5 files, the group
-            for this object will be named "source_{source_number}".
-        kwargs: dict
-            Any additional keyword arguments to pass to the Cutouts constructor.
-            E.g., if you happen to know some database values for this object,
-            like the ID of related objects or the bitflag, you can pass them here.
-        """
-        cutout = cls(**kwargs)
-        fmt = os.path.splitext(filepath)[1][1:]
-        if fmt == 'h5':
-            fmt = 'hdf5'
-
-        cutout.format = fmt
-        cutout.index_in_sources = source_number
-        cutout.load(filepath)
-
-        for att in ['ra', 'dec', 'x', 'y']:
-            if att in cutout.source_row:
-                setattr(cutout, att, cutout.source_row[att])
-
-        cutout.calculate_coordinates()
-
-        if filepath.startswith(cutout.local_path):
-            filepath = filepath[len(cutout.local_path) + 1:]
-        cutout.filepath = filepath
-
-        # TODO: should also load the MD5sum automatically?
-
-        return cutout
-
-    @classmethod
-    def load_list(cls, filepath, cutout_list=None):
-        """Load all Cutouts object that were saved to a file
-
-        Note that these cutouts are not loaded from the database,
-        so they will be missing important relationships like provenance and sources.
-        If cutout_list is given, it must match the cutouts on the file,
-        so that each cutouts object will be loaded the data from file,
-        but retain its database relationships.
-
-        Parameters
-        ----------
-        filepath: str
-            The (relative/full path) filename to load from.
-            The file format is determined by the extension.
-        cutout_list: list of Cutouts, optional
-            If given, will load the data from the file into these objects.
-
-        Returns
-        -------
-        cutouts: Cutouts
-            The list of cutouts loaded from the file.
-        """
-        ext = os.path.splitext(filepath)[1][1:]
-        if ext == 'h5':
-            format = 'hdf5'
-        else:
-            format = ext
-
-        if filepath.startswith(Cutouts.local_path):
-            rel_filepath = filepath[len(Cutouts.local_path) + 1:]
-
-        cutouts = []
-
-        if format == 'hdf5':
-            with h5py.File(filepath, 'r') as file:
-                for groupname in file.keys():
-                    if groupname.startswith('source_'):
-                        number = int(groupname.split('_')[1])
-                        if cutout_list is None:
-                            cutout = cls()
-                            cutout.format = format
-                            cutout.index_in_sources = number
-                        else:
-                            cutout = [c for c in cutout_list if c.index_in_sources == number]
-                            if len(cutout) != 1:
-                                raise ValueError(f"Could not find a unique cutout with index {number} in the list.")
-                            cutout = cutout[0]
-
-                        cutout._load_dataset_from_hdf5(file, groupname)
-                        cutout.filepath = rel_filepath
-                        for att in ['ra', 'dec', 'x', 'y']:
-                            if att in cutout.source_row:
-                                setattr(cutout, att, cutout.source_row[att])
-
-                        cutout.calculate_coordinates()
-
-                        cutouts.append(cutout)
-
-        elif format == 'fits':
-            raise NotImplementedError('Loading cutouts from fits is not yet implemented.')
-        elif format in ['jpg', 'png']:
-            raise NotImplementedError('Loading cutouts from jpg or png is not yet implemented.')
-        else:
-            raise TypeError(f"Unable to load cutouts file of type {format}")
-
-        cutouts.sort(key=lambda x: x.index_in_sources)
-        return cutouts
 
     def remove_data_from_disk(self, remove_folders=True, remove_local=True,
                               database=True, session=None, commit=True, remove_downstreams=False):

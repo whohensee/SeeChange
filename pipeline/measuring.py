@@ -269,11 +269,13 @@ class Measurer:
                     m.position_angle = output['angle']
 
                     # update the coordinates using the centroid offsets
+                    # breakpoint()
                     x = m.x + m.offset_x
                     y = m.y + m.offset_y
                     ra, dec = m.cutouts.sources.image.new_image.wcs.wcs.pixel_to_world_values(x, y)
-                    m.ra = m.source_row['ra'] + float(ra)
-                    m.dec = m.source_row['dec'] + float(dec)
+                    # STRONGLY review this in diff to figure out why I did this source row thing
+                    m.ra = float(ra) #  + m.source_row['ra'] # I think this was just wrong
+                    m.dec = float(dec) # + m.source_row['dec'] # I think this was just wrong
                     m.calculate_coordinates()
 
                     # PSF photometry:
