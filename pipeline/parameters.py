@@ -333,7 +333,7 @@ class Parameters:
             and not isinstance(value, self.__typecheck__[real_key])
         ):
             raise TypeError(
-                f'Parameter "{key}" must be of type {self.__typecheck__[real_key]}'
+                f'Parameter "{key}" must be of type {self.__typecheck__[real_key]}, got {type(value)} instead. '
             )
         super().__setattr__(real_key, value)
 

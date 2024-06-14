@@ -59,6 +59,5 @@ jobs:
 
       - name: run test
         run: |
-          df -h
           shopt -s nullglob
           TEST_SUBFOLDER=$(ls tests/pipeline/test_{a..o}*.py) docker compose run runtests
