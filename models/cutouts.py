@@ -71,7 +71,7 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagBa
         doc="The source list (of detections in the difference image) this cutouts object is associated with. "
     )
 
-    # move to measurements
+    # delete once good
     index_in_sources = sa.Column(
         sa.Integer,
         nullable=False,
@@ -200,9 +200,9 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagBa
             names += ['sub_psfflux', 'sub_psffluxerr']
 
         return names
-    
+
     @staticmethod
-    def get_data__dict_attributes(include_optional=True):
+    def get_data_dict_attributes(include_optional=True):
         names = ['source_index']
         for im in ['sub', 'ref', 'new']:
             for att in ['data', 'weight', 'flags']:
@@ -213,30 +213,13 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagBa
 
         return names
 
+    # possibly move this guy over
     @property
     def has_data(self):
         for att in self.get_data_attributes(include_optional=False):
             if getattr(self, att) is None:
                 return False
         return True
-
-    @property
-    def sub_nandata(self):
-        if self.sub_data is None or self.sub_flags is None:
-            return None
-        return np.where(self.sub_flags > 0, np.nan, self.sub_data)
-
-    @property
-    def ref_nandata(self):
-        if self.ref_data is None or self.ref_flags is None:
-            return None
-        return np.where(self.ref_flags > 0, np.nan, self.ref_data)
-
-    @property
-    def new_nandata(self):
-        if self.new_data is None or self.new_flags is None:
-            return None
-        return np.where(self.new_flags > 0, np.nan, self.new_data)
 
     # current preliminary implementation is a list of dicts
     # the dicts have combinations of "sub_, ref_, new_"
@@ -413,7 +396,7 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagBa
             del file[groupname]
 
         # handle the data arrays
-        for key in co_dict.keys():
+        for key in self.get_data_dict_attributes():
             if key == 'source_index':
                 continue
             data = co_dict.get(key)
@@ -579,13 +562,16 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagBa
         """
 
         co_dict = {}
-        for att in self.get_data__dict_attributes():
+        for att in self.get_data_dict_attributes():
             if att == 'source_index':
-                co_dict[att] = int(file[groupname][att])  # WHPR change this to get from attrs
+                co_dict[att] = int(file[groupname].attrs[att])
             elif att in file[groupname]:
                 co_dict[att] = np.array(file[f'{groupname}/{att}'])
 
-        # self.format = 'hdf5' # move this line to load
+        return co_dict
+
+        # self.format = 'hdf5' # move this line to load (looks unnecessary as was
+        # for making individual new cutouts objects)
 
     def load(self, filepath=None):
         """Load the data for this cutout from a file.
@@ -604,8 +590,9 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagBa
 
         if self.format == 'hdf5':
             with h5py.File(filepath, 'r') as file:
-                breakpoint()  # need to figure out how to parse through here as a list
-                self._load_dataset_from_hdf5(file, f'source_{self.index_in_sources}')
+                # breakpoint()  # need to figure out how to parse through here as a list
+                for groupname in file:
+                    self._co_list.append(self._load_dataset_dict_from_hdf5(file, groupname))
 
         # ----- old stuff below -----
 
@@ -733,7 +720,8 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagBa
         cutouts.sort(key=lambda x: x.index_in_sources)
         return cutouts
 
-    def remove_data_from_disk(self, remove_folders=True, remove_downstreams=False):
+    def remove_data_from_disk(self, remove_folders=True, remove_local=True,
+                              database=True, session=None, commit=True, remove_downstreams=False):
         """Delete the data from local disk, if it exists.
         Will remove the dataset for this specific cutout from the file,
         and remove the file if this is the last cutout in the file.
@@ -753,37 +741,56 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagBa
         remove_downstreams: bool
             This is not used, but kept here for backward compatibility with the base class.
         """
-        raise NotImplementedError(
-            'Currently there is no support for removing one Cutout at a time. Use delete_list instead.'
-        )
+        if database and session is None and not commit:
+            raise ValueError('If session is not given, commit must be True.')
 
-        if self.filepath is not None:
-            # get the filepath, but don't check if the file exists!
-            for f in self.get_fullpath(as_list=True, nofile=True):
-                if os.path.exists(f):
-                    need_to_delete = False
-                    if self.format == 'hdf5':
-                        with h5py.File(f, 'a') as file:
-                            del file[f'source_{self.index_in_sources}']
-                            if len(file) == 0:
-                                need_to_delete = True
-                    elif self.format == 'fits':
-                        raise NotImplementedError('Removing cutouts from fits is not yet implemented.')
-                    elif self.format in ['jpg', 'png']:
-                        raise NotImplementedError('Removing cutouts from jpg or png is not yet implemented.')
-                    else:
-                        raise TypeError(f"Unable to remove cutouts file of type {self.format}")
+        if remove_local:
+            fullpath = self.get_fullpath()
+            if self.filepath is not None and os.path.isfile(fullpath):
+                os.remove(fullpath)
 
-                    if need_to_delete:
-                        os.remove(f)
-                        if remove_folders:
-                            folder = f
-                            for i in range(10):
-                                folder = os.path.dirname(folder)
-                                if len(os.listdir(folder)) == 0:
-                                    os.rmdir(folder)
-                                else:
-                                    break
+        if database:
+            with SmartSession(session) as session:
+                self.delete_from_database(session=session, commit=False)
+                if commit:
+                    session.commit()
+
+        # I mostly copied from delete_list, which was previously in use. It did not include
+        # deletion of downstreams. Should I include that?
+
+
+
+        # raise NotImplementedError(
+        #     'Currently there is no support for removing one Cutout at a time. Use delete_list instead.'
+        # )
+
+        # if self.filepath is not None:
+        #     # get the filepath, but don't check if the file exists!
+        #     for f in self.get_fullpath(as_list=True, nofile=True):
+        #         if os.path.exists(f):
+        #             need_to_delete = False
+        #             if self.format == 'hdf5':
+        #                 with h5py.File(f, 'a') as file:
+        #                     del file[f'source_{self.index_in_sources}']
+        #                     if len(file) == 0:
+        #                         need_to_delete = True
+        #             elif self.format == 'fits':
+        #                 raise NotImplementedError('Removing cutouts from fits is not yet implemented.')
+        #             elif self.format in ['jpg', 'png']:
+        #                 raise NotImplementedError('Removing cutouts from jpg or png is not yet implemented.')
+        #             else:
+        #                 raise TypeError(f"Unable to remove cutouts file of type {self.format}")
+
+        #             if need_to_delete:
+        #                 os.remove(f)
+        #                 if remove_folders:
+        #                     folder = f
+        #                     for i in range(10):
+        #                         folder = os.path.dirname(folder)
+        #                         if len(os.listdir(folder)) == 0:
+        #                             os.rmdir(folder)
+        #                         else:
+        #                             break
 
     def delete_from_archive(self, remove_downstreams=False):
         """Delete the file from the archive, if it exists.
@@ -800,20 +807,24 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagBa
             that have remove_data_from_disk() implemented, and call it.
             Default is False.
         """
-        raise NotImplementedError(
-            'Currently archive does not support removing one Cutout at a time, use delete_list instead.'
-        )
         if self.filepath is not None:
-            if self.filepath_extensions is None:
-                self.archive.delete( self.filepath, okifmissing=True )
-            else:
-                for ext in self.filepath_extensions:
-                    self.archive.delete( f"{self.filepath}{ext}", okifmissing=True )
+            self.archive.delete(self.filepath, okifmissing=True)
 
-        # make sure these are set to null just in case we fail
-        # to commit later on, we will at least know something is wrong
-        self.md5sum = None
-        self.md5sum_extensions = None
+        
+        # raise NotImplementedError(
+        #     'Currently archive does not support removing one Cutout at a time, use delete_list instead.'
+        # )
+        # if self.filepath is not None:
+        #     if self.filepath_extensions is None:
+        #         self.archive.delete( self.filepath, okifmissing=True )
+        #     else:
+        #         for ext in self.filepath_extensions:
+        #             self.archive.delete( f"{self.filepath}{ext}", okifmissing=True )
+
+        # # make sure these are set to null just in case we fail
+        # # to commit later on, we will at least know something is wrong
+        # self.md5sum = None
+        # self.md5sum_extensions = None
 
     def get_upstreams(self, session=None):
         """Get the detections SourceList that was used to make this cutout. """
@@ -911,35 +922,3 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagBa
 
     def _get_inverse_badness(self):
         return cutouts_badness_inverse
-
-
-# use these two functions to quickly add the "property" accessor methods
-def load_attribute(object, att):
-    """Load the data for a given attribute of the object."""
-    if not hasattr(object, f'_{att}'):
-        raise AttributeError(f"The object {object} does not have the attribute {att}.")
-    if getattr(object, f'_{att}') is None:
-        if object.filepath is None:
-            return None  # objects just now created and not saved cannot lazy load data!
-        object.load()  # can lazy-load all data
-
-    # after data is filled, should be able to just return it
-    return getattr(object, f'_{att}')
-
-
-def set_attribute(object, att, value):
-    """Set the value of the attribute on the object. """
-    setattr(object, f'_{att}', value)
-
-
-# probably need to get rid of this soon too
-# add "@property" functions to all the data attributes
-for att in Cutouts.get_data_attributes():
-    setattr(
-        Cutouts,
-        att,
-        property(
-            fget=lambda self, att=att: load_attribute(self, att),
-            fset=lambda self, value, att=att: set_attribute(self, att, value),
-        )
-    )

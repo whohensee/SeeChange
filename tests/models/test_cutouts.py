@@ -1,6 +1,6 @@
 import os
-import h5py
 import uuid
+import h5py
 
 import numpy as np
 import pytest
@@ -10,7 +10,7 @@ import sqlalchemy as sa
 from models.base import SmartSession
 from models.cutouts import Cutouts
 
-
+# need to rewrite this entire test basically
 def test_make_save_load_cutouts(decam_detection_list, cutter):
     try:
         cutter.pars.test_parameter = uuid.uuid4().hex
@@ -109,4 +109,3 @@ def test_make_save_load_cutouts(decam_detection_list, cutter):
     finally:
         if 'ds' in locals() and ds.cutouts is not None:
             Cutouts.delete_list(ds.cutouts)
-

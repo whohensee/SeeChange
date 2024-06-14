@@ -75,8 +75,11 @@ class Cutter:
             # try to find some measurements in memory or in the database:
             # cutout_list = ds.get_cutouts(prov, session=session)  # UNCOMMENT AFTER WORKING
             cutout_list = None
+            cutouts = ds.get_cutouts(prov, session=session)
 
-            if cutout_list is None or len(cutout_list) == 0:  # must create a new list of Cutouts
+            # WHPR revisit here to decide if None or [] is a better default for co_list
+            if (cutouts is None or
+                (cutouts.co_list is not None and len(cutouts.co_list) == 0)):  # must create a new list of Cutouts
                 self.has_recalculated = True
                 # use the latest source list in the data store,
                 # or load using the provenance given in the

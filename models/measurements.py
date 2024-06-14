@@ -19,7 +19,9 @@ class Measurements(Base, AutoIDMixin, SpatiallyIndexed, HasBitFlagBadness):
     __tablename__ = 'measurements'
 
     __table_args__ = (
-        UniqueConstraint('cutouts_id', 'provenance_id', name='_measurements_cutouts_provenance_uc'),
+        # At first I just removed this constraint, but I THINK
+        # adding index_in_sources keeps the intent of uniqueness
+        UniqueConstraint('cutouts_id', 'index_in_sources', 'provenance_id', name='_measurements_cutouts_provenance_uc'),
         sa.Index("ix_measurements_scores_gin", "disqualifier_scores", postgresql_using="gin"),
     )
 
@@ -36,6 +38,13 @@ class Measurements(Base, AutoIDMixin, SpatiallyIndexed, HasBitFlagBadness):
         passive_deletes=True,
         lazy='selectin',
         doc="The cutouts object that this measurements object is associated with. "
+    )
+
+    # move to measurements
+    index_in_sources = sa.Column(
+        sa.Integer,
+        nullable=False,
+        doc="Index of this cutout in the source list (of detections in the difference image). "
     )
 
     object_id = sa.Column(
@@ -301,11 +310,45 @@ class Measurements(Base, AutoIDMixin, SpatiallyIndexed, HasBitFlagBadness):
             "The higher the score, the more likely the measurement is to be an artefact. "
     )
 
+    @property
+    def sub_nandata(self):
+        if self.sub_data is None or self.sub_flags is None:
+            return None
+        return np.where(self.sub_flags > 0, np.nan, self.sub_data)
+
+    @property
+    def ref_nandata(self):
+        if self.ref_data is None or self.ref_flags is None:
+            return None
+        return np.where(self.ref_flags > 0, np.nan, self.ref_data)
+
+    @property
+    def new_nandata(self):
+        if self.new_data is None or self.new_flags is None:
+            return None
+        return np.where(self.new_flags > 0, np.nan, self.new_data)
+
     def __init__(self, **kwargs):
         SeeChangeBase.__init__(self)  # don't pass kwargs as they could contain non-column key-values
 
         # replace this transient attribute with the real index once its moved to this obj
         self._cutouts_list_index = None  # helper (transient) attribute that helps find the right cutouts in a list
+
+        self.index_in_sources = None
+
+        self._sub_data = None
+        self._sub_weight = None
+        self._sub_flags = None
+        self._sub_psfflux = None
+        self._sub_psffluxerr = None
+
+        self._ref_data = None
+        self._ref_weight = None
+        self._ref_flags = None
+
+        self._new_data = None
+        self._new_weight = None
+        self._new_flags = None
 
         # manually set all properties (columns or not)
         for key, value in kwargs.items():
@@ -314,11 +357,38 @@ class Measurements(Base, AutoIDMixin, SpatiallyIndexed, HasBitFlagBadness):
 
         self.calculate_coordinates()
 
+    @orm.reconstructor
+    def init_on_load(self):
+        Base.init_on_load(self)
+
+        # might kill this
+        self._cutouts_list_index = None  # helper (transient) attribute that helps find the right cutouts in a list
+
+        # self.index_in_sources = None # violates non-null
+
+        self._sub_data = None
+        self._sub_weight = None
+        self._sub_flags = None
+        self._sub_psfflux = None
+        self._sub_psffluxerr = None
+
+        self._ref_data = None
+        self._ref_weight = None
+        self._ref_flags = None
+
+        self._new_data = None
+        self._new_weight = None
+        self._new_flags = None
+
+        # self.calculate_coordinates()  # should already be loaded from a column I think?
+
+        # does this reconstructor look okay?
+
     def __repr__(self):
         return (
             f"<Measurements {self.id} "
             f"from SourceList {self.cutouts.sources_id} "
-            f"(number {self.cutouts.index_in_sources}) "
+            f"(number {self.index_in_sources}) "
             f"from Image {self.cutouts.sub_image_id} "
             f"at x,y= {self.x}, {self.y}>"
         )
@@ -328,6 +398,28 @@ class Measurements(Base, AutoIDMixin, SpatiallyIndexed, HasBitFlagBadness):
             value = np.array(value)
 
         super().__setattr__(key, value)
+
+    # figure out if we need to include optional (probably yes)
+    def get_data_from_cutouts(self):
+        """Populates this object with the cutout data arrays used in
+        calculations. This allows us to use, for example, self.sub_data
+        without having to look constantly back into the related Cutouts.
+        If that is not a concern, all such calls could instead refer back
+        to the Cutouts data.
+        """
+        # this should trigger a load of co_list if it isn't already in self.cutouts
+        co_data_dict = [co_dict for co_dict in self.cutouts.co_list
+                        if co_dict['source_index'] == self.index_in_sources]
+        if len(co_data_dict) != 1:
+            raise ValueError(f"Must be exactly 1 entry in Cutouts that matches"
+                             f"source index {self.index_in_sources}. Got {len(co_data_dict)}")
+        co_data_dict = co_data_dict[0]
+
+        for att in Cutouts.get_data_dict_attributes():
+            if att == "source_index":  # eventually remove source index maybe and this
+                continue
+            setattr(self, att, co_data_dict.get(att))
+
 
     def get_filter_description(self, number=None):
         """Use the number of the filter in the filter bank to get a string describing it.
@@ -365,6 +457,7 @@ class Measurements(Base, AutoIDMixin, SpatiallyIndexed, HasBitFlagBadness):
 
         raise ValueError('Filter number too high for the filter bank. ')
 
+    # kill this function soon
     def find_cutouts_in_list(self, cutouts_list):
         """Given a list of cutouts, find the one that matches this object. """
         # this is faster, and works without needing DB indices to be set
@@ -451,7 +544,7 @@ class Measurements(Base, AutoIDMixin, SpatiallyIndexed, HasBitFlagBadness):
         if aperture == 'psf':
             aperture = -1
 
-        im = self.cutouts.sub_nandata  # the cutouts image we are working with (includes NaNs for bad pixels)
+        im = self.sub_nandata  # the cutouts image we are working with (includes NaNs for bad pixels)
 
         wcs = self.cutouts.sources.image.new_image.wcs.wcs
         # these are the coordinates relative to the center of the cutouts
@@ -535,3 +628,33 @@ class Measurements(Base, AutoIDMixin, SpatiallyIndexed, HasBitFlagBadness):
             if commit:
                 session.commit()
 
+# use these two functions to quickly add the "property" accessor methods
+def load_attribute(object, att):
+    """Load the data for a given attribute of the object."""
+    if not hasattr(object, f'_{att}'):
+        raise AttributeError(f"The object {object} does not have the attribute {att}.")
+    if getattr(object, f'_{att}') is None:
+        if object.cutouts.filepath is None:
+            return None  # objects just now created and not saved cannot lazy load data!
+        object.cutouts.load()  # can lazy-load all data
+        object.get_data_from_cutouts()
+
+    # after data is filled, should be able to just return it
+    return getattr(object, f'_{att}')
+
+def set_attribute(object, att, value):
+    """Set the value of the attribute on the object. """
+    setattr(object, f'_{att}', value)
+
+# add "@property" functions to all the data attributes
+for att in Cutouts.get_data_dict_attributes():
+    if att == 'source_index':
+        continue
+    setattr(
+        Measurements,
+        att,
+        property(
+            fget=lambda self, att=att: load_attribute(self, att),
+            fset=lambda self, value, att=att: set_attribute(self, att, value),
+        )
+    )

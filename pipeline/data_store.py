@@ -1336,7 +1336,7 @@ class DataStore:
                 # if any([c.provenance.id != provenances[0].id for c in self.cutouts]):
                 #     self.cutouts = None  # this must be an old cutouts list, need to get a new one
                 if self.cutouts.provenance.id != provenances[0].id:
-                    self.cutouts = None # this must be an old cutouts list, need to get a new one
+                    self.cutouts = None # this must be an old cutouts, need to get a new one
 
         # not in memory, look for it on the DB
         if self.cutouts is None:
@@ -1357,12 +1357,15 @@ class DataStore:
                     provenance = self._get_provenance_for_an_upstream(process_name, session=session)
 
                 if provenance is not None:  # if None, it means we can't find it on the DB
-                    self.cutouts = session.scalars(
+                    co_query = session.scalars(
                         sa.select(Cutouts).where(
                             Cutouts.sources_id == sub_image.sources.id,
                             Cutouts.provenance.has(id=provenance.id),
                         )
-                    ).all()
+                    )
+                    if len(co_query.all()) > 1:
+                        raise ValueError(f"Should be one Cutouts per sources. Got {len(co_query.all())}")
+                    self.cutouts = co_query.first()
 
         return self.cutouts
 
@@ -1625,17 +1628,20 @@ class DataStore:
 
             if self.detections is not None:
                 if self.cutouts is not None:
-                    if self.measurements is not None:  # keep track of which cutouts goes to which measurements
-                        for m in self.measurements:
-                            m._cutouts_list_index = self.cutouts.index(m.cutouts)
-                    for cutout in self.cutouts:
-                        cutout.sources = self.detections
-                    self.cutouts = Cutouts.merge_list(self.cutouts, session)
+                    # no longer necessary, as this has become database column index_in_sources
+                    # if self.measurements is not None:  # keep track of which cutouts goes to which measurements
+                    #     for m in self.measurements:
+                    #         m._cutouts_list_index = self.cutouts.index(m.cutouts)
+                    # for cutout in self.cutouts:  # there is now just 1 big cutouts
+                    self.cutouts.sources = self.detections # DOUBLE CHECK - WILL THERE ONLY EVER BE ONE CUTOUTS?
+                    # self.cutouts = Cutouts.merge_list(self.cutouts, session)
+                    self.cutouts = session.merge(self.cutouts)
 
                 if self.measurements is not None:
                     for i, m in enumerate(self.measurements):
                         # use the new, merged cutouts
-                        self.measurements[i].cutouts = self.measurements[i].find_cutouts_in_list(self.cutouts)
+                        # self.measurements[i].cutouts = self.measurements[i].find_cutouts_in_list(self.cutouts)
+                        self.measurements[i].cutouts = self.cutouts # only one now
                         self.measurements[i].associate_object(session)
                         self.measurements[i] = session.merge(self.measurements[i])
                         self.measurements[i].object.measurements.append(self.measurements[i])

@@ -163,12 +163,14 @@ class Measurer:
         self.has_recalculated = False
         try:  # first make sure we get back a datastore, even an empty one
             # most likely to get a Cutouts object or list of Cutouts
-            if isinstance(args[0], Cutouts):
-                new_args = [args[0]]  # make it a list if we got a single Cutouts object for some reason
-                new_args += list(args[1:])
-                args = tuple(new_args)
+            # can no longer receive a list, just a single Cutouts
+            # if isinstance(args[0], Cutouts):
+            #     new_args = [args[0]]  # make it a list if we got a single Cutouts object for some reason
+            #     new_args += list(args[1:])
+            #     args = tuple(new_args)
 
-            if isinstance(args[0], list) and all([isinstance(c, Cutouts) for c in args[0]]):
+            # if isinstance(args[0], list) and all([isinstance(c, Cutouts) for c in args[0]]):
+            if isinstance(args[0], Cutouts):
                 args, kwargs, session = parse_session(*args, **kwargs)
                 ds = DataStore()
                 ds.cutouts = args[0]
@@ -218,12 +220,13 @@ class Measurer:
                     m = Measurements(cutouts=cutouts)
                     # make sure to remember which cutout belongs to this measurement,
                     # before either of them is in the DB and then use the cutouts_id instead
-                    m._cutouts_list_index = i
+                    # m._cutouts_list_index = i   # delete this line eventually, i think its useless
+                    m.index_in_sources = co_dict['source_index']
 
                     # get all the information that used to be populated in cutting
-                    m.x = cutouts.sources.x[co_dict['source_index']]  # update once index_in_sources moved to m
-                    m.y = cutouts.sources.y[co_dict['source_index']]  # update once index_in_sources moved to m
-                    m.source_row = dict(Table(detections.data)[co_dict['source_index']]) # move to measurements probably
+                    m.x = cutouts.sources.x[m.index_in_sources]
+                    m.y = cutouts.sources.y[m.index_in_sources]
+                    m.source_row = dict(Table(detections.data)[m.index_in_sources]) # move to measurements probably
                     for key, value in m.source_row.items():
                         if isinstance(value, np.number):
                             m.source_row[key] = value.item()  # convert numpy number to python primitive
@@ -321,10 +324,10 @@ class Measurer:
                     # Apply analytic cuts to each stamp image, to rule out artefacts.
                     m.disqualifier_scores = {}
                     if m.background != 0 and m.background_err > 0.1:
-                        norm_data = (c.sub_nandata - m.background) / m.background_err  # normalize
+                        norm_data = (m.sub_nandata - m.background) / m.background_err  # normalize
                     else:
                         warnings.warn(f'Background mean= {m.background}, std= {m.background_err}, normalization skipped!')
-                        norm_data = c.sub_nandata  # no good background measurement, do not normalize!
+                        norm_data = m.sub_nandata  # no good background measurement, do not normalize!
 
                     positives = np.sum(norm_data > self.pars.outlier_sigma)
                     negatives = np.sum(norm_data < -self.pars.outlier_sigma)
@@ -335,9 +338,9 @@ class Measurer:
                     else:
                         m.disqualifier_scores['negatives'] = negatives / positives
 
-                    x, y = np.meshgrid(range(c.sub_data.shape[0]), range(c.sub_data.shape[1]))
-                    x = x - c.sub_data.shape[1] // 2 - m.offset_x
-                    y = y - c.sub_data.shape[0] // 2 - m.offset_y
+                    x, y = np.meshgrid(range(m.sub_data.shape[0]), range(m.sub_data.shape[1]))
+                    x = x - m.sub_data.shape[1] // 2 - m.offset_x
+                    y = y - m.sub_data.shape[0] // 2 - m.offset_y
                     r = np.sqrt(x ** 2 + y ** 2)
                     bad_pixel_inclusion = r <= self.pars.bad_pixel_radius + 0.5
                     m.disqualifier_scores['bad pixels'] = np.sum(flags[bad_pixel_inclusion] > 0)
@@ -357,7 +360,7 @@ class Measurer:
                     # TODO: add additional disqualifiers
 
                     m._upstream_bitflag = 0
-                    m._upstream_bitflag |= c.bitflag
+                    m._upstream_bitflag |= m.cutouts.bitflag
 
                     ignore_bits = 0
                     for badness in self.pars.bad_flag_exclude:

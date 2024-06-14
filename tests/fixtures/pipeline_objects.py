@@ -781,7 +781,8 @@ def datastore_factory(data_dir, pipeline_factory):
                 SCLogger.debug('loading measurements from cache. ')
                 ds.all_measurements = copy_list_from_cache(Measurements, cache_dir, cache_name)
                 [setattr(m, 'provenance', prov) for m in ds.all_measurements]
-                [setattr(m, 'cutouts', c) for m, c in zip(ds.all_measurements, ds.cutouts)]
+                # [setattr(m, 'cutouts', c) for m, c in zip(ds.all_measurements, ds.cutouts)]
+                [setattr(m, 'cutouts', ds.cutouts) for m in ds.all_measurements]
 
                 ds.measurements = []
                 for m in ds.all_measurements:
@@ -794,6 +795,7 @@ def datastore_factory(data_dir, pipeline_factory):
                 # no need to save list because Measurements is not a FileOnDiskMixin!
             else:  # cannot find measurements on cache
                 ds = p.measurer.run(ds)
+                breakpoint()
                 copy_list_to_cache(ds.all_measurements, cache_dir, cache_name)  # must provide filepath!
 
             ds.save_and_commit(session=session)
