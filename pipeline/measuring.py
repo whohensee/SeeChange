@@ -212,16 +212,17 @@ class Measurer:
 
                 # prepare the filter bank for this batch of cutouts
                 if self._filter_psf_fwhm is None or self._filter_psf_fwhm != cutouts.sources.image.get_psf().fwhm_pixels:
-                    self.make_filter_bank(cutouts.co_list[0]["sub_data"].shape[0], cutouts.sources.image.get_psf().fwhm_pixels)
+                    self.make_filter_bank(cutouts.co_dict["source_index_0"]["sub_data"].shape[0], cutouts.sources.image.get_psf().fwhm_pixels)
 
                 # go over each cutouts object and produce a measurements object
                 measurements_list = []
-                for i, co_dict in enumerate(cutouts.co_list):
+                for key, co_dict in cutouts.co_dict.items():
                     m = Measurements(cutouts=cutouts)
                     # make sure to remember which cutout belongs to this measurement,
                     # before either of them is in the DB and then use the cutouts_id instead
                     # m._cutouts_list_index = i   # delete this line eventually, i think its useless
-                    m.index_in_sources = co_dict['source_index']
+                    m.index_in_sources = int(key[13:]) # grab just the number from "source_index_xxx"
+                    # source_index_
 
                     # get all the information that used to be populated in cutting
                     m.x = cutouts.sources.x[m.index_in_sources]

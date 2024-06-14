@@ -77,7 +77,9 @@ class Cutter:
 
             # WHPR revisit here to decide if None or [] is a better default for co_list
             if (cutouts is None or
-                (cutouts.co_list is not None and len(cutouts.co_list) == 0)):  # must create a new list of Cutouts
+                # (cutouts.co_list is not None and len(cutouts.co_list) == 0)):  # must create a new list of Cutouts
+                (cutouts.co_dict is not None and len(cutouts.co_dict) == 0)):  # must create a new list of Cutouts
+
                 self.has_recalculated = True
                 # use the latest source list in the data store,
                 # or load using the provenance given in the
@@ -117,8 +119,7 @@ class Cutter:
                 cutouts._upstream_bitflag = 0
                 cutouts._upstream_bitflag |= detections.bitflag
 
-                cutouts.co_list = []
-                # cutouts.co_dict = {}
+                cutouts.co_dict = {}
                 for i, source in enumerate(detections.data):
                     data_dict = {}
                     data_dict["source_index"] = i
@@ -134,8 +135,7 @@ class Cutter:
                     data_dict["new_weight"] = new_stamps_weight[i]
                     data_dict["new_flags"] = new_stamps_flags[i]
 
-                    cutouts.co_list.append(data_dict)
-                    # cutouts.co_dict[f"source_index_{i}"]
+                    cutouts.co_dict[f"source_index_{i}"] = data_dict
 
                 # ----- New experimental stuff above ----- #
 

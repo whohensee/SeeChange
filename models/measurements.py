@@ -406,13 +406,15 @@ class Measurements(Base, AutoIDMixin, SpatiallyIndexed, HasBitFlagBadness):
         If that is not a concern, all such calls could instead refer back
         to the Cutouts data.
         """
-        # this should trigger a load of co_list if it isn't already in self.cutouts
-        co_data_dict = [co_dict for co_dict in self.cutouts.co_list
-                        if co_dict['source_index'] == self.index_in_sources]
-        if len(co_data_dict) != 1:
-            raise ValueError(f"Must be exactly 1 entry in Cutouts that matches"
-                             f"source index {self.index_in_sources}. Got {len(co_data_dict)}")
-        co_data_dict = co_data_dict[0]
+        # # this should trigger a load of co_list if it isn't already in self.cutouts
+        # co_data_dict = [co_dict for co_dict in self.cutouts.co_list
+        #                 if co_dict['source_index'] == self.index_in_sources]
+        # if len(co_data_dict) != 1:
+        #     raise ValueError(f"Must be exactly 1 entry in Cutouts that matches"
+        #                      f"source index {self.index_in_sources}. Got {len(co_data_dict)}")
+        # co_data_dict = co_data_dict[0]
+
+        co_data_dict = self.cutouts.co_dict[f'source_index_{self.index_in_sources}']
 
         for att in Cutouts.get_data_dict_attributes():
             if att == "source_index":  # eventually remove source index maybe and this
@@ -612,17 +614,17 @@ class Measurements(Base, AutoIDMixin, SpatiallyIndexed, HasBitFlagBadness):
             if commit:
                 session.commit()
 
+# need to rework to access just the data for this measurement
 # use these two functions to quickly add the "property" accessor methods
 def load_attribute(object, att):
     """Load the data for a given attribute of the object."""
     if not hasattr(object, f'_{att}'):
         raise AttributeError(f"The object {object} does not have the attribute {att}.")
     if getattr(object, f'_{att}') is None:
-        if object.cutouts.co_list is None and object.cutouts.filepath is None:
+        if object.cutouts.co_dict is None and object.cutouts.filepath is None:
             return None  # objects just now created and not saved cannot lazy load data!
-        # object.cutouts.load()  # can lazy-load all data  # THIS LINE MIGHT BE TERRIBLE!!! (also unnecessary)
-        if [entry for entry in object.cutouts.co_list if entry['source_index'] == object.index_in_sources] == []:
-            raise ValueError("No matching entry in co_list of Cutouts for this measurement")
+        if att not in object.cutouts.co_dict[f'source_index_{object.index_in_sources}'].keys():
+            raise ValueError("No matching entry in co_dict of Cutouts for this measurement")
         object.get_data_from_cutouts()
 
     # after data is filled, should be able to just return it

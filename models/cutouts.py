@@ -131,7 +131,7 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
         self._new_weight = None
         self._new_flags = None
 
-        self._co_list = None
+        self._co_dict = None
 
         self._bitflag = 0
 
@@ -162,7 +162,7 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
         self._new_weight = None
         self._new_flags = None
 
-        self._co_list = None
+        self._co_dict = None
 
 
     # update as cutoutsfile
@@ -217,15 +217,26 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
     # and "data, weight, flags"
     # in addition to a "source_index" (which I think is always just
     # their position in the list and maybe redundant)
-    @property
-    def co_list( self ):
-        if self._co_list is None and self.filepath is not None:
-            self.load()
-        return self._co_list
+    # @property
+    # def co_list( self ):
+    #     if self._co_list is None and self.filepath is not None:
+    #         self.load()
+    #     return self._co_list
 
-    @co_list.setter
-    def co_list( self, value ):
-        self._co_list = value
+    # @co_list.setter
+    # def co_list( self, value ):
+    #     self._co_list = value
+
+    # change to a dict of dicts, with the dict key [f"source_index_{index_in_sources}"]
+    @property
+    def co_dict( self ):
+        if self._co_dict is None and self.filepath is not None:
+            self.load()
+        return self._co_dict
+
+    @co_dict.setter
+    def co_dict( self, value ):
+        self._co_dict = value
 
     @staticmethod
     def from_detections(detections, provenance=None, **kwargs):
@@ -355,8 +366,8 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
         if groupname in file:
             del file[groupname]
 
-        # handle the data arrays
-        for key in self.get_data_dict_attributes():
+        # new version with dict 
+        for key in self.get_data_dict_attributes():  # change this to get rid of source_index soon
             if key == 'source_index':
                 continue
             data = co_dict.get(key)
@@ -370,13 +381,32 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
                     compression='gzip'
                 )
 
-        # handle the source index value
-        target = file[groupname].attrs
-        for key in target.keys():  # first clear the existing keys
-            del target[key]
+        # old version below to delete
 
-        # then add the new ones
-        target['source_index'] = co_dict['source_index']
+
+        # # handle the data arrays
+        # for key in self.get_data_dict_attributes():
+        #     if key == 'source_index':
+        #         continue
+        #     data = co_dict.get(key)
+
+        #     if data is not None:
+        #         file.create_dataset(
+        #             f'{groupname}/{key}',
+        #             data=data,
+        #             shape=data.shape,
+        #             dtype=data.dtype,
+        #             compression='gzip'
+        #         )
+
+        # # handle the source index value
+        # target = file[groupname].attrs
+        # for key in target.keys():  # first clear the existing keys
+        #     del target[key]
+
+        # # then add the new ones
+        # target['source_index'] = co_dict['source_index']
+        # --------super old below
 
         # honestly not sure I care about the source row below
         # # handle the source_row dictionary
@@ -399,13 +429,14 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
             Any additional keyword arguments to pass to the FileOnDiskMixin.save method.
         """
         # consider more what to do in this case. Maybe default in init to []?
-        if self._co_list is None:
+        if self._co_dict is None:
             return None
             raise TypeError(f"No data in this cutouts object to save. self._co_list is type None")
 
-        for co_dict in self._co_list:
-            if not isinstance(co_dict, dict):
-                raise TypeError("Each item of the list must be a dictionary")
+        for key, value in self._co_dict.items():
+            if not isinstance(value, dict):
+                raise TypeError("Each entry of the dict must be a dictionary")
+
 
         # consider using the has_data check below, maybe not needed with new structure
 
@@ -422,8 +453,10 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
 
         if self.format == 'hdf5':
             with h5py.File(fullname, 'a') as file:
-                for co_dict in self._co_list:
-                    self._save_dataset_dict_to_hdf5(co_dict, file, f'source_{co_dict["source_index"]}')
+                # for co_dict in self._co_list:
+                #     self._save_dataset_dict_to_hdf5(co_dict, file, f'source_{co_dict["source_index"]}')
+                for key, value in self._co_dict.items():
+                    self._save_dataset_dict_to_hdf5(value, file, key) # WHPR2 check this save load works
         elif self.format == 'fits':
             raise NotImplementedError('Saving cutouts to fits is not yet implemented.')
         elif self.format in ['jpg', 'png']:
@@ -465,9 +498,10 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
         """
 
         co_dict = {}
-        for att in self.get_data_dict_attributes():
+        for att in self.get_data_dict_attributes(): # remove source index for dict soon
             if att == 'source_index':
-                co_dict[att] = int(file[groupname].attrs[att])
+                # co_dict[att] = int(file[groupname].attrs[att])
+                continue
             elif att in file[groupname]:
                 co_dict[att] = np.array(file[f'{groupname}/{att}'])
 
@@ -489,13 +523,14 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
         if filepath is None:
             filepath = self.get_fullpath()
 
-        self._co_list = []
+        self._co_dict = {}
 
         if self.format == 'hdf5':
             with h5py.File(filepath, 'r') as file:
                 # breakpoint()  # need to figure out how to parse through here as a list
                 for groupname in file:
-                    self._co_list.append(self._load_dataset_dict_from_hdf5(file, groupname))
+                    # self._co_list.append(self._load_dataset_dict_from_hdf5(file, groupname))
+                    self._co_dict[groupname] = self._load_dataset_dict_from_hdf5(file, groupname)
 
         # ----- old stuff below -----
 
