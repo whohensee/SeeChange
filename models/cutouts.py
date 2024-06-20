@@ -131,7 +131,7 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
         self._new_weight = None
         self._new_flags = None
 
-        self._co_dict = None
+        self._co_dict = {}
 
         self._bitflag = 0
 
@@ -162,7 +162,7 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
         self._new_weight = None
         self._new_flags = None
 
-        self._co_dict = None
+        self._co_dict = {}
 
 
     # update as cutoutsfile
@@ -229,14 +229,23 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
 
     # change to a dict of dicts, with the dict key [f"source_index_{index_in_sources}"]
     @property
-    def co_dict( self ):
-        if self._co_dict is None and self.filepath is not None:
+    def co_dict( self, ):
+        # Ok because of partial lazy loading with hdf5 and measurements only wanting their row,
+        # this one is complicated. I have set that if you use this attribute, it will ENSURE
+        # that you are given the entire dictionary, including checking it is the proper length
+        # using the sourcelist
+        proper_length = self.sources.num_sources
+        if len(self._co_dict) != proper_length and self.filepath is not None:
             self.load()
         return self._co_dict
 
     @co_dict.setter
     def co_dict( self, value ):
         self._co_dict = value
+
+    # I'd like a more elegant method for doing this.
+    def get_co_dict_noload(self):
+        return self._co_dict
 
     @staticmethod
     def from_detections(detections, provenance=None, **kwargs):
@@ -428,8 +437,9 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
         kwargs: dict
             Any additional keyword arguments to pass to the FileOnDiskMixin.save method.
         """
+        # ADD A CHECK TO MAKE SURE WE ARE SAVING AN ENTRY FOR EACH ROW
         # consider more what to do in this case. Maybe default in init to []?
-        if self._co_dict is None:
+        if self._co_dict == {}:
             return None
             raise TypeError(f"No data in this cutouts object to save. self._co_list is type None")
 
@@ -498,17 +508,28 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
         """
 
         co_dict = {}
+        found_data = False
         for att in self.get_data_dict_attributes(): # remove source index for dict soon
             if att == 'source_index':
                 # co_dict[att] = int(file[groupname].attrs[att])
                 continue
             elif att in file[groupname]:
+                found_data = True
                 co_dict[att] = np.array(file[f'{groupname}/{att}'])
-
-        return co_dict
+        if found_data:
+            return co_dict
 
         # self.format = 'hdf5' # move this line to load (looks unnecessary as was
         # for making individual new cutouts objects)
+
+    def load_one_co_dict(self, groupname, filepath=None):
+
+        if filepath is None:
+            filepath = self.get_fullpath()
+
+        with h5py.File(filepath, 'r') as file:
+            self._co_dict[groupname] = self._load_dataset_dict_from_hdf5(file, groupname)
+        return None
 
     def load(self, filepath=None):
         """Load the data for this cutout from a file.
@@ -523,14 +544,18 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
         if filepath is None:
             filepath = self.get_fullpath()
 
+        if filepath is None:
+            raise ValueError("Could not find filepath to load")
+
         self._co_dict = {}
 
-        if self.format == 'hdf5':
-            with h5py.File(filepath, 'r') as file:
-                # breakpoint()  # need to figure out how to parse through here as a list
-                for groupname in file:
-                    # self._co_list.append(self._load_dataset_dict_from_hdf5(file, groupname))
-                    self._co_dict[groupname] = self._load_dataset_dict_from_hdf5(file, groupname)
+        if os.path.exists(filepath): # revisit this check
+            if self.format == 'hdf5':  # consider getting rid of this totally
+                with h5py.File(filepath, 'r') as file:
+                    # breakpoint()  # need to figure out how to parse through here as a list
+                    for groupname in file:
+                        # self._co_list.append(self._load_dataset_dict_from_hdf5(file, groupname))
+                        self._co_dict[groupname] = self._load_dataset_dict_from_hdf5(file, groupname)
 
         # ----- old stuff below -----
 

@@ -414,7 +414,10 @@ class Measurements(Base, AutoIDMixin, SpatiallyIndexed, HasBitFlagBadness):
         #                      f"source index {self.index_in_sources}. Got {len(co_data_dict)}")
         # co_data_dict = co_data_dict[0]
 
-        co_data_dict = self.cutouts.co_dict[f'source_index_{self.index_in_sources}']
+        groupname = f'source_index_{self.index_in_sources}'
+        # self.cutouts.load_one_co_dict(groupname) # should have been done before thie method
+
+        co_data_dict = self.cutouts.co_dict[groupname] # get just the subdict with data for this
 
         for att in Cutouts.get_data_dict_attributes():
             if att == "source_index":  # eventually remove source index maybe and this
@@ -529,7 +532,6 @@ class Measurements(Base, AutoIDMixin, SpatiallyIndexed, HasBitFlagBadness):
         if aperture == 'psf':
             aperture = -1
 
-        # breakpoint()
         im = self.sub_nandata  # the cutouts image we are working with (includes NaNs for bad pixels)
 
         wcs = self.cutouts.sources.image.new_image.wcs.wcs
@@ -621,10 +623,18 @@ def load_attribute(object, att):
     if not hasattr(object, f'_{att}'):
         raise AttributeError(f"The object {object} does not have the attribute {att}.")
     if getattr(object, f'_{att}') is None:
-        if object.cutouts.co_dict is None and object.cutouts.filepath is None:
+        if object.cutouts.get_co_dict_noload() == {} and object.cutouts.filepath is None:
             return None  # objects just now created and not saved cannot lazy load data!
-        if att not in object.cutouts.co_dict[f'source_index_{object.index_in_sources}'].keys():
-            raise ValueError("No matching entry in co_dict of Cutouts for this measurement")
+
+        groupname = f'source_index_{object.index_in_sources}'
+        if groupname not in object.cutouts.get_co_dict_noload().keys():
+            # raise ValueError("No matching entry in co_dict of Cutouts for this measurement")
+            # try and load the info for this measurement
+            object.cutouts.load_one_co_dict(groupname)
+        if groupname not in object.cutouts.get_co_dict_noload().keys():
+            raise ValueError("This measurements not found in Cutouts data dict")
+        if att not in object.cutouts.get_co_dict_noload()[groupname].keys():
+            raise ValueError(f"No matching entry in dict for att {att}")
         object.get_data_from_cutouts()
 
     # after data is filled, should be able to just return it

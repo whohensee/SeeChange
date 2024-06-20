@@ -1357,15 +1357,16 @@ class DataStore:
                     provenance = self._get_provenance_for_an_upstream(process_name, session=session)
 
                 if provenance is not None:  # if None, it means we can't find it on the DB
-                    co_query = session.scalars(
+                    co = session.scalars(
                         sa.select(Cutouts).where(
                             Cutouts.sources_id == sub_image.sources.id,
                             Cutouts.provenance.has(id=provenance.id),
                         )
-                    )
-                    if len(co_query.all()) > 1:
-                        raise ValueError(f"Should be one Cutouts per sources. Got {len(co_query.all())}")
-                    self.cutouts = co_query.first()
+                    ).all()
+                    if len(co) > 1:
+                        raise ValueError(f"Should be one Cutouts per sources. Got {len(co)}")
+                    if len(co) == 1:
+                        self.cutouts = co[0]
 
         return self.cutouts
 

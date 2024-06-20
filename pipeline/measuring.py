@@ -209,9 +209,11 @@ class Measurer:
                     raise ValueError(f'Cannot find a source list corresponding to the datastore inputs: {ds.get_inputs()}')
 
                 cutouts = ds.get_cutouts(session=session)
+                # cutouts.load()
 
                 # prepare the filter bank for this batch of cutouts
                 if self._filter_psf_fwhm is None or self._filter_psf_fwhm != cutouts.sources.image.get_psf().fwhm_pixels:
+                    # load data for the first cutouts to use
                     self.make_filter_bank(cutouts.co_dict["source_index_0"]["sub_data"].shape[0], cutouts.sources.image.get_psf().fwhm_pixels)
 
                 # go over each cutouts object and produce a measurements object
