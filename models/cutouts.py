@@ -96,19 +96,16 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
         )
     )
 
-    # check if should be moved to measurements - I think not
     @property
     def new_image(self):
         """Get the aligned new image using the sub_image. """
         return self.sub_image.new_aligned_image
 
-    # check if should be moved to measurements - I think not
     @property
     def ref_image(self):
         """Get the aligned reference image using the sub_image. """
         return self.sub_image.ref_aligned_image
 
-    # update as cutoutsfile
     def __init__(self, *args, **kwargs):
         FileOnDiskMixin.__init__(self, *args, **kwargs)
         HasBitFlagBadness.__init__(self)
@@ -141,7 +138,6 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
             if hasattr(self, key):
                 setattr(self, key, value)
 
-    # update as cutoutsfile
     @orm.reconstructor
     def init_on_load(self):
         Base.init_on_load(self)
@@ -165,8 +161,6 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
 
         self._co_dict = {}
 
-
-    # update as cutoutsfile
     def __repr__(self):
         return (
             f"<Cutouts {self.id} "
@@ -180,10 +174,9 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
 
         super().__setattr__(key, value)
 
-    # update as cutoutsfile
     @staticmethod
     def get_data_attributes(include_optional=True):
-        names = ['source_row']
+        names = ['source_row']  # WHPR kill this and references to it (possibly whole function)
         for im in ['sub', 'ref', 'new']:
             for att in ['data', 'weight', 'flags']:
                 names.append(f'{im}_{att}')
@@ -193,6 +186,7 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
 
         return names
 
+    # WHPR potentially kill get_data_attributes and steal its name
     @staticmethod
     def get_data_dict_attributes(include_optional=True):
         names = ['source_index']
@@ -205,7 +199,8 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
 
         return names
 
-    # possibly move this guy over
+    # WHPR This checks if the data exists - maybe move over to measurements
+    # and use it to make checks for individual loads cleaner. Maybe unneccesary
     @property
     def has_data(self):
         for att in self.get_data_attributes(include_optional=False):
@@ -213,22 +208,6 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
                 return False
         return True
 
-    # current preliminary implementation is a list of dicts
-    # the dicts have combinations of "sub_, ref_, new_"
-    # and "data, weight, flags"
-    # in addition to a "source_index" (which I think is always just
-    # their position in the list and maybe redundant)
-    # @property
-    # def co_list( self ):
-    #     if self._co_list is None and self.filepath is not None:
-    #         self.load()
-    #     return self._co_list
-
-    # @co_list.setter
-    # def co_list( self, value ):
-    #     self._co_list = value
-
-    # change to a dict of dicts, with the dict key [f"source_index_{index_in_sources}"]
     @property
     def co_dict( self, ):
         # Ok because of partial lazy loading with hdf5 and measurements only wanting their row,
@@ -246,9 +225,8 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
     def co_dict( self, value ):
         self._co_dict = value
 
-    # I'd like a more elegant method for doing this (perhaps a way to make this behave
-    # as a derived attribute, eg. accessible as obj.co_dict_noload). TODO look into this
-    def get_co_dict_noload(self):
+    @property
+    def co_dict_noload(self):
         return self._co_dict
 
     @staticmethod
@@ -279,23 +257,8 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
         """
         cutout = Cutouts()
         cutout.sources = detections
-        # cutout.source_row = dict(Table(detections.data)[0]) # WHPR this should all go once spatially indexed removed
-        # for key, value in cutout.source_row.items():
-        #     if isinstance(value, np.number):
-        #         cutout.source_row[key] = value.item()  # convert numpy number to python primitive
-        # cutout.x = detections.x[source_index] # move to measurements - should be done
-        # cutout.y = detections.y[source_index] # move to measurements - should be done
-        # cutout.ra = cutout.source_row['ra'] # move to measurements
-        # cutout.dec = cutout.source_row['dec'] # move to measurements
-        # cutout.calculate_coordinates() # move to measurements
-        cutout.provenance = provenance # figure out how shifting all to measurements affects this line
+        cutout.provenance = provenance
         cutout.provenance_id = provenance.id # I couldn't find this being set anywhere else?
-
-        # add the data, weight, and flags to the cutout from kwargs
-        # figure out if these go to measurements
-        # for im in ['sub', 'ref', 'new']:
-            # for att in ['data', 'weight', 'flags']:
-                # setattr(cutout, f'{im}_{att}', kwargs.get(f'{im}_{att}', None))
 
         # update the bitflag
         cutout._upstream_bitflag = detections.bitflag
@@ -327,49 +290,14 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
 
         return filename
 
-    def _save_dataset_to_hdf5(self, file, groupname):
-        """Save the dataset from this Cutouts object into an HDF5 group for an open file.
-
-        Parameters
-        ----------
-        file: h5py.File
-            The open HDF5 file to save to.
-        groupname: str
-            The name of the group to save into. This should be "source_<number>"
-        """
-        if groupname in file:
-            del file[groupname]
-
-        # handle the data arrays
-        for att in self.get_data_attributes():
-            if att == 'source_row':
-                continue
-
-            data = getattr(self, f'_{att}')  # get the private attribute so as not to trigger a load upon hitting None
-            if data is not None:
-                file.create_dataset(
-                    f'{groupname}/{att}',
-                    data=data,
-                    shape=data.shape,
-                    dtype=data.dtype,
-                    compression='gzip'
-                )
-
-        # handle the source_row dictionary
-        target = file[groupname].attrs
-        for key in target.keys():  # first clear the existing keys
-            del target[key]
-
-        # then add the new ones
-        for key, value in self.source_row.items():
-            target[key] = value
-
-    # rename similar to above and delete above once working
     def _save_dataset_dict_to_hdf5(self, co_dict, file, groupname):
-        """Save the dataset from this Cutouts dict list item into an HDF5 group for an open file.
+        """Save the one co_subdict from the co_dict of this Cutouts
+        into an HDF5 group for an open file.
 
         Parameters
         ----------
+        co_dict: dict
+            The subdict containing the data for a single cutout
         file: h5py.File
             The open HDF5 file to save to.
         groupname: str
@@ -378,8 +306,7 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
         if groupname in file:
             del file[groupname]
 
-        # new version with dict 
-        for key in self.get_data_dict_attributes():  # change this to get rid of source_index soon
+        for key in self.get_data_dict_attributes():  # WHPR change this to get rid of source_index
             if key == 'source_index':
                 continue
             data = co_dict.get(key)
@@ -393,45 +320,8 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
                     compression='gzip'
                 )
 
-        # old version below to delete
-
-
-        # # handle the data arrays
-        # for key in self.get_data_dict_attributes():
-        #     if key == 'source_index':
-        #         continue
-        #     data = co_dict.get(key)
-
-        #     if data is not None:
-        #         file.create_dataset(
-        #             f'{groupname}/{key}',
-        #             data=data,
-        #             shape=data.shape,
-        #             dtype=data.dtype,
-        #             compression='gzip'
-        #         )
-
-        # # handle the source index value
-        # target = file[groupname].attrs
-        # for key in target.keys():  # first clear the existing keys
-        #     del target[key]
-
-        # # then add the new ones
-        # target['source_index'] = co_dict['source_index']
-        # --------super old below
-
-        # honestly not sure I care about the source row below
-        # # handle the source_row dictionary
-        # target = file[groupname].attrs
-        # for key in target.keys():  # first clear the existing keys
-        #     del target[key]
-
-        # # then add the new ones
-        # for key, value in self.source_row.items():
-        #     target[key] = value
-
     def save(self, filename=None, overwrite=True, **kwargs):
-        """Save a single Cutouts object into a file.
+        """Save the data of this Cutouts object into a file.
 
         Parameters
         ----------
@@ -440,19 +330,16 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
         kwargs: dict
             Any additional keyword arguments to pass to the FileOnDiskMixin.save method.
         """
-        # ADD A CHECK TO MAKE SURE WE ARE SAVING AN ENTRY FOR EACH ROW
-        # consider more what to do in this case. Maybe default in init to []?
+        # WHPR ADD A CHECK TO MAKE SURE WE ARE SAVING AN ENTRY FOR EACH ROW
         if self._co_dict == {}:
-            return None
-            raise TypeError(f"No data in this cutouts object to save. self._co_list is type None")
+            return None  # do nothing
 
         for key, value in self._co_dict.items():
             if not isinstance(value, dict):
-                raise TypeError("Each entry of the dict must be a dictionary")
+                raise TypeError("Each entry of _co_dict must be a dictionary")
 
-
-        # consider using the has_data check below, maybe not needed with new structure
-
+        # WHPR consider using the has_data check below, maybe not needed with new structure
+        # If we did, I would just check that all 9 arrays have data
         if filename is None:
             filename = self.invent_filepath()
 
@@ -464,12 +351,11 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
         if not overwrite and os.path.isfile(fullname):
             raise FileExistsError(f"The file {fullname} already exists and overwrite is False.")
 
+        # WHPR think if I really need to mess with all this format stuff anymore
         if self.format == 'hdf5':
             with h5py.File(fullname, 'a') as file:
-                # for co_dict in self._co_list:
-                #     self._save_dataset_dict_to_hdf5(co_dict, file, f'source_{co_dict["source_index"]}')
                 for key, value in self._co_dict.items():
-                    self._save_dataset_dict_to_hdf5(value, file, key) # WHPR2 check this save load works
+                    self._save_dataset_dict_to_hdf5(value, file, key)
         elif self.format == 'fits':
             raise NotImplementedError('Saving cutouts to fits is not yet implemented.')
         elif self.format in ['jpg', 'png']:
@@ -480,27 +366,9 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
         # make sure to also save using the FileOnDiskMixin method
         FileOnDiskMixin.save(self, fullname, overwrite=overwrite, **kwargs)
 
-    def _load_dataset_from_hdf5(self, file, groupname):
-        """Load the dataset from an HDF5 group into this Cutouts object.
-
-        Parameters
-        ----------
-        file: h5py.File
-            The open HDF5 file to load from.
-        groupname: str
-            The name of the group to load from. This should be "source_<number>"
-        """
-        for att in self.get_data_attributes():
-            if att == 'source_row':
-                self.source_row = dict(file[groupname].attrs)
-            elif att in file[groupname]:
-                setattr(self, att, np.array(file[f'{groupname}/{att}']))
-
-        self.format = 'hdf5'
-
     # this might be able to become a class method
     def _load_dataset_dict_from_hdf5(self, file, groupname):
-        """Load the dataset from an HDF5 group into this Cutouts object.
+        """Load the dataset from an HDF5 group into one co_subdict and return.
 
         Parameters
         ----------
@@ -513,7 +381,7 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
         co_dict = {}
         found_data = False
         for att in self.get_data_dict_attributes(): # remove source index for dict soon
-            if att == 'source_index':
+            if att == 'source_index': # WHPR clean this up
                 # co_dict[att] = int(file[groupname].attrs[att])
                 continue
             elif att in file[groupname]:
@@ -526,6 +394,10 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
         # for making individual new cutouts objects)
 
     def load_one_co_dict(self, groupname, filepath=None):
+        """Load data subdict for a single cutout into this Cutouts co_dict. This allows
+        a measurement to request only the information relevant to that object, rather
+        than populating the entire dictionary when we only need one subdict.
+        """
 
         if filepath is None:
             filepath = self.get_fullpath()
@@ -552,32 +424,16 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
 
         self._co_dict = {}
 
-        if os.path.exists(filepath): # revisit this check
+        if os.path.exists(filepath): # WHPR revisit this check
             if self.format == 'hdf5':  # consider getting rid of this totally
                 with h5py.File(filepath, 'r') as file:
-                    # breakpoint()  # need to figure out how to parse through here as a list
                     for groupname in file:
-                        # self._co_list.append(self._load_dataset_dict_from_hdf5(file, groupname))
                         self._co_dict[groupname] = self._load_dataset_dict_from_hdf5(file, groupname)
-
-        # ----- old stuff below -----
-
-        # if filepath is None:
-        #     filepath = self.get_fullpath()
-
-        # if self.format == 'hdf5':
-        #     with h5py.File(filepath, 'r') as file:
-        #         self._load_dataset_from_hdf5(file, f'source_{self.index_in_sources}')
-        # elif self.format == 'fits':
-        #     raise NotImplementedError('Loading cutouts from fits is not yet implemented.')
-        # elif self.format in ['jpg', 'png']:
-        #     raise NotImplementedError('Loading cutouts from jpg or png is not yet implemented.')
-        # else:
-        #     raise TypeError(f"Unable to load cutouts file of type {self.format}")
 
     def remove_data_from_disk(self, remove_folders=True, remove_local=True,
                               database=True, session=None, commit=True, remove_downstreams=False):
-        """Delete the data from local disk, if it exists.
+        """WHPR review this docstring and check it works how we want
+        Delete the data from local disk, if it exists.
         Will remove the dataset for this specific cutout from the file,
         and remove the file if this is the last cutout in the file.
         If remove_folders=True, will also remove any folders
@@ -613,40 +469,6 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
         # I mostly copied from delete_list, which was previously in use. It did not include
         # deletion of downstreams. Should I include that?
 
-
-
-        # raise NotImplementedError(
-        #     'Currently there is no support for removing one Cutout at a time. Use delete_list instead.'
-        # )
-
-        # if self.filepath is not None:
-        #     # get the filepath, but don't check if the file exists!
-        #     for f in self.get_fullpath(as_list=True, nofile=True):
-        #         if os.path.exists(f):
-        #             need_to_delete = False
-        #             if self.format == 'hdf5':
-        #                 with h5py.File(f, 'a') as file:
-        #                     del file[f'source_{self.index_in_sources}']
-        #                     if len(file) == 0:
-        #                         need_to_delete = True
-        #             elif self.format == 'fits':
-        #                 raise NotImplementedError('Removing cutouts from fits is not yet implemented.')
-        #             elif self.format in ['jpg', 'png']:
-        #                 raise NotImplementedError('Removing cutouts from jpg or png is not yet implemented.')
-        #             else:
-        #                 raise TypeError(f"Unable to remove cutouts file of type {self.format}")
-
-        #             if need_to_delete:
-        #                 os.remove(f)
-        #                 if remove_folders:
-        #                     folder = f
-        #                     for i in range(10):
-        #                         folder = os.path.dirname(folder)
-        #                         if len(os.listdir(folder)) == 0:
-        #                             os.rmdir(folder)
-        #                         else:
-        #                             break
-
     def delete_from_archive(self, remove_downstreams=False):
         """Delete the file from the archive, if it exists.
         Will only
@@ -665,17 +487,7 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
         if self.filepath is not None:
             self.archive.delete(self.filepath, okifmissing=True)
 
-        
-        # raise NotImplementedError(
-        #     'Currently archive does not support removing one Cutout at a time, use delete_list instead.'
-        # )
-        # if self.filepath is not None:
-        #     if self.filepath_extensions is None:
-        #         self.archive.delete( self.filepath, okifmissing=True )
-        #     else:
-        #         for ext in self.filepath_extensions:
-        #             self.archive.delete( f"{self.filepath}{ext}", okifmissing=True )
-
+        # QUESTION is this below still worth doing?
         # # make sure these are set to null just in case we fail
         # # to commit later on, we will at least know something is wrong
         # self.md5sum = None

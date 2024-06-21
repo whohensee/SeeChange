@@ -671,14 +671,11 @@ class FileOnDiskMixin:
 
     @declared_attr
     def filepath(cls):
-        uniqueness = True
-        # if cls.__name__ in ['Cutouts']:
-        #     uniqueness = False
         return sa.Column(
             sa.Text,
             nullable=False,
             index=True,
-            unique=uniqueness,
+            unique=True,
             doc="Base path (relative to the data root) for a stored file"
         )
 

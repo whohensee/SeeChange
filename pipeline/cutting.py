@@ -75,10 +75,7 @@ class Cutter:
             # try to find some measurements in memory or in the database:
             cutouts = ds.get_cutouts(prov, session=session)
 
-            # WHPR revisit here to decide if None or [] is a better default for co_list
-            if (cutouts is None or
-                # (cutouts.co_list is not None and len(cutouts.co_list) == 0)):  # must create a new list of Cutouts
-                (cutouts.co_dict is not None and len(cutouts.co_dict) == 0)):  # must create a new list of Cutouts
+            if cutouts is None or cutouts.co_dict == {}:
 
                 self.has_recalculated = True
                 # use the latest source list in the data store,
@@ -115,7 +112,6 @@ class Cutter:
                 new_stamps_weight = make_cutouts(ds.sub_image.new_aligned_image.weight, x, y, sz, fillvalue=0)
                 new_stamps_flags = make_cutouts(ds.sub_image.new_aligned_image.flags, x, y, sz, fillvalue=0)
 
-                # ----- WHPR New experimental stuff below ----- #
                 cutouts = Cutouts.from_detections(detections, provenance=prov)
 
                 cutouts._upstream_bitflag = 0
@@ -128,6 +124,10 @@ class Cutter:
                     data_dict["sub_data"] = sub_stamps_data[i]
                     data_dict["sub_weight"] = sub_stamps_weight[i]
                     data_dict["sub_flags"] = sub_stamps_flags[i]
+                    # TODO: figure out if we can actually use this flux (maybe renormalize it)
+                    # if sub_stamps_psfflux is not None and sub_stamps_psffluxerr is not None:
+                    #     data_dict['sub_psfflux'] = sub_stamps_psfflux[i]
+                    #     data_dict['sub_psffluxerr'] = sub_stamps_psffluxerr[i]
 
                     data_dict["ref_data"] = ref_stamps_data[i]
                     data_dict["ref_weight"] = ref_stamps_weight[i]
@@ -136,10 +136,8 @@ class Cutter:
                     data_dict["new_data"] = new_stamps_data[i]
                     data_dict["new_weight"] = new_stamps_weight[i]
                     data_dict["new_flags"] = new_stamps_flags[i]
-
                     cutouts.co_dict[f"source_index_{i}"] = data_dict
 
-                # ----- New experimental stuff above ----- #
 
             # add the resulting Cutouts to the data store
             if cutouts.provenance is None:

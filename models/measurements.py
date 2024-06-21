@@ -186,23 +186,23 @@ class Measurements(Base, AutoIDMixin, SpatiallyIndexed, HasBitFlagBadness):
 
     @property
     def lim_mag(self):
-        return self.cutouts.sources.image.new_image.lim_mag_estimate  # TODO: improve this when done with issue #143
+        return self.sources.image.new_image.lim_mag_estimate  # TODO: improve this when done with issue #143
 
     @property
     def zp(self):
-        return self.cutouts.sources.image.new_image.zp
+        return self.sources.image.new_image.zp
 
     @property
     def fwhm_pixels(self):
-        return self.cutouts.sources.image.get_psf().fwhm_pixels
+        return self.sources.image.get_psf().fwhm_pixels
 
     @property
     def psf(self):
-        return self.cutouts.sources.image.get_psf().get_clip(x=self.x, y=self.y)
+        return self.sources.image.get_psf().get_clip(x=self.x, y=self.y)
 
     @property
     def pixel_scale(self):
-        return self.cutouts.sources.image.new_image.wcs.get_pixel_scale()
+        return self.sources.image.new_image.wcs.get_pixel_scale()
 
     @property
     def sources(self):
@@ -212,15 +212,15 @@ class Measurements(Base, AutoIDMixin, SpatiallyIndexed, HasBitFlagBadness):
 
     @property
     def image(self):
-        if self.cutouts is None or self.cutouts.sources is None:
+        if self.cutouts is None or self.sources is None:
             return None
-        return self.cutouts.sources.image
+        return self.sources.image
 
     @property
     def instrument_object(self):
-        if self.cutouts is None or self.cutouts.sources is None or self.cutouts.sources.image is None:
+        if self.cutouts is None or self.sources is None or self.sources.image is None:
             return None
-        return self.cutouts.sources.image.instrument_object
+        return self.sources.image.instrument_object
 
     bkg_mean = sa.Column(
         sa.REAL,
@@ -340,6 +340,7 @@ class Measurements(Base, AutoIDMixin, SpatiallyIndexed, HasBitFlagBadness):
         HasBitFlagBadness.__init__(self)
         
         # replace this transient attribute with the real index once its moved to this obj
+        # WHPR review where this is used and if it can be killed
         self._cutouts_list_index = None  # helper (transient) attribute that helps find the right cutouts in a list
 
         self.index_in_sources = None
@@ -369,10 +370,8 @@ class Measurements(Base, AutoIDMixin, SpatiallyIndexed, HasBitFlagBadness):
     def init_on_load(self):
         Base.init_on_load(self)
 
-        # might kill this
+        # WHPR kill this once all is clear
         self._cutouts_list_index = None  # helper (transient) attribute that helps find the right cutouts in a list
-
-        # self.index_in_sources = None # violates non-null
 
         self._sub_data = None
         self._sub_weight = None
@@ -395,7 +394,7 @@ class Measurements(Base, AutoIDMixin, SpatiallyIndexed, HasBitFlagBadness):
     def __repr__(self):
         return (
             f"<Measurements {self.id} "
-            f"from SourceList {self.cutouts.sources_id} "
+            f"from SourceList {self.sources_id} "
             f"(number {self.index_in_sources}) "
             f"from Image {self.cutouts.sub_image_id} "
             f"at x,y= {self.x}, {self.y}>"
@@ -415,16 +414,13 @@ class Measurements(Base, AutoIDMixin, SpatiallyIndexed, HasBitFlagBadness):
         If that is not a concern, all such calls could instead refer back
         to the Cutouts data.
         """
-        # # this should trigger a load of co_list if it isn't already in self.cutouts
-        # co_data_dict = [co_dict for co_dict in self.cutouts.co_list
-        #                 if co_dict['source_index'] == self.index_in_sources]
-        # if len(co_data_dict) != 1:
-        #     raise ValueError(f"Must be exactly 1 entry in Cutouts that matches"
-        #                      f"source index {self.index_in_sources}. Got {len(co_data_dict)}")
-        # co_data_dict = co_data_dict[0]
+        # QUESTION: Is there much advantage to not having to refer to cutouts
+        # and instead putting the data directly into the object?
+
+        # WHPR look where I used this and see if it would be simpler to just
+        # skip this method entirely
 
         groupname = f'source_index_{self.index_in_sources}'
-        # self.cutouts.load_one_co_dict(groupname) # should have been done before thie method
 
         co_data_dict = self.cutouts.co_dict[groupname] # get just the subdict with data for this
 
@@ -452,12 +448,12 @@ class Measurements(Base, AutoIDMixin, SpatiallyIndexed, HasBitFlagBadness):
             raise ValueError('Filter number must be non-negative.')
         if self.provenance is None:
             raise ValueError('No provenance for this measurement, cannot recover the parameters used. ')
-        if self.cutouts is None or self.cutouts.sources is None or self.cutouts.sources.image is None:
+        if self.cutouts is None or self.sources is None or self.sources.image is None:
             raise ValueError('No cutouts for this measurement, cannot recover the PSF width. ')
 
         mult = self.provenance.parameters['width_filter_multipliers']
         angles = np.arange(-90.0, 90.0, self.provenance.parameters['streak_filter_angle_step'])
-        fwhm = self.cutouts.sources.image.get_psf().fwhm_pixels
+        fwhm = self.sources.image.get_psf().fwhm_pixels
 
         if number == 0:
             return f'PSF match (FWHM= 1.00 x {fwhm:.2f})'
@@ -543,7 +539,7 @@ class Measurements(Base, AutoIDMixin, SpatiallyIndexed, HasBitFlagBadness):
 
         im = self.sub_nandata  # the cutouts image we are working with (includes NaNs for bad pixels)
 
-        wcs = self.cutouts.sources.image.new_image.wcs.wcs
+        wcs = self.sources.image.new_image.wcs.wcs
         # these are the coordinates relative to the center of the cutouts
         image_pixel_x = wcs.world_to_pixel_values(ra, dec)[0]
         image_pixel_y = wcs.world_to_pixel_values(ra, dec)[1]
@@ -559,7 +555,7 @@ class Measurements(Base, AutoIDMixin, SpatiallyIndexed, HasBitFlagBadness):
 
         if aperture == -1:
             # get the subtraction PSF or (if unavailable) the new image PSF
-            psf = self.cutouts.sources.image.get_psf()
+            psf = self.sources.image.get_psf()
             psf_clip = psf.get_clip(x=image_pixel_x, y=image_pixel_y)
             offset_ix = int(np.round(offset_x))
             offset_iy = int(np.round(offset_y))
@@ -625,26 +621,29 @@ class Measurements(Base, AutoIDMixin, SpatiallyIndexed, HasBitFlagBadness):
             if commit:
                 session.commit()
 
-# need to rework to access just the data for this measurement
 # use these two functions to quickly add the "property" accessor methods
 def load_attribute(object, att):
-    """Load the data for a given attribute of the object."""
+    """Load the data for a given attribute of the object. Load from Cutouts, but
+    if the data needs to be loaded from disk, ONLY load the subdict that contains
+    data for this object, not all objects in the Cutouts."""
     if not hasattr(object, f'_{att}'):
         raise AttributeError(f"The object {object} does not have the attribute {att}.")
     if getattr(object, f'_{att}') is None:
-        if object.cutouts.get_co_dict_noload() == {} and object.cutouts.filepath is None:
+        if object.cutouts.co_dict_noload == {} and object.cutouts.filepath is None:
             return None  # objects just now created and not saved cannot lazy load data!
 
         groupname = f'source_index_{object.index_in_sources}'
-        if groupname not in object.cutouts.get_co_dict_noload().keys():
-            # raise ValueError("No matching entry in co_dict of Cutouts for this measurement")
+        if groupname not in object.cutouts.co_dict_noload.keys():
             # try and load the info for this measurement
             object.cutouts.load_one_co_dict(groupname)
-        if groupname not in object.cutouts.get_co_dict_noload().keys():
+        if groupname not in object.cutouts.co_dict_noload.keys():
             raise ValueError("This measurements not found in Cutouts data dict")
-        if att not in object.cutouts.get_co_dict_noload()[groupname].keys():
-            raise ValueError(f"No matching entry in dict for att {att}")
-        object.get_data_from_cutouts()
+        if att not in object.cutouts.co_dict_noload[groupname].keys():
+            raise ValueError(f"No matching entry in dict for key {att}")
+        object.get_data_from_cutouts() # this does load ALL 9 data attributes
+                                       # into this object, but that should only
+                                       # ever happen once, as future calls will
+                                       # find the data and just return it
 
     # after data is filled, should be able to just return it
     return getattr(object, f'_{att}')

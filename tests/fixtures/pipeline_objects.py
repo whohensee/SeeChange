@@ -924,7 +924,6 @@ def datastore_factory(data_dir, pipeline_factory):
                 SCLogger.debug('loading measurements from cache. ')
                 ds.all_measurements = copy_list_from_cache(Measurements, cache_dir, cache_name)
                 [setattr(m, 'provenance', prov) for m in ds.all_measurements]
-                # [setattr(m, 'cutouts', c) for m, c in zip(ds.all_measurements, ds.cutouts)]
                 [setattr(m, 'cutouts', ds.cutouts) for m in ds.all_measurements]
 
                 ds.measurements = []

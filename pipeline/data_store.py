@@ -1280,12 +1280,11 @@ class DataStore:
 
         """
         process_name = 'cutting'
-
         if provenance is None:  # try to get the provenance from the prov_tree
             provenance = self._get_provenance_for_an_upstream(process_name, session)
 
         if self.cutouts is not None:
-            if len(self.cutouts.co_dict) == 0:  # this could trigger a lazy load...
+            if self.cutouts.co_dict == {}:
                 self.cutouts = None  # TODO: what about images that actually don't have any detections?
 
             # make sure the cutouts have the correct provenance
@@ -1309,17 +1308,15 @@ class DataStore:
                 if sub_image.sources is None:
                     return None
 
-                # self.cutouts
-                co = session.scalars(
+                self.cutouts = session.scalars(
                     sa.select(Cutouts).where(
                         Cutouts.sources_id == sub_image.sources.id,
                         Cutouts.provenance_id == provenance.id,
                     )
-                ).all()
-                if len(co) > 1:
-                        raise ValueError(f"Should be one Cutouts per sources. Got {len(co)}")
-                if len(co) == 1:
-                    self.cutouts = co[0]
+                ).first()
+                # cutouts has a unique constraint with sources_id and provenance_id
+                # so a check I wrote when using all() that there was only 1
+                # is totally redundant, i think
 
         return self.cutouts
 
@@ -1363,7 +1360,7 @@ class DataStore:
         if self.measurements is None:
             with SmartSession(session, self.session) as session:
                 cutouts = self.get_cutouts(session=session)
-                cutout_ids = [cutouts.id]  # this is inelegant, if it works come back and change it
+                cutout_ids = [cutouts.id]  # WHPR this is inelegant. It works, but should fix
 
                 self.measurements = session.scalars(
                     sa.select(Measurements).where(
@@ -1574,14 +1571,7 @@ class DataStore:
             if self.detections is not None:
                 more_products = 'detections'
                 if self.cutouts is not None:
-                    # no longer necessary, as this has become database column index_in_sources
-                    # if self.measurements is not None:  # keep track of which cutouts goes to which measurements
-                    #     for m in self.measurements:
-                    #         idx = [c.index_in_sources for c in self.cutouts].index(m.cutouts.index_in_sources)
-                    #         m._cutouts_list_index = idx
-                    # for cutout in self.cutouts:
                     self.cutouts.sources = self.detections # DOUBLE CHECK - WILL THERE ONLY EVER BE ONE CUTOUTS?
-                    # self.cutouts = Cutouts.merge_list(self.cutouts, session)
                     self.cutouts = session.merge(self.cutouts)
                     more_products += ', cutouts'
 

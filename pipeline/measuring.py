@@ -158,14 +158,7 @@ class Measurer:
         """
         self.has_recalculated = False
         try:  # first make sure we get back a datastore, even an empty one
-            # most likely to get a Cutouts object or list of Cutouts
             # can no longer receive a list, just a single Cutouts
-            # if isinstance(args[0], Cutouts):
-            #     new_args = [args[0]]  # make it a list if we got a single Cutouts object for some reason
-            #     new_args += list(args[1:])
-            #     args = tuple(new_args)
-
-            # if isinstance(args[0], list) and all([isinstance(c, Cutouts) for c in args[0]]):
             if isinstance(args[0], Cutouts):
                 args, kwargs, session = parse_session(*args, **kwargs)
                 ds = DataStore()
@@ -205,11 +198,9 @@ class Measurer:
                     raise ValueError(f'Cannot find a source list corresponding to the datastore inputs: {ds.get_inputs()}')
 
                 cutouts = ds.get_cutouts(session=session)
-                # cutouts.load()
 
                 # prepare the filter bank for this batch of cutouts
                 if self._filter_psf_fwhm is None or self._filter_psf_fwhm != cutouts.sources.image.get_psf().fwhm_pixels:
-                    # load data for the first cutouts to use
                     self.make_filter_bank(cutouts.co_dict["source_index_0"]["sub_data"].shape[0], cutouts.sources.image.get_psf().fwhm_pixels)
 
                 # go over each cutouts object and produce a measurements object
@@ -270,7 +261,6 @@ class Measurer:
                     m.position_angle = output['angle']
 
                     # update the coordinates using the centroid offsets
-                    # breakpoint()
                     x = m.x + m.offset_x
                     y = m.y + m.offset_y
                     ra, dec = m.cutouts.sources.image.new_image.wcs.wcs.pixel_to_world_values(x, y)
@@ -350,7 +340,7 @@ class Measurer:
                     # TODO: add additional disqualifiers
 
                     m._upstream_bitflag = 0
-                    m._upstream_bitflag |= m.cutouts.bitflag
+                    m._upstream_bitflag |= cutouts.bitflag
 
                     ignore_bits = 0
                     for badness in self.pars.bad_flag_exclude:

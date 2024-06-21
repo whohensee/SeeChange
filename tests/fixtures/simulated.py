@@ -610,6 +610,7 @@ def sim_sub_image_list(
             ds.cutouts.save()
 
             sub = sub.merge_all(session)
+            # breakpoint()
             ds.detections = sub.sources
 
             sub_images.append(sub)
@@ -619,6 +620,7 @@ def sim_sub_image_list(
     yield sub_images
 
     with SmartSession() as session:
+        # breakpoint()
         for sub in sub_images:
             sub.delete_from_disk_and_database(session=session, commit=False, remove_downstreams=True)
         session.commit()
