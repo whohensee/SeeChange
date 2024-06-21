@@ -234,6 +234,8 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
         # this one is complicated. I have set that if you use this attribute, it will ENSURE
         # that you are given the entire dictionary, including checking it is the proper length
         # using the sourcelist
+        if self.sources.num_sources is None:
+            raise ValueError("The detections of this cutouts has no num_sources attr")
         proper_length = self.sources.num_sources
         if len(self._co_dict) != proper_length and self.filepath is not None:
             self.load()
@@ -243,7 +245,8 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
     def co_dict( self, value ):
         self._co_dict = value
 
-    # I'd like a more elegant method for doing this.
+    # I'd like a more elegant method for doing this (perhaps a way to make this behave
+    # as a derived attribute, eg. accessible as obj.co_dict_noload). TODO look into this
     def get_co_dict_noload(self):
         return self._co_dict
 
