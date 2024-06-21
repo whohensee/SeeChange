@@ -155,20 +155,11 @@ class Subtractor:
         ref_image_data = ref_image.data
         new_image_psf = new_image.psf.get_clip()
         ref_image_psf = ref_image.psf.get_clip()
-        new_image_noise = new_image.bkg_rms_estimate  # TOOD: improve this by using a Background object?
-        ref_image_noise = 1.0  # proper coaddition images have noise=1.0 by construction
+        new_image_noise = new_image.bkg_rms_estimate
+        ref_image_noise = ref_image.bkg_rms_estimate
         new_image_flux_zp = 10 ** (0.4 * new_image.zp.zp)
         ref_image_flux_zp = 10 ** (0.4 * ref_image.zp.zp)
         # TODO: consider adding an estimate for the astrometric uncertainty dx, dy
-
-        # do some additional processing of the new image
-        mu, sigma = sigma_clipping(new_image_data)
-        new_image_data = (new_image_data - mu) / sigma  # TODO: skip this if we already background subtracted
-        if new_image_noise is not None:
-            new_image_noise = new_image_noise / sigma
-        else:
-            new_image_noise = 1.0  # TODO: this can go away after we verify images always have background estimates!
-        new_image_flux_zp = new_image_flux_zp / sigma
 
         new_image_data = self.inpainter.run(new_image_data, new_image.flags, new_image.weight)
 
@@ -251,8 +242,6 @@ class Subtractor:
 
             # get the provenance for this step:
             with SmartSession(session) as session:
-                prov = ds.get_provenance(self.pars.get_process_name(), self.pars.get_critical_pars(), session=session)
-
                 # look for a reference that has to do with the current image
                 ref = ds.get_reference(session=session)
                 if ref is None:
@@ -260,17 +249,7 @@ class Subtractor:
                         f'Cannot find a reference image corresponding to the datastore inputs: {ds.get_inputs()}'
                     )
 
-                # manually replace the "reference" provenances with the reference image and its products
-                upstreams = prov.upstreams
-                upstreams = [x for x in upstreams if x.process != 'reference']  # remove reference provenance
-                upstreams.append(ref.image.provenance)
-                upstreams.append(ref.sources.provenance)
-                upstreams.append(ref.psf.provenance)
-                upstreams.append(ref.wcs.provenance)
-                upstreams.append(ref.zp.provenance)
-                prov.upstreams = upstreams  # must re-assign to make sure list items are unique
-                prov.update_id()
-                prov = session.merge(prov)
+                prov = ds.get_provenance('subtraction', self.pars.get_critical_pars(), session=session)
                 sub_image = ds.get_subtraction(prov, session=session)
 
                 if sub_image is None:

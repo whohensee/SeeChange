@@ -409,7 +409,7 @@ def sim_image_list(
             im.zp = ZeroPoint()
             im.zp.zp = np.random.uniform(25, 30)
             im.zp.dzp = np.random.uniform(0.01, 0.1)
-            im.zp.aper_cor_radii = im.instrument_object.standard_apertures()
+            im.zp.aper_cor_radii = [1.0, 2.0, 3.0, 5.0]
             im.zp.aper_cors = np.random.normal(0, 0.1, len(im.zp.aper_cor_radii))
             im.zp.provenance = provenance_extra
             im.wcs = WorldCoordinates()
@@ -431,13 +431,16 @@ def sim_image_list(
 
     yield images
 
-    with SmartSession() as session:
+    with SmartSession() as session, warnings.catch_warnings():
+        warnings.filterwarnings(
+            action='ignore',
+            message=r'.*DELETE statement on table .* expected to delete \d* row\(s\).*',
+        )
         for im in images:
             im = im.merge_all(session)
             exp = im.exposure
             im.delete_from_disk_and_database(session=session, commit=False, remove_downstreams=True)
             exp.delete_from_disk_and_database(session=session, commit=False)
-
         session.commit()
 
 
@@ -617,7 +620,6 @@ def sim_sub_image_list(
 
     with SmartSession() as session:
         for sub in sub_images:
-            # sub = sub.merge_all(session)
             sub.delete_from_disk_and_database(session=session, commit=False, remove_downstreams=True)
         session.commit()
 

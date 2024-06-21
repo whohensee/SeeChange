@@ -239,6 +239,27 @@ class PSFFormatConverter( EnumConverter ):
     _dict_inverse = None
 
 
+class BackgroundFormatConverter( EnumConverter ):
+    _dict = {
+        0: 'scalar',
+        1: 'map',
+        2: 'polynomial',
+    }
+    _allowed_values = None
+    _dict_filtered = None
+    _dict_inverse = None
+
+
+class BackgroundMethodConverter( EnumConverter ):
+    _dict = {
+        0: 'zero',
+        1: 'sep',
+    }
+    _allowed_values = None
+    _dict_filtered = None
+    _dict_inverse = None
+
+
 def bitflag_to_string(value, dictionary):
 
     """
@@ -325,6 +346,19 @@ def string_to_bitflag(value, dictionary):
         return output
 
 
+# bitflag for image preprocessing steps that have been done
+image_preprocessing_dict = {
+    0: 'overscan',
+    1: 'zero',
+    2: 'dark',
+    3: 'linearity',
+    4: 'flat',
+    5: 'fringe',
+    6: 'illumination'
+}
+image_preprocessing_inverse = {EnumConverter.c(v):k for k, v in image_preprocessing_dict.items()}
+
+
 # these are the ways an Image or Exposure are allowed to be bad
 image_badness_dict = {
     1: 'banding',
@@ -351,6 +385,12 @@ source_list_badness_dict = {
 source_list_badness_inverse = {EnumConverter.c(v): k for k, v in source_list_badness_dict.items()}
 
 
+# these are the ways a Background object is allowed to be bad
+background_badness_dict = {
+
+}
+
+
 # these are the ways a WorldCoordinates/ZeroPoint object is allowed to be bad
 # mostly due to bad matches to the catalog
 catalog_match_badness_dict = {
@@ -359,6 +399,15 @@ catalog_match_badness_dict = {
     23: 'big residuals',
 }
 catalog_match_badness_inverse = {EnumConverter.c(v): k for k, v in catalog_match_badness_dict.items()}
+
+
+# TODO: need to consider what kinds of bad backgrounds we really might have
+# TODO: make sure we are not repeating the same keywords in other badness dictionaries
+bg_badness_dict = {
+    31: 'too dense',
+    32: 'bad fit',
+}
+bg_badness_inverse = {EnumConverter.c(v): k for k, v in bg_badness_dict.items()}
 
 
 # these are the ways a Cutouts object is allowed to be bad
@@ -378,6 +427,10 @@ data_badness_dict = {}
 data_badness_dict.update(image_badness_dict)
 data_badness_dict.update(cutouts_badness_dict)
 data_badness_dict.update(source_list_badness_dict)
+data_badness_dict.update(psf_badness_dict)
+data_badness_dict.update(bg_badness_dict)
+data_badness_dict.update(catalog_match_badness_dict)
+data_badness_dict.update(bg_badness_dict)
 data_badness_inverse = {EnumConverter.c(v): k for k, v in data_badness_dict.items()}
 if 0 in data_badness_inverse:
     raise ValueError('Cannot have a badness bitflag of zero. This is reserved for good data.')
@@ -388,6 +441,7 @@ class BadnessConverter( EnumConverter ):
     _allowed_values = data_badness_dict
     _dict_filtered = None
     _dict_inverse = None
+
 
 # bitflag for image preprocessing steps that have been done
 image_preprocessing_dict = {
@@ -400,6 +454,7 @@ image_preprocessing_dict = {
     6: 'illumination'
 }
 image_preprocessing_inverse = {EnumConverter.c(v):k for k, v in image_preprocessing_dict.items()}
+
 
 # bitflag used in flag images
 flag_image_bits = {
@@ -418,12 +473,10 @@ class BitFlagConverter( EnumConverter ):
     _dict_inverse = None
 
 
-# the list of possible processing steps from a section of an exposure up to measurments, r/b scores, and report
+# the list of possible processing steps from a section of an exposure up to measurements, r/b scores, and report
 process_steps_dict = {
     1: 'preprocessing',  # creates an Image from a section of the Exposure
-    2: 'extraction',     # creates a SourceList from an Image, and a PSF
-    3: 'astro_cal',      # creates a WorldCoordinates from a SourceList
-    4: 'photo_cal',       # creates a ZeroPoint from a WorldCoordinates
+    2: 'extraction',     # creates a SourceList, PSF, Background, WorldCoordinates, and ZeroPoint from an Image
     5: 'subtraction',    # creates a subtraction Image
     6: 'detection',      # creates a SourceList from a subtraction Image
     7: 'cutting',        # creates Cutouts from a subtraction Image
@@ -438,7 +491,7 @@ pipeline_products_dict = {
     1: 'image',
     2: 'sources',
     3: 'psf',
-    # 4: 'background',  # not yet implemented
+    4: 'bg',
     5: 'wcs',
     6: 'zp',
     7: 'sub_image',

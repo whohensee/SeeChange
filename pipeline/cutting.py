@@ -70,7 +70,7 @@ class Cutter:
             self.pars.do_warning_exception_hangup_injection_here()
 
             # get the provenance for this step:
-            prov = ds.get_provenance(self.pars.get_process_name(), self.pars.get_critical_pars(), session=session)
+            prov = ds.get_provenance('cutting', self.pars.get_critical_pars(), session=session)
 
             # try to find some measurements in memory or in the database:
             cutouts = ds.get_cutouts(prov, session=session)
@@ -88,7 +88,9 @@ class Cutter:
                 detections = ds.get_detections(session=session)
 
                 if detections is None:
-                    raise ValueError(f'Cannot find a source list corresponding to the datastore inputs: {ds.get_inputs()}')
+                    raise ValueError(
+                        f'Cannot find a source list corresponding to the datastore inputs: {ds.get_inputs()}'
+                    )
 
                 x = detections.x
                 y = detections.y

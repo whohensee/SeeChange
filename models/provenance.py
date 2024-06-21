@@ -125,6 +125,7 @@ class Provenance(Base):
         passive_deletes=True,
         cascade="save-update, merge, expunge, refresh-expire",
         lazy='selectin',  # should be able to get upstream_hashes without a session!
+        join_depth=3,  # how many generations up the upstream chain to load
     )
 
     downstreams = relationship(
@@ -366,6 +367,7 @@ class Provenance(Base):
                 raise e
 
         return output
+
 
 @event.listens_for(Provenance, "before_insert")
 def insert_new_dataset(mapper, connection, target):

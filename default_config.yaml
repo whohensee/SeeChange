@@ -79,26 +79,37 @@ catalog_gaiadr3:
 pipeline: {}
 
 preprocessing:
-  use_sky_subtraction: False
+  steps_required: [ 'overscan', 'linearity', 'flat', 'fringe' ]
 
 extraction:
-  measure_psf: true
-  threshold: 3.0
-  method: sextractor
-
-astro_cal:
-  cross_match_catalog: gaia_dr3
-  solution_method: scamp
-  max_catalog_mag: [20.0]
-  mag_range_catalog: 4.0
-  min_catalog_stars: 50
-  max_sources_to_use: [2000, 1000, 500, 200]
-
-photo_cal:
-  cross_match_catalog: gaia_dr3
-  max_catalog_mag: [20.0]
-  mag_range_catalog: 4.0
-  min_catalog_stars: 50
+  sources:
+    method: sextractor
+    measure_psf: true
+    apertures: [1.0, 2.0, 3.0, 5.0]
+    inf_aper_num: -1
+    best_aper_num: 0
+    aperunit: fwhm
+    separation_fwhm: 1.0
+    threshold: 3.0
+    subtraction: false
+  bg:
+    format: map
+    method: sep
+    poly_order: 1
+    sep_box_size: 128
+    sep_filt_size: 3
+  wcs:
+    cross_match_catalog: gaia_dr3
+    solution_method: scamp
+    max_catalog_mag: [20.0]
+    mag_range_catalog: 4.0
+    min_catalog_stars: 50
+    max_sources_to_use: [2000, 1000, 500, 200]
+  zp:
+    cross_match_catalog: gaia_dr3
+    max_catalog_mag: [20.0]
+    mag_range_catalog: 4.0
+    min_catalog_stars: 50
 
 subtraction:
   method: zogy
@@ -117,7 +128,7 @@ cutting:
 measuring:
   annulus_radii: [10, 15]
   annulus_units: pixels
-  chosen_aperture: 0
+  use_annulus_for_centroids: true
   analytical_cuts: ['negatives', 'bad pixels', 'offsets', 'filter bank']
   outlier_sigma: 3.0
   bad_pixel_radius: 3.0
@@ -170,22 +181,24 @@ coaddition:
       ignore_flags: 0
   # The following are used to override the regular "extraction" parameters
   extraction:
-    measure_psf: true
-    threshold: 3.0
-    method: sextractor
-    # The following are used to override the regular "astro_cal" parameters
-  astro_cal:
-    cross_match_catalog: gaia_dr3
-    solution_method: scamp
-    max_catalog_mag: [22.0]
-    mag_range_catalog: 6.0
-    min_catalog_stars: 50
-    # The following are used to override the regular "photo_cal" parameters
-  photo_cal:
-    cross_match_catalog: gaia_dr3
-    max_catalog_mag: [22.0]
-    mag_range_catalog: 6.0
-    min_catalog_stars: 50
+    sources:
+      measure_psf: true
+      threshold: 3.0
+      method: sextractor
+      background_method: zero
+    # The following are used to override the regular astrometric calibration parameters
+    wcs:
+      cross_match_catalog: gaia_dr3
+      solution_method: scamp
+      max_catalog_mag: [22.0]
+      mag_range_catalog: 6.0
+      min_catalog_stars: 50
+    # The following are used to override the regular photometric calibration parameters
+    zp:
+      cross_match_catalog: gaia_dr3
+      max_catalog_mag: [22.0]
+      mag_range_catalog: 6.0
+      min_catalog_stars: 50
 
 
 # DECam

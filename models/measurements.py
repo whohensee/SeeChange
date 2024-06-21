@@ -125,18 +125,19 @@ class Measurements(Base, AutoIDMixin, SpatiallyIndexed, HasBitFlagBadness):
     def flux(self):
         """The background subtracted aperture flux in the "best" aperture. """
         if self.best_aperture == -1:
-            return self.flux_psf - self.background * self.area_psf
+            return self.flux_psf - self.bkg_mean * self.area_psf
         else:
-            return self.flux_apertures[self.best_aperture] - self.background * self.area_apertures[self.best_aperture]
+            return self.flux_apertures[self.best_aperture] - self.bkg_mean * self.area_apertures[self.best_aperture]
 
     @property
     def flux_err(self):
         """The error on the background subtracted aperture flux in the "best" aperture. """
+        # we divide by the number of pixels of the background as that is how well we can estimate the b/g mean
         if self.best_aperture == -1:
-            return np.sqrt(self.flux_psf_err ** 2 + self.background_err ** 2 * self.area_psf)
+            return np.sqrt(self.flux_psf_err ** 2 + self.bkg_std ** 2 / self.bkg_pix * self.area_psf)
         else:
             err = self.flux_apertures_err[self.best_aperture]
-            err += self.background_err ** 2 * self.area_apertures[self.best_aperture]
+            err += self.bkg_std ** 2 / self.bkg_pix * self.area_apertures[self.best_aperture]
             return np.sqrt(err)
 
     @property
@@ -173,15 +174,15 @@ class Measurements(Base, AutoIDMixin, SpatiallyIndexed, HasBitFlagBadness):
 
     @property
     def magnitude(self):
+        mag = -2.5 * np.log10(self.flux) + self.zp.zp
         if self.best_aperture == -1:
-            return self.mag_psf
-        return self.mag_apertures[self.best_aperture]
+            return mag
+        else:
+            return mag + self.zp.aper_cors[self.best_aperture]
 
     @property
     def magnitude_err(self):
-        if self.best_aperture == -1:
-            return self.mag_psf_err
-        return self.mag_apertures_err[self.best_aperture]
+        return np.sqrt((2.5 / np.log(10) * self.flux_err / self.flux) ** 2 + self.zp.dzp ** 2)
 
     @property
     def lim_mag(self):
@@ -221,16 +222,23 @@ class Measurements(Base, AutoIDMixin, SpatiallyIndexed, HasBitFlagBadness):
             return None
         return self.cutouts.sources.image.instrument_object
 
-    background = sa.Column(
+    bkg_mean = sa.Column(
         sa.REAL,
         nullable=False,
         doc="Background of the measurement, from a local annulus. Given as counts per pixel. "
     )
 
-    background_err = sa.Column(
+    bkg_std = sa.Column(
         sa.REAL,
         nullable=False,
         doc="RMS error of the background measurement, from a local annulus. Given as counts per pixel. "
+    )
+
+    bkg_pix = sa.Column(
+        sa.REAL,
+        nullable=False,
+        doc="Annulus area (in pixels) used to calculate the mean/std of the background. "
+            "An estimate of the error on the mean would be bkg_std / sqrt(bkg_pix)."
     )
 
     area_psf = sa.Column(
@@ -329,7 +337,8 @@ class Measurements(Base, AutoIDMixin, SpatiallyIndexed, HasBitFlagBadness):
 
     def __init__(self, **kwargs):
         SeeChangeBase.__init__(self)  # don't pass kwargs as they could contain non-column key-values
-
+        HasBitFlagBadness.__init__(self)
+        
         # replace this transient attribute with the real index once its moved to this obj
         self._cutouts_list_index = None  # helper (transient) attribute that helps find the right cutouts in a list
 
@@ -569,7 +578,7 @@ class Measurements(Base, AutoIDMixin, SpatiallyIndexed, HasBitFlagBadness):
             mask[start_y:end_y, start_x:end_x] = psf_clip[start_y + dy:end_y + dy, start_x + dx:end_x + dx]
             mask[np.isnan(im)] = 0  # exclude bad pixels from the mask
             flux = np.nansum(im * mask) / np.nansum(mask ** 2)
-            fluxerr = self.background_err / np.sqrt(np.nansum(mask ** 2))
+            fluxerr = self.bkg_std / np.sqrt(np.nansum(mask ** 2))
             area = np.nansum(mask) / (np.nansum(mask ** 2))
         else:
             radius = self.aper_radii[aperture]
@@ -577,7 +586,7 @@ class Measurements(Base, AutoIDMixin, SpatiallyIndexed, HasBitFlagBadness):
             mask = get_circle(radius=radius, imsize=im.shape[0], soft=True).get_image(offset_x, offset_y)
             # for aperture photometry we don't normalize, just assume the PSF is in the aperture
             flux = np.nansum(im * mask)
-            fluxerr = self.background_err * np.sqrt(np.nansum(mask ** 2))
+            fluxerr = self.bkg_std * np.sqrt(np.nansum(mask ** 2))
             area = np.nansum(mask)
 
         return flux, fluxerr, area
@@ -587,7 +596,7 @@ class Measurements(Base, AutoIDMixin, SpatiallyIndexed, HasBitFlagBadness):
         with SmartSession(session) as session:
             return session.scalars(sa.select(Cutouts).where(Cutouts.id == self.cutouts_id)).all()
 
-    def get_downstreams(self, session=None):
+    def get_downstreams(self, session=None, siblings=False):
         """Get the downstreams of this Measurements"""
         return []
 

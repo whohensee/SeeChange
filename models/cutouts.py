@@ -111,6 +111,7 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
     # update as cutoutsfile
     def __init__(self, *args, **kwargs):
         FileOnDiskMixin.__init__(self, *args, **kwargs)
+        HasBitFlagBadness.__init__(self)
         SeeChangeBase.__init__(self)  # don't pass kwargs as they could contain non-column key-values
 
         self.format = 'hdf5'  # the default should match the column-defined default above!
@@ -316,7 +317,6 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
             filename = os.path.splitext(filename)[0]
 
         filename += '.cutouts_'
-        self.provenance.update_id()
         filename += self.provenance.id[:6]
         if self.format == 'hdf5':
             filename += '.h5'
@@ -686,7 +686,7 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
         with SmartSession(session) as session:
             return session.scalars(sa.select(SourceList).where(SourceList.id == self.sources_id)).all()
 
-    def get_downstreams(self, session=None):
+    def get_downstreams(self, session=None, siblings=False):
         """Get the downstream Measurements that were made from this Cutouts object. """
         from models.measurements import Measurements
 

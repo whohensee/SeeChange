@@ -1,4 +1,3 @@
-import re
 import pathlib
 
 import numpy as np
@@ -67,6 +66,7 @@ class PSF(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
         'Image',
         cascade='save-update, merge, refresh-expire, expunge',
         passive_deletes=True,
+        lazy='selectin',
         doc="Image for which this is the PSF."
     )
 
@@ -168,6 +168,7 @@ class PSF(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
 
     def __init__( self, *args, **kwargs ):
         FileOnDiskMixin.__init__( self, **kwargs )
+        HasBitFlagBadness.__init__(self)
         SeeChangeBase.__init__( self )
         self._header = None
         self._data = None
@@ -275,7 +276,7 @@ class PSF(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
           psfpath : str or Path, default None
             If None, files will be read using the get_fullpath() method
             to get the right files form the local store and/or archive
-            given the databse fields.  If not None, read _header and
+            given the database fields.  If not None, read _header and
             _data from this file.  (This exists so that this method may
             be used to load the data with a psf that's not yet in the
             database, without having to play games with the filepath
@@ -306,7 +307,7 @@ class PSF(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
             self._info = ifp.read()
 
     def free( self ):
-        """Free loaded world coordinates memory.
+        """Free loaded PSF memory.
 
         Wipe out the data, info, and header fields, freeing memory.
         Depends on python garbage collection, so if there are other
@@ -523,11 +524,69 @@ class PSF(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
                                               )
 
     def get_upstreams(self, session=None):
-        """Get the image that was used to make this source list. """
+        """Get the image that was used to make this PSF. """
         with SmartSession(session) as session:
             return session.scalars(sa.select(Image).where(Image.id == self.image_id)).all()
         
-    def get_downstreams(self, session=None):
-        """Get the downstreams of this PSF (currently none)"""
-        return []
+    def get_downstreams(self, session=None, siblings=False):
+        """Get the downstreams of this PSF.
+
+        If siblings=True then also include the SourceList, WCS, ZP and background object
+        that were created at the same time as this PSF.
+        """
+        from models.source_list import SourceList
+        from models.background import Background
+        from models.world_coordinates import WorldCoordinates
+        from models.zero_point import ZeroPoint
+        from models.provenance import Provenance
+
+        with SmartSession(session) as session:
+            subs = session.scalars(
+                sa.select(Image).where(
+                    Image.provenance.has(Provenance.upstreams.any(Provenance.id == self.provenance.id)),
+                    Image.upstream_images.any(Image.id == self.image_id),
+                )
+            ).all()
+            output = subs
+
+            if siblings:
+                # There should be exactly one source list, wcs, and zp per PSF, with the same provenance
+                # as they are created at the same time.
+                sources = session.scalars(
+                    sa.select(SourceList).where(
+                        SourceList.image_id == self.image_id, SourceList.provenance_id == self.provenance_id
+                    )
+                ).all()
+                if len(sources) != 1:
+                    raise ValueError(f"Expected exactly one source list for PSF {self.id}, but found {len(sources)}")
+
+                output.append(sources[0])
+
+                bgs = session.scalars(
+                    sa.select(Background).where(
+                        Background.image_id == self.image_id,
+                        Background.provenance_id == self.provenance_id
+                    )
+                ).all()
+                if len(bgs) != 1:
+                    raise ValueError(f"Expected exactly one Background for SourceList {self.id}, but found {len(bgs)}")
+
+                output.append(bgs[0])
+
+                wcs = session.scalars(
+                    sa.select(WorldCoordinates).where(WorldCoordinates.sources_id == sources.id)
+                ).all()
+                if len(wcs) != 1:
+                    raise ValueError(f"Expected exactly one wcs for PSF {self.id}, but found {len(wcs)}")
+
+                output.append(wcs[0])
+
+                zp = session.scalars(sa.select(ZeroPoint).where(ZeroPoint.sources_id == sources.id)).all()
+
+                if len(zp) != 1:
+                    raise ValueError(f"Expected exactly one zp for PSF {self.id}, but found {len(zp)}")
+
+                output.append(zp[0])
+
+        return output
     

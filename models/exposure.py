@@ -340,6 +340,7 @@ class Exposure(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagB
 
         """
         FileOnDiskMixin.__init__(self, **kwargs)
+        HasBitFlagBadness.__init__(self)
         SeeChangeBase.__init__(self)  # don't pass kwargs as they could contain non-column key-values
 
         self._data = None  # the underlying image data for each section
@@ -736,7 +737,7 @@ class Exposure(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagB
         """An exposure does not have any upstreams. """
         return []
 
-    def get_downstreams(self, session=None):
+    def get_downstreams(self, session=None, siblings=False):
         """An exposure has only Image objects as direct downstreams. """
         from models.image import Image
 
