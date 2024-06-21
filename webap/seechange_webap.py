@@ -326,6 +326,7 @@ def png_cutouts_for_sub_image( exporsubid, issubid, nomeas, limit=None, offset=0
                 apercorses[subid] = row[cols['aper_cors']]
 
         app.logger.debug( f"Getting cutouts for sub images {subids}" )
+        # need to search through and change c.index_in_sources (moving to measurements)
         q = ( 'SELECT c.id AS id, c.filepath, c.ra, c.dec, c.x, c.y, c.index_in_sources, m.best_aperture, '
               '       m.flux, m.dflux, m.name, m.is_test, m.is_fake, '
               '       m.ra AS measra, m.dec AS measdec, s.id AS subid, s.section_id '
@@ -344,6 +345,7 @@ def png_cutouts_for_sub_image( exporsubid, issubid, nomeas, limit=None, offset=0
             q += "AND m.best_aperture IS NOT NULL "
         if data['sortby'] == 'fluxdesc_chip_index':
             q += 'ORDER BY flux DESC NULLS LAST,s.section_id,c.index_in_sources '
+            # NEED TO CHANGE INDEX_IN_SOURCES AFTER MOVED TO M
         else:
             raise RuntimeError( f"Unknown sort criterion {data['sortby']}" )
         if limit is not None:
