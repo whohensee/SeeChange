@@ -394,7 +394,7 @@ class Measurements(Base, AutoIDMixin, SpatiallyIndexed, HasBitFlagBadness):
     def __repr__(self):
         return (
             f"<Measurements {self.id} "
-            f"from SourceList {self.sources_id} "
+            f"from SourceList {self.cutouts.sources_id} "
             f"(number {self.index_in_sources}) "
             f"from Image {self.cutouts.sub_image_id} "
             f"at x,y= {self.x}, {self.y}>"
