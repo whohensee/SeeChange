@@ -20,7 +20,8 @@ def test_make_save_load_cutouts(decam_detection_list, cutter):
         assert isinstance(ds.cutouts, Cutouts)
         assert len(ds.cutouts.co_dict) == ds.cutouts.sources.num_sources
 
-        co_subdict = ds.cutouts.co_dict['source_index_0']
+        subdict_key = "source_index_0"
+        co_subdict = ds.cutouts.co_dict[subdict_key]
 
         assert ds.cutouts.sub_image == decam_detection_list.image
         assert ds.cutouts.sub_image == decam_detection_list.image
@@ -47,10 +48,10 @@ def test_make_save_load_cutouts(decam_detection_list, cutter):
         with h5py.File(ds.cutouts.get_fullpath(), 'r') as file:
             for im in ['sub', 'ref', 'new']:
                 for att in ['data', 'weight', 'flags']:
-                    assert f'{im}_{att}' in file['source_index_0']
+                    assert f'{im}_{att}' in file[subdict_key]
                     assert np.array_equal(co_subdict.get(f'{im}_{att}'),
-                                          file['source_index_0'][f'{im}_{att}'])
-                    
+                                          file[subdict_key][f'{im}_{att}'])
+
 
         # load a cutouts from file and compare
         c2 = Cutouts()
@@ -58,27 +59,27 @@ def test_make_save_load_cutouts(decam_detection_list, cutter):
         c2.sources = ds.cutouts.sources  # necessary for co_dict
         c2.load() # explicitly load co_dict
 
-        co_subdict2 = c2.co_dict['source_index_0']
+        co_subdict2 = c2.co_dict[subdict_key]
 
         for im in ['sub', 'ref', 'new']:
             for att in ['data', 'weight', 'flags']:
                 assert np.array_equal(co_subdict.get(f'{im}_{att}'),
                                         co_subdict2.get(f'{im}_{att}'))
-                
+
         assert c2.bitflag == 0 # should not load all columns from file
 
         # change the value of one of the arrays
-        ds.cutouts.co_dict['source_index_0']['sub_data'][0, 0] = 100
+        ds.cutouts.co_dict[subdict_key]['sub_data'][0, 0] = 100
         co_subdict2['sub_data'][0, 0] = 100 # for comparison later
 
         # make sure we can re-save
         ds.cutouts.save()
 
         with h5py.File(ds.cutouts.get_fullpath(), 'r') as file:
-            assert np.array_equal(ds.cutouts.co_dict['source_index_0']['sub_data'],
-                                file['source_index_0']['sub_data'])
-            assert file['source_index_0']['sub_data'][0, 0] == 100 # change has propagated
-        
+            assert np.array_equal(ds.cutouts.co_dict[subdict_key]['sub_data'],
+                                file[subdict_key]['sub_data'])
+            assert file[subdict_key]['sub_data'][0, 0] == 100 # change has propagated
+
         # check that we can add the cutouts to the database
         with SmartSession() as session:
             ds.cutouts = session.merge(ds.cutouts)
@@ -95,7 +96,7 @@ def test_make_save_load_cutouts(decam_detection_list, cutter):
             loaded_cutouts = loaded_cutouts[0]
 
             # make sure data is correct
-            co_subdict = loaded_cutouts.co_dict['source_index_0']
+            co_subdict = loaded_cutouts.co_dict[subdict_key]
             for im in ['sub', 'ref', 'new']:
                 for att in ['data', 'weight', 'flags']:
                     assert np.array_equal(co_subdict.get(f'{im}_{att}'),
