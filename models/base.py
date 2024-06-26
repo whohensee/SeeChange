@@ -1349,7 +1349,6 @@ class FileOnDiskMixin:
             raise RuntimeError("When session=None, commit must be True!")
 
         # breakpoint()
-        # moved this last so that downstreams can still function
         SeeChangeBase.delete_from_database(self, session=session, commit=commit, remove_downstreams=remove_downstreams)
 
         # breakpoint()
