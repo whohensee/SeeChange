@@ -168,12 +168,6 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
             f"from Image {self.sub_image_id} "
         )
 
-    def __setattr__(self, key, value):
-        if key in ['x', 'y'] and value is not None:
-            value = int(round(value))
-
-        super().__setattr__(key, value)
-
     @staticmethod
     def get_data_dict_attributes(include_optional=True):  # WHPR could rename get_data_attributes
         names = []
@@ -191,7 +185,7 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
         # Ok because of partial lazy loading with hdf5 and measurements only wanting their row,
         # this one is complicated. I have set that if you use this attribute, it will ENSURE
         # that you are given the entire dictionary, including checking it is the proper length
-        # using the sourcelist
+        # using the sourcelist. co_dict_noload gives the current dict.
         if self.sources.num_sources is None:
             raise ValueError("The detections of this cutouts has no num_sources attr")
         proper_length = self.sources.num_sources
@@ -306,7 +300,7 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
         """
         if self._co_dict == {}:
             return None  # do nothing
-        
+
         proper_length = self.sources.num_sources
         if len(self._co_dict) != proper_length:
             raise ValueError(f"Trying to save cutouts dict with {len(self._co_dict)}"
@@ -327,7 +321,6 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
         if not overwrite and os.path.isfile(fullname):
             raise FileExistsError(f"The file {fullname} already exists and overwrite is False.")
 
-        # WHPR think whether I really need to mess with all this format stuff anymore
         if self.format == 'hdf5':
             with h5py.File(fullname, 'a') as file:
                 for key, value in self._co_dict.items():
@@ -363,9 +356,6 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
         if found_data:
             return co_dict
 
-        # self.format = 'hdf5' # move this line to load (looks unnecessary as was
-        # for making individual new cutouts objects)
-
     def load_one_co_dict(self, groupname, filepath=None):
         """Load data subdict for a single cutout into this Cutouts co_dict. This allows
         a measurement to request only the information relevant to that object, rather
@@ -398,66 +388,10 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
         self._co_dict = {}
 
         if os.path.exists(filepath): # WHPR revisit this check... necessary?
-            if self.format == 'hdf5':  # consider whether format is still useful. Maybe down the line?
+            if self.format == 'hdf5':
                 with h5py.File(filepath, 'r') as file:
                     for groupname in file:
                         self._co_dict[groupname] = self._load_dataset_dict_from_hdf5(file, groupname)
-
-    # i THINK this can literally just use inherited version fine, now.
-    # def remove_data_from_disk(self, remove_local=True,
-    #                           database=True, session=None, commit=True, remove_downstreams=False):
-    #     """Delete the data from local disk, if it exists. Will remove
-    #     data for all cutouts contained in this Cutouts (one per source
-    #     in SourceList).
-    #     This function will not remove database rows or archive files,
-    #     only cleanup local storage for this object and its downstreams.
-
-    #     To remove both the files and the database entry, use
-    #     delete_from_disk_and_database() instead.
-
-    #     Parameters
-    #     ----------
-    #     remove_folders: bool
-    #         If True, will remove any folders on the path to the files
-    #         associated to this object, if they are empty.
-    #     remove_downstreams: bool
-    #         This is not used, but kept here for backward compatibility with the base class.
-    #     """
-    #     if database and session is None and not commit:
-    #         raise ValueError('If session is not given, commit must be True.')
-
-    #     if remove_local:
-    #         fullpath = self.get_fullpath()
-    #         if self.filepath is not None and os.path.isfile(fullpath):
-    #             os.remove(fullpath)
-
-    #     # I mostly copied from delete_list, which was previously in use. It did not include
-    #     # deletion of downstreams. Should I include that?
-
-    # WHPR check where this is used and make sure its working right
-    def delete_from_archive(self, remove_downstreams=False):
-        """Delete the file from the archive, if it exists.
-        Will only
-        This will not remove the file from local disk, nor
-        from the database.  Use delete_from_disk_and_database()
-        to do that.
-
-        Parameters
-        ----------
-        remove_downstreams: bool
-            If True, will also remove any downstream data.
-            Will recursively call get_downstreams() and find any objects
-            that have remove_data_from_disk() implemented, and call it.
-            Default is False.
-        """
-        if self.filepath is not None:
-            self.archive.delete(self.filepath, okifmissing=True)
-
-        # QUESTION is this below still worth doing?
-        # # make sure these are set to null just in case we fail
-        # # to commit later on, we will at least know something is wrong
-        # self.md5sum = None
-        # self.md5sum_extensions = None
 
     def get_upstreams(self, session=None):
         """Get the detections SourceList that was used to make this cutout. """
@@ -470,70 +404,6 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
 
         with SmartSession(session) as session:
             return session.scalars(sa.select(Measurements).where(Measurements.cutouts_id == self.id)).all()
-
-    @classmethod
-    def merge_list(cls, cutouts_list, session):
-        """Merge (or add) the list of Cutouts to the given session. """
-        if cutouts_list is None or len(cutouts_list) == 0:
-            return cutouts_list
-
-        sources = session.merge(cutouts_list[0].sources)
-        for i, cutout in enumerate(cutouts_list):
-            cutouts_list[i].sources = sources
-            cutouts_list[i] = session.merge(cutouts_list[i])
-
-        return cutouts_list
-
-    @classmethod
-    def delete_list(cls, cutouts_list, remove_local=True, archive=True, database=True, session=None, commit=True):
-        """
-        Remove a list of Cutouts objects from local disk and/or the archive and/or the database.
-        This removes the file that includes all the cutouts.
-        Can only delete cutouts that share the same filepath.
-        WARNING: this will not check that the file contains ONLY the cutouts on the list!
-        So, if the list contains a subset of the cutouts on file, the file is still deleted.
-
-        Parameters
-        ----------
-        cutouts_list: list of Cutouts
-            The list of Cutouts objects to remove.
-        remove_local: bool
-            If True, will remove the file from local disk.
-        archive: bool
-            If True, will remove the file from the archive.
-        database: bool
-            If True, will remove the cutouts from the database.
-        session: Session, optional
-            The database session to use. If not given, will create a new session.
-        commit: bool
-            If True, will commit the changes to the database.
-            If False, will not commit the changes to the database.
-            If session is not given, commit must be True.
-        """
-        if database and session is None and not commit:
-            raise ValueError('If session is not given, commit must be True.')
-
-        filepath = set([c.filepath for c in cutouts_list])
-        if len(filepath) > 1:
-            raise ValueError(
-                f'All cutouts must share the same filepath to be deleted together. Got: {filepath}'
-            )
-
-        if remove_local:
-            fullpath = cutouts_list[0].get_fullpath()
-            if fullpath is not None and os.path.isfile(fullpath):
-                os.remove(fullpath)
-
-        if archive:
-            if cutouts_list[0].filepath is not None:
-                cutouts_list[0].archive.delete(cutouts_list[0].filepath, okifmissing=True)
-
-        if database:
-            with SmartSession(session) as session:
-                for cutout in cutouts_list:
-                    cutout.delete_from_database(session=session, commit=False)
-                if commit:
-                    session.commit()
 
     def _get_inverse_badness(self):
         return cutouts_badness_inverse

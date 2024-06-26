@@ -339,10 +339,6 @@ class Measurements(Base, AutoIDMixin, SpatiallyIndexed, HasBitFlagBadness):
         SeeChangeBase.__init__(self)  # don't pass kwargs as they could contain non-column key-values
         HasBitFlagBadness.__init__(self)
         
-        # replace this transient attribute with the real index once its moved to this obj
-        # WHPR review where this is used and if it can be killed
-        self._cutouts_list_index = None  # helper (transient) attribute that helps find the right cutouts in a list
-
         self.index_in_sources = None
 
         self._sub_data = None
@@ -369,9 +365,6 @@ class Measurements(Base, AutoIDMixin, SpatiallyIndexed, HasBitFlagBadness):
     @orm.reconstructor
     def init_on_load(self):
         Base.init_on_load(self)
-
-        # WHPR kill this once all is clear
-        self._cutouts_list_index = None  # helper (transient) attribute that helps find the right cutouts in a list
 
         self._sub_data = None
         self._sub_weight = None
@@ -404,9 +397,15 @@ class Measurements(Base, AutoIDMixin, SpatiallyIndexed, HasBitFlagBadness):
         if key in ['flux_apertures', 'flux_apertures_err', 'aper_radii']:
             value = np.array(value)
 
+        if key in ['x', 'y'] and value is not None:
+            value = int(round(value)) # improc/tools::make_cutouts uses np.round()
+                                      # should I change to match?
+
         super().__setattr__(key, value)
 
     # figure out if we need to include optional (probably yes)
+    # revisit after deciding below question, as I think optional
+    # are never used ATM
     def get_data_from_cutouts(self):
         """Populates this object with the cutout data arrays used in
         calculations. This allows us to use, for example, self.sub_data
@@ -414,11 +413,13 @@ class Measurements(Base, AutoIDMixin, SpatiallyIndexed, HasBitFlagBadness):
         If that is not a concern, all such calls could instead refer back
         to the Cutouts data.
         """
-        # QUESTION: Is there much advantage to not having to refer to cutouts
-        # and instead putting the data directly into the object?
-
-        # WHPR look where I used this and see if it would be simpler to just
-        # skip this method entirely
+        # QUESTION: I have chosen here to load the data into the Measurements object
+        # when needed rather than have to constantly refer back to something like
+        # self.cutouts.co_dict_noload[self.index_in_sources], although that would
+        # be a perfectly acceptable way to access the data, and potentially involve
+        # less wasted memory. Is there any advantage (speed, database usage, etc) to
+        # doing it this way, or would it be better to use the relationship directly
+        # and skip populating the data temporarily in this Measurements object?
 
         groupname = f'source_index_{self.index_in_sources}'
 

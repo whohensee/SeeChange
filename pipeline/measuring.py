@@ -209,15 +209,14 @@ class Measurer:
                     m = Measurements(cutouts=cutouts)
                     # make sure to remember which cutout belongs to this measurement,
                     # before either of them is in the DB and then use the cutouts_id instead
-                    # m._cutouts_list_index = i   # delete this line eventually, i think its useless
                     m.index_in_sources = int(key[13:]) # grab just the number from "source_index_xxx"
                     m.best_aperture = cutouts.sources.best_aper_num
 
                     # get all the information that used to be populated in cutting
                     # QUESTION: as far as I can tell, this was never rounded before but somehow caused
                     # no errors in sqlalchemy, despite being an INT column in the schema??
-                    m.x = int(np.round(cutouts.sources.x[m.index_in_sources]))
-                    m.y = int(np.round(cutouts.sources.y[m.index_in_sources]))
+                    m.x = cutouts.sources.x[m.index_in_sources]  # These will be rounded by Measurements.__setattr__
+                    m.y = cutouts.sources.y[m.index_in_sources]
                     m.source_row = dict(Table(detections.data)[m.index_in_sources]) # move to measurements probably
                     for key, value in m.source_row.items():
                         if isinstance(value, np.number):
