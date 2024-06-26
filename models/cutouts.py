@@ -304,16 +304,18 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
         kwargs: dict
             Any additional keyword arguments to pass to the FileOnDiskMixin.save method.
         """
-        # WHPR ADD A CHECK TO MAKE SURE WE ARE SAVING AN ENTRY FOR EACH ROW
         if self._co_dict == {}:
             return None  # do nothing
+        
+        proper_length = self.sources.num_sources
+        if len(self._co_dict) != proper_length:
+            raise ValueError(f"Trying to save cutouts dict with {len(self._co_dict)}"
+                             f" subdicts, but SourceList has {proper_length} sources")
 
         for key, value in self._co_dict.items():
             if not isinstance(value, dict):
                 raise TypeError("Each entry of _co_dict must be a dictionary")
 
-        # WHPR consider using the has_data check below, maybe not needed with new structure
-        # If we did, I would just check that all 9 arrays have data
         if filename is None:
             filename = self.invent_filepath()
 
@@ -325,7 +327,7 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
         if not overwrite and os.path.isfile(fullname):
             raise FileExistsError(f"The file {fullname} already exists and overwrite is False.")
 
-        # WHPR think if I really need to mess with all this format stuff anymore
+        # WHPR think whether I really need to mess with all this format stuff anymore
         if self.format == 'hdf5':
             with h5py.File(fullname, 'a') as file:
                 for key, value in self._co_dict.items():
@@ -340,7 +342,7 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
         # make sure to also save using the FileOnDiskMixin method
         FileOnDiskMixin.save(self, fullname, overwrite=overwrite, **kwargs)
 
-    # this might be able to become a class method
+    # WHPR this might be able to become a class method... Is that better?
     def _load_dataset_dict_from_hdf5(self, file, groupname):
         """Load the dataset from an HDF5 group into one co_subdict and return.
 
@@ -395,51 +397,44 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
 
         self._co_dict = {}
 
-        if os.path.exists(filepath): # WHPR revisit this check
-            if self.format == 'hdf5':  # consider getting rid of this totally
+        if os.path.exists(filepath): # WHPR revisit this check... necessary?
+            if self.format == 'hdf5':  # consider whether format is still useful. Maybe down the line?
                 with h5py.File(filepath, 'r') as file:
                     for groupname in file:
                         self._co_dict[groupname] = self._load_dataset_dict_from_hdf5(file, groupname)
 
-    def remove_data_from_disk(self, remove_folders=True, remove_local=True,
-                              database=True, session=None, commit=True, remove_downstreams=False):
-        """WHPR review this docstring and check it works how we want
-        Delete the data from local disk, if it exists.
-        Will remove the dataset for this specific cutout from the file,
-        and remove the file if this is the last cutout in the file.
-        If remove_folders=True, will also remove any folders
-        if they are empty after the deletion.
-        This function will not remove database rows or archive files,
-        only cleanup local storage for this object and its downstreams.
+    # i THINK this can literally just use inherited version fine, now.
+    # def remove_data_from_disk(self, remove_local=True,
+    #                           database=True, session=None, commit=True, remove_downstreams=False):
+    #     """Delete the data from local disk, if it exists. Will remove
+    #     data for all cutouts contained in this Cutouts (one per source
+    #     in SourceList).
+    #     This function will not remove database rows or archive files,
+    #     only cleanup local storage for this object and its downstreams.
 
-        To remove both the files and the database entry, use
-        delete_from_disk_and_database() instead.
+    #     To remove both the files and the database entry, use
+    #     delete_from_disk_and_database() instead.
 
-        Parameters
-        ----------
-        remove_folders: bool
-            If True, will remove any folders on the path to the files
-            associated to this object, if they are empty.
-        remove_downstreams: bool
-            This is not used, but kept here for backward compatibility with the base class.
-        """
-        if database and session is None and not commit:
-            raise ValueError('If session is not given, commit must be True.')
+    #     Parameters
+    #     ----------
+    #     remove_folders: bool
+    #         If True, will remove any folders on the path to the files
+    #         associated to this object, if they are empty.
+    #     remove_downstreams: bool
+    #         This is not used, but kept here for backward compatibility with the base class.
+    #     """
+    #     if database and session is None and not commit:
+    #         raise ValueError('If session is not given, commit must be True.')
 
-        if remove_local:
-            fullpath = self.get_fullpath()
-            if self.filepath is not None and os.path.isfile(fullpath):
-                os.remove(fullpath)
+    #     if remove_local:
+    #         fullpath = self.get_fullpath()
+    #         if self.filepath is not None and os.path.isfile(fullpath):
+    #             os.remove(fullpath)
 
-        if database:
-            with SmartSession(session) as session:
-                self.delete_from_database(session=session, commit=False)
-                if commit:
-                    session.commit()
+    #     # I mostly copied from delete_list, which was previously in use. It did not include
+    #     # deletion of downstreams. Should I include that?
 
-        # I mostly copied from delete_list, which was previously in use. It did not include
-        # deletion of downstreams. Should I include that?
-
+    # WHPR check where this is used and make sure its working right
     def delete_from_archive(self, remove_downstreams=False):
         """Delete the file from the archive, if it exists.
         Will only
