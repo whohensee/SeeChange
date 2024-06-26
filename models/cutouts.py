@@ -175,8 +175,8 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
         super().__setattr__(key, value)
 
     @staticmethod
-    def get_data_attributes(include_optional=True):
-        names = ['source_row']  # WHPR kill this and references to it (possibly whole function)
+    def get_data_dict_attributes(include_optional=True):  # WHPR could rename get_data_attributes
+        names = []
         for im in ['sub', 'ref', 'new']:
             for att in ['data', 'weight', 'flags']:
                 names.append(f'{im}_{att}')
@@ -185,28 +185,6 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
             names += ['sub_psfflux', 'sub_psffluxerr']
 
         return names
-
-    # WHPR potentially kill get_data_attributes and steal its name
-    @staticmethod
-    def get_data_dict_attributes(include_optional=True):
-        names = ['source_index']
-        for im in ['sub', 'ref', 'new']:
-            for att in ['data', 'weight', 'flags']:
-                names.append(f'{im}_{att}')
-
-        if include_optional:
-            names += ['sub_psfflux', 'sub_psffluxerr']
-
-        return names
-
-    # WHPR This checks if the data exists - maybe move over to measurements
-    # and use it to make checks for individual loads cleaner. Maybe unneccesary
-    @property
-    def has_data(self):
-        for att in self.get_data_attributes(include_optional=False):
-            if getattr(self, att) is None:
-                return False
-        return True
 
     @property
     def co_dict( self, ):
@@ -241,8 +219,6 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
         ----------
         detections: SourceList
             The source list from which to create the cutout.
-        source_index: int
-            The index of the source in the source list from which to create the cutout.
         provenance: Provenance, optional
             The provenance of the cutout. If not given, will leave as None (to be filled externally).
         kwargs: dict
@@ -306,9 +282,7 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
         if groupname in file:
             del file[groupname]
 
-        for key in self.get_data_dict_attributes():  # WHPR change this to get rid of source_index
-            if key == 'source_index':
-                continue
+        for key in self.get_data_dict_attributes():
             data = co_dict.get(key)
 
             if data is not None:
@@ -381,10 +355,7 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
         co_dict = {}
         found_data = False
         for att in self.get_data_dict_attributes(): # remove source index for dict soon
-            if att == 'source_index': # WHPR clean this up
-                # co_dict[att] = int(file[groupname].attrs[att])
-                continue
-            elif att in file[groupname]:
+            if att in file[groupname]:
                 found_data = True
                 co_dict[att] = np.array(file[f'{groupname}/{att}'])
         if found_data:
@@ -568,24 +539,6 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
                     cutout.delete_from_database(session=session, commit=False)
                 if commit:
                     session.commit()
-
-    def check_equals(self, other):
-        """Compare if two cutouts have the same data. """
-        if not isinstance(other, Cutouts):
-            return super().__eq__(other)  # any other comparisons use the base class
-
-        attributes = self.get_data_attributes()
-        attributes += ['ra', 'dec', 'x', 'y', 'filepath', 'format']
-
-        for att in attributes:
-            if isinstance(getattr(self, att), np.ndarray):
-                if not np.array_equal(getattr(self, att), getattr(other, att)):
-                    return False
-            else:  # other attributes get compared directly
-                if getattr(self, att) != getattr(other, att):
-                    return False
-
-        return True
 
     def _get_inverse_badness(self):
         return cutouts_badness_inverse

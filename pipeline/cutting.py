@@ -120,7 +120,6 @@ class Cutter:
                 cutouts.co_dict = {}
                 for i, source in enumerate(detections.data):
                     data_dict = {}
-                    data_dict["source_index"] = i
                     data_dict["sub_data"] = sub_stamps_data[i]
                     data_dict["sub_weight"] = sub_stamps_weight[i]
                     data_dict["sub_flags"] = sub_stamps_flags[i]

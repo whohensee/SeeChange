@@ -425,8 +425,6 @@ class Measurements(Base, AutoIDMixin, SpatiallyIndexed, HasBitFlagBadness):
         co_data_dict = self.cutouts.co_dict[groupname] # get just the subdict with data for this
 
         for att in Cutouts.get_data_dict_attributes():
-            if att == "source_index":  # eventually remove source index maybe and this
-                continue
             setattr(self, att, co_data_dict.get(att))
 
 
@@ -654,8 +652,6 @@ def set_attribute(object, att, value):
 
 # add "@property" functions to all the data attributes
 for att in Cutouts.get_data_dict_attributes():
-    if att == 'source_index':
-        continue
     setattr(
         Measurements,
         att,
