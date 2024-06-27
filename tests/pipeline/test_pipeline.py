@@ -321,7 +321,6 @@ def test_bitflag_propagation(decam_exposure, decam_reference, decam_default_cali
         desired_bitflag = 2 ** 1 + 2 ** 17  # bitflag for 'banding' and 'many sources'
         ds = p.run(ds)
 
-        breakpoint()
         assert ds.sources.bitflag == desired_bitflag
         assert ds.wcs._upstream_bitflag == desired_bitflag
         assert ds.zp._upstream_bitflag == desired_bitflag
