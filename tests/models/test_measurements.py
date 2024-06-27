@@ -13,11 +13,6 @@ from models.cutouts import Cutouts
 from models.measurements import Measurements
 
 
-def test_xyz(cutter, measurer, ptf_datastore):
-    # breakpoint()
-    # ds = measurer.run(ptf_datastore.cutouts)
-    return None
-
 def test_measurements_attributes(measurer, ptf_datastore, test_config):
 
     aper_radii = test_config.value('extraction.sources.apertures')

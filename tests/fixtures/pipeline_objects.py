@@ -901,9 +901,9 @@ def datastore_factory(data_dir, pipeline_factory):
             if ( not os.getenv( "LIMIT_CACHE_USAGE" ) ) and ( os.path.isfile(cache_name) ):
                 SCLogger.debug('loading cutouts from cache. ')
                 ds.cutouts = copy_from_cache(Cutouts, cache_dir, cache_name)
-                ds.cutouts.load()
                 setattr(ds.cutouts, 'provenance', prov)
                 setattr(ds.cutouts, 'sources', ds.detections)
+                ds.cutouts.load_all_co_data() # sources must be set first
                 ds.cutouts.save()
             else:  # cannot find cutouts on cache
                 ds = p.cutter.run(ds, session)

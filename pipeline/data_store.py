@@ -390,7 +390,6 @@ class DataStore:
                 raise ValueError(f'detections must be a SourceList object, got {type(value)}')
 
             if key == 'cutouts' and not isinstance(value, Cutouts):
-                # raise ValueError(f'cutouts must be a list of Cutout objects, got {type(value)}')
                 raise ValueError(f'cutouts must be a Cutouts object, got {type(value)}')
 
             if key == 'measurements' and not isinstance(value, list):

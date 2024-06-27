@@ -83,7 +83,7 @@ def test_make_save_load_cutouts(decam_detection_list, cutter):
         # check that we can add the cutouts to the database
         with SmartSession() as session:
             ds.cutouts = session.merge(ds.cutouts)
-            session.commit() # QUESTION: does this necessitate cleanup in the finally block?
+            session.commit()
 
         ds.cutouts.load_all_co_data()  # need to re-load after merge
         assert ds.cutouts is not None

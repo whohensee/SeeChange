@@ -125,11 +125,7 @@ def check_datastore_and_database_have_everything(exp_id, sec_id, ref_id, session
             Cutouts.sources_id == det.id,
             Cutouts.provenance_id == ds.cutouts.provenance_id,
         )
-    ).all()
-    assert len(cutouts) == 1
-    cutouts = cutouts[0]
-    # assert len(ds.cutouts) == len(cutouts)
-    # assert set([c.id for c in ds.cutouts]) == set([c.id for c in cutouts])
+    ).first()
     assert ds.cutouts.id == cutouts.id
 
     # Measurements

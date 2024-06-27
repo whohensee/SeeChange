@@ -234,7 +234,8 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
         cutout = Cutouts()
         cutout.sources = detections
         cutout.provenance = provenance
-        cutout.provenance_id = provenance.id # I couldn't find this being set anywhere else?
+        # cutout.provenance_id = provenance.id # I couldn't find this being set anywhere else?
+                                               # but I don't know where it is being set
 
         # update the bitflag
         cutout._upstream_bitflag = detections.bitflag
