@@ -405,9 +405,6 @@ class Measurements(Base, AutoIDMixin, SpatiallyIndexed, HasBitFlagBadness):
 
         super().__setattr__(key, value)
 
-    # figure out if we need to include optional (probably yes)
-    # revisit after deciding below question, as I think optional
-    # are never used ATM
     def get_data_from_cutouts(self):
         """Populates this object with the cutout data arrays used in
         calculations. This allows us to use, for example, self.sub_data

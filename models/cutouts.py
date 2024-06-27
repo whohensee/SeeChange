@@ -38,16 +38,15 @@ class Co_Dict(dict):
 
     def __getitem__(self, key):
         if key not in self.keys():
-            # check if the key exists on disk
             if self.cutouts.filepath is not None:
-                self.cutouts.load_one_co_dict(key)
+                self.cutouts.load_one_co_dict(key) # no change if not found
         return super().__getitem__(key)
 
 class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
 
     __tablename__ = 'cutouts'
 
-    # a unique constraint on the provenance and the source list, but also on the index in the list
+    # a unique constraint on the provenance and the source list
     __table_args__ = (
         UniqueConstraint(
             'sources_id', 'provenance_id', name='_cutouts_sources_provenance_uc'
@@ -190,7 +189,7 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
         )
 
     @staticmethod
-    def get_data_dict_attributes(include_optional=True):  # WHPR could rename get_data_attributes
+    def get_data_dict_attributes(include_optional=True):
         names = []
         for im in ['sub', 'ref', 'new']:
             for att in ['data', 'weight', 'flags']:

@@ -24,8 +24,8 @@ def test_make_save_load_cutouts(decam_detection_list, cutter):
         co_subdict = ds.cutouts.co_dict[subdict_key]
 
         assert ds.cutouts.sub_image == decam_detection_list.image
-        assert ds.cutouts.sub_image == decam_detection_list.image
-        assert ds.cutouts.sub_image == decam_detection_list.image
+        assert ds.cutouts.ref_image == decam_detection_list.image.ref_aligned_image
+        assert ds.cutouts.new_image == decam_detection_list.image.new_aligned_image
 
         assert isinstance(co_subdict["sub_data"], np.ndarray)
         assert isinstance(co_subdict["sub_weight"], np.ndarray)
@@ -66,7 +66,7 @@ def test_make_save_load_cutouts(decam_detection_list, cutter):
                 assert np.array_equal(co_subdict.get(f'{im}_{att}'),
                                         co_subdict2.get(f'{im}_{att}'))
 
-        assert c2.bitflag == 0 # should not load all columns from file
+        assert c2.bitflag == 0 # should not load all column data from file
 
         # change the value of one of the arrays
         ds.cutouts.co_dict[subdict_key]['sub_data'][0, 0] = 100
@@ -107,5 +107,4 @@ def test_make_save_load_cutouts(decam_detection_list, cutter):
 
     finally:
         if 'ds' in locals() and ds.cutouts is not None:
-            ds.cutouts.remove_data_from_disk()
-            ds.cutouts.delete_from_archive()
+            ds.cutouts.delete_from_disk_and_database()

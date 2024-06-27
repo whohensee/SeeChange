@@ -5,10 +5,10 @@ import numpy as np
 
 from scipy import signal
 
+from astropy.table import Table
+
 from improc.photometry import iterative_cutouts_photometry
 from improc.tools import make_gaussian
-
-from astropy.table import Table
 
 from models.cutouts import Cutouts
 from models.measurements import Measurements
@@ -214,17 +214,8 @@ class Measurer:
                     m.index_in_sources = int(key[13:]) # grab just the number from "source_index_xxx"
                     m.best_aperture = cutouts.sources.best_aper_num
 
-                    # get all the information that used to be populated in cutting
-                    # QUESTION: as far as I can tell, this was never rounded before but somehow caused
-                    # no errors in sqlalchemy, despite being an INT column in the schema??
                     m.x = cutouts.sources.x[m.index_in_sources]  # These will be rounded by Measurements.__setattr__
                     m.y = cutouts.sources.y[m.index_in_sources]
-                    m.source_row = dict(Table(detections.data)[m.index_in_sources]) # move to measurements probably
-                    for key, value in m.source_row.items():
-                        if isinstance(value, np.number):
-                            m.source_row[key] = value.item()  # convert numpy number to python primitive
-                    # m.ra = m.source_row['ra'] # done in one line below
-                    # m.dec = m.source_row['dec']
 
                     m.aper_radii = cutouts.sources.image.new_image.zp.aper_cor_radii  # zero point corrected aperture radii
 
@@ -267,9 +258,8 @@ class Measurer:
                     x = m.x + m.offset_x
                     y = m.y + m.offset_y
                     ra, dec = m.cutouts.sources.image.new_image.wcs.wcs.pixel_to_world_values(x, y)
-                    # STRONGLY review this in diff to figure out why I did this source row thing
-                    m.ra = float(ra) #  + m.source_row['ra'] # I think this was just wrong
-                    m.dec = float(dec) # + m.source_row['dec'] # I think this was just wrong
+                    m.ra = float(ra)
+                    m.dec = float(dec)
                     m.calculate_coordinates()
 
                     # PSF photometry:

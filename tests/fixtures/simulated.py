@@ -620,7 +620,6 @@ def sim_sub_image_list(
 
     with SmartSession() as session:
         for sub in sub_images:
-            # breakpoint()
             sub.delete_from_disk_and_database(session=session, commit=False, remove_downstreams=True)
         session.commit()
 

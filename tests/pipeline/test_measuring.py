@@ -11,7 +11,7 @@ from improc.tools import make_gaussian
 
 
 @pytest.mark.flaky(max_runs=3)
-def test_measuring_xyz(measurer, decam_cutouts, decam_default_calibrators):
+def test_measuring(measurer, decam_cutouts, decam_default_calibrators):
     measurer.pars.test_parameter = uuid.uuid4().hex
     measurer.pars.bad_pixel_exclude = ['saturated']  # ignore saturated pixels
     measurer.pars.bad_flag_exclude = ['satellite']  # ignore satellite cutouts
@@ -79,13 +79,6 @@ def test_measuring_xyz(measurer, decam_cutouts, decam_default_calibrators):
     decam_cutouts.co_dict[f"source_index_11"]["sub_data"] = make_gaussian(imsize=sz[0], sigma_x=fwhm / 2.355, sigma_y=20, rotation=25, norm=1)
     decam_cutouts.co_dict[f"source_index_11"]["sub_data"] *= 1000
     decam_cutouts.co_dict[f"source_index_11"]["sub_data"] += np.random.normal(0, 1, size=sz)
-
-    # PROBLEM: individual cutouts do not track badness now that they are in this list
-    # # a regular cutout but we'll put some bad flag on the cutout
-    # decam_cutouts[12].badness = 'cosmic ray'
-
-    # # a regular cutout with a bad flag that we are ignoring:
-    # decam_cutouts[13].badness = 'satellite'
 
     # run the measurer
     ds = measurer.run(decam_cutouts)
@@ -223,20 +216,6 @@ def test_measuring_xyz(measurer, decam_cutouts, decam_default_calibrators):
     assert m.get_filter_description() == 'Streaked (angle= 25.0 deg)'
     assert m.bkg_mean < 0.5
     assert m.bkg_std < 3.0
-
-
-def test_propagate_badness(decam_datastore):
-    ds = decam_datastore
-    with SmartSession() as session:
-        ds.measurements[0].badness = 'cosmic ray'
-        # find the index of the cutout that corresponds to the measurement
-        # idx = [i for i, c in enumerate(ds.cutouts) if c.id == ds.measurements[0].cutouts_id][0]
-        # idx = ds.measurements[0].index_in_sources
-        # ds.cutouts.co_dict[f"source_index_{idx}"].badness = 'cosmic ray'
-        # ds.cutouts[idx].update_downstream_badness(session=session)
-        m = session.merge(ds.measurements[0])
-
-        assert m.badness == 'cosmic ray'  # note that this does not change disqualifier_scores!
 
 
 def test_warnings_and_exceptions(decam_datastore, measurer):

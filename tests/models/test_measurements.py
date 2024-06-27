@@ -23,7 +23,7 @@ def test_measurements_attributes(measurer, ptf_datastore, test_config):
     aper_radii = test_config.value('extraction.sources.apertures')
     ds = measurer.run(ptf_datastore.cutouts)
     # check that the measurer actually loaded the measurements from db, and not recalculated
-    # assert len(ds.measurements) <= len(ds.cutouts)  # not all cutouts have saved measurements
+    assert len(ds.measurements) <= len(ds.cutouts.co_dict)  # not all cutouts have saved measurements
     assert len(ds.measurements) == len(ptf_datastore.measurements)
     assert ds.measurements[0].from_db
     assert not measurer.has_recalculated
@@ -293,7 +293,7 @@ def test_deletion_thresh_is_non_critical(ptf_datastore, measurer):
 
 
 def test_measurements_forced_photometry(ptf_datastore):
-    offset_max = 2
+    offset_max = 2.0
     for m in ptf_datastore.measurements:
         if abs(m.offset_x) < offset_max and abs(m.offset_y) < offset_max:
             break

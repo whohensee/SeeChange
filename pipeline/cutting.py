@@ -77,7 +77,7 @@ class Cutter:
             if cutouts is not None:
                 cutouts.load_all_co_data()
 
-            if cutouts is None or cutouts.co_dict == {}:
+            if cutouts is None or len(cutouts.co_dict) == 0:
 
                 self.has_recalculated = True
                 # use the latest source list in the data store,
@@ -119,7 +119,6 @@ class Cutter:
                 cutouts._upstream_bitflag = 0
                 cutouts._upstream_bitflag |= detections.bitflag
 
-                cutouts.co_dict = {}
                 for i, source in enumerate(detections.data):
                     data_dict = {}
                     data_dict["sub_data"] = sub_stamps_data[i]

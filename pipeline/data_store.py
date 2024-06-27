@@ -1285,7 +1285,7 @@ class DataStore:
 
         if self.cutouts is not None:
             self.cutouts.load_all_co_data()
-            if self.cutouts.co_dict == {}:
+            if len(self.cutouts.co_dict) == 0:
                 self.cutouts = None  # TODO: what about images that actually don't have any detections?
 
             # make sure the cutouts have the correct provenance
@@ -1315,9 +1315,6 @@ class DataStore:
                         Cutouts.provenance_id == provenance.id,
                     )
                 ).first()
-                # cutouts has a unique constraint with sources_id and provenance_id
-                # so a check I wrote when using all() that there was only 1
-                # is totally redundant, i think
 
         return self.cutouts
 
@@ -1361,11 +1358,10 @@ class DataStore:
         if self.measurements is None:
             with SmartSession(session, self.session) as session:
                 cutouts = self.get_cutouts(session=session)
-                cutout_ids = [cutouts.id]  # WHPR this is inelegant. It works, but should fix
 
                 self.measurements = session.scalars(
                     sa.select(Measurements).where(
-                        Measurements.cutouts_id.in_(cutout_ids),
+                        Measurements.cutouts_id == cutouts.id,
                         Measurements.provenance_id == provenance.id,
                     )
                 ).all()
@@ -1486,7 +1482,8 @@ class DataStore:
             if obj is None:
                 continue
 
-            # TODO need to change this as cutouts changes to just be a cutoutsfile
+            # QUESTION: This whole block can never be reached, as cutouts is not a list and measurements
+            # don't save to disk. I want to kill it all. Objections?
             if isinstance(obj, list) and len(obj) > 0:  # handle cutouts and measurements
                 if hasattr(obj[0], 'save_list'):
                     raise ValueError("AFTER CUTOUTS IS NO LONGER A LIST, SHOULD NEVER GET HERE!")
@@ -1572,14 +1569,14 @@ class DataStore:
             if self.detections is not None:
                 more_products = 'detections'
                 if self.cutouts is not None:
-                    self.cutouts.sources = self.detections # DOUBLE CHECK - WILL THERE ONLY EVER BE ONE CUTOUTS?
+                    self.cutouts.sources = self.detections
                     self.cutouts = session.merge(self.cutouts)
                     more_products += ', cutouts'
 
                 if self.measurements is not None:
                     for i, m in enumerate(self.measurements):
                         # use the new, merged cutouts
-                        self.measurements[i].cutouts = self.cutouts # only one now
+                        self.measurements[i].cutouts = self.cutouts
                         self.measurements[i].associate_object(session)
                         self.measurements[i] = session.merge(self.measurements[i])
                         self.measurements[i].object.measurements.append(self.measurements[i])

@@ -900,8 +900,7 @@ def datastore_factory(data_dir, pipeline_factory):
             cache_name = os.path.join(cache_dir, cache_sub_name + f'.cutouts_{prov.id[:6]}.h5')
             if ( not os.getenv( "LIMIT_CACHE_USAGE" ) ) and ( os.path.isfile(cache_name) ):
                 SCLogger.debug('loading cutouts from cache. ')
-                ds.cutouts = copy_from_cache(Cutouts, cache_dir, cache_name) # this grabs the whole co_list
-                                                                             # even before load()...that ok?
+                ds.cutouts = copy_from_cache(Cutouts, cache_dir, cache_name)
                 ds.cutouts.load()
                 setattr(ds.cutouts, 'provenance', prov)
                 setattr(ds.cutouts, 'sources', ds.detections)
