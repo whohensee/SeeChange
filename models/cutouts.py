@@ -17,12 +17,31 @@ from models.base import (
     SeeChangeBase,
     AutoIDMixin,
     FileOnDiskMixin,
-    SpatiallyIndexed,
     HasBitFlagBadness,
 )
-from models.enums_and_bitflags import CutoutsFormatConverter, cutouts_badness_inverse
+from models.enums_and_bitflags import CutoutsFormatConverter
 from models.source_list import SourceList
 
+
+class Co_Dict(dict):
+    """Cutouts Dictionary used in Cutouts to store dictionaries which hold data arrays
+    for individual cutouts. Acts as a normal dictionary, except when a key is passed
+    using bracket notation (such as "co_dict[source_index_7]"), if that key is not present
+    in the Co_dict then it will search on disk for the requested data, and if found
+    will silently load that data and return it.
+    Must be assigned a Cutouts object to its cutouts attribute so that it knows
+    how to look for data.
+    """
+    def __init__(self, *args, **kwargs):
+        self.cutouts = None  # this must be assigned before use
+        super().__init__(self, *args, **kwargs)
+
+    def __getitem__(self, key):
+        if key not in self.keys():
+            # check if the key exists on disk
+            if self.cutouts.filepath is not None:
+                self.cutouts.load_one_co_dict(key)
+        return super().__getitem__(key)
 
 class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
 
@@ -129,7 +148,8 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
         self._new_weight = None
         self._new_flags = None
 
-        self._co_dict = {}
+        self.co_dict = Co_Dict()
+        self.co_dict.cutouts = self
 
         self._bitflag = 0
 
@@ -159,7 +179,8 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
         self._new_weight = None
         self._new_flags = None
 
-        self._co_dict = {}
+        self.co_dict = Co_Dict()
+        self.co_dict.cutouts = self
 
     def __repr__(self):
         return (
@@ -180,26 +201,12 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
 
         return names
 
-    @property
-    def co_dict( self, ):
-        # Ok because of partial lazy loading with hdf5 and measurements only wanting their row,
-        # this one is complicated. I have set that if you use this attribute, it will ENSURE
-        # that you are given the entire dictionary, including checking it is the proper length
-        # using the sourcelist. co_dict_noload gives the current dict.
+    def load_all_co_data(self):
         if self.sources.num_sources is None:
             raise ValueError("The detections of this cutouts has no num_sources attr")
         proper_length = self.sources.num_sources
-        if len(self._co_dict) != proper_length and self.filepath is not None:
+        if len(self.co_dict) != proper_length and self.filepath is not None:
             self.load()
-        return self._co_dict
-
-    @co_dict.setter
-    def co_dict( self, value ):
-        self._co_dict = value
-
-    @property
-    def co_dict_noload(self):
-        return self._co_dict
 
     @staticmethod
     def from_detections(detections, provenance=None, **kwargs):
@@ -260,13 +267,13 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
 
         return filename
 
-    def _save_dataset_dict_to_hdf5(self, co_dict, file, groupname):
+    def _save_dataset_dict_to_hdf5(self, co_subdict, file, groupname):
         """Save the one co_subdict from the co_dict of this Cutouts
         into an HDF5 group for an open file.
 
         Parameters
         ----------
-        co_dict: dict
+        co_subdict: dict
             The subdict containing the data for a single cutout
         file: h5py.File
             The open HDF5 file to save to.
@@ -277,7 +284,7 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
             del file[groupname]
 
         for key in self.get_data_dict_attributes():
-            data = co_dict.get(key)
+            data = co_subdict.get(key)
 
             if data is not None:
                 file.create_dataset(
@@ -298,17 +305,17 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
         kwargs: dict
             Any additional keyword arguments to pass to the FileOnDiskMixin.save method.
         """
-        if self._co_dict == {}:
+        if len(self.co_dict) == 0:
             return None  # do nothing
 
         proper_length = self.sources.num_sources
-        if len(self._co_dict) != proper_length:
-            raise ValueError(f"Trying to save cutouts dict with {len(self._co_dict)}"
+        if len(self.co_dict) != proper_length:
+            raise ValueError(f"Trying to save cutouts dict with {len(self.co_dict)}"
                              f" subdicts, but SourceList has {proper_length} sources")
 
-        for key, value in self._co_dict.items():
+        for key, value in self.co_dict.items():
             if not isinstance(value, dict):
-                raise TypeError("Each entry of _co_dict must be a dictionary")
+                raise TypeError("Each entry of co_dict must be a dictionary")
 
         if filename is None:
             filename = self.invent_filepath()
@@ -323,7 +330,7 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
 
         if self.format == 'hdf5':
             with h5py.File(fullname, 'a') as file:
-                for key, value in self._co_dict.items():
+                for key, value in self.co_dict.items():
                     self._save_dataset_dict_to_hdf5(value, file, key)
         elif self.format == 'fits':
             raise NotImplementedError('Saving cutouts to fits is not yet implemented.')
@@ -344,17 +351,17 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
         file: h5py.File
             The open HDF5 file to load from.
         groupname: str
-            The name of the group to load from. This should be "source_<number>"
+            The name of the group to load from. This should be "source_index_<number>"
         """
 
-        co_dict = {}
+        co_subdict = {}
         found_data = False
         for att in self.get_data_dict_attributes(): # remove source index for dict soon
             if att in file[groupname]:
                 found_data = True
-                co_dict[att] = np.array(file[f'{groupname}/{att}'])
+                co_subdict[att] = np.array(file[f'{groupname}/{att}'])
         if found_data:
-            return co_dict
+            return co_subdict
 
     def load_one_co_dict(self, groupname, filepath=None):
         """Load data subdict for a single cutout into this Cutouts co_dict. This allows
@@ -366,7 +373,9 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
             filepath = self.get_fullpath()
 
         with h5py.File(filepath, 'r') as file:
-            self._co_dict[groupname] = self._load_dataset_dict_from_hdf5(file, groupname)
+            co_subdict = self._load_dataset_dict_from_hdf5(file, groupname)
+            if co_subdict is not None:
+                self.co_dict[groupname] = co_subdict
         return None
 
     def load(self, filepath=None):
@@ -385,13 +394,14 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
         if filepath is None:
             raise ValueError("Could not find filepath to load")
 
-        self._co_dict = {}
+        self.co_dict = Co_Dict()
+        self.co_dict.cutouts = self
 
         if os.path.exists(filepath): # WHPR revisit this check... necessary?
             if self.format == 'hdf5':
                 with h5py.File(filepath, 'r') as file:
                     for groupname in file:
-                        self._co_dict[groupname] = self._load_dataset_dict_from_hdf5(file, groupname)
+                        self.co_dict[groupname] = self._load_dataset_dict_from_hdf5(file, groupname)
 
     def get_upstreams(self, session=None):
         """Get the detections SourceList that was used to make this cutout. """
@@ -404,6 +414,3 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
 
         with SmartSession(session) as session:
             return session.scalars(sa.select(Measurements).where(Measurements.cutouts_id == self.id)).all()
-
-    def _get_inverse_badness(self):
-        return cutouts_badness_inverse

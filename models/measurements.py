@@ -10,6 +10,7 @@ from sqlalchemy.ext.associationproxy import association_proxy
 
 from models.base import Base, SeeChangeBase, SmartSession, AutoIDMixin, SpatiallyIndexed, HasBitFlagBadness
 from models.cutouts import Cutouts
+from models.enums_and_bitflags import measurements_badness_inverse
 
 from improc.photometry import get_circle
 
@@ -43,7 +44,8 @@ class Measurements(Base, AutoIDMixin, SpatiallyIndexed, HasBitFlagBadness):
     index_in_sources = sa.Column(
         sa.Integer,
         nullable=False,
-        doc="Index of this cutout in the source list (of detections in the difference image). "
+        doc="Index of the data for this Measurements"
+            "in the source list (of detections in the difference image). "
     )
 
     object_id = sa.Column(
@@ -410,18 +412,14 @@ class Measurements(Base, AutoIDMixin, SpatiallyIndexed, HasBitFlagBadness):
         """Populates this object with the cutout data arrays used in
         calculations. This allows us to use, for example, self.sub_data
         without having to look constantly back into the related Cutouts.
-        If that is not a concern, all such calls could instead refer back
-        to the Cutouts data.
-        """
-        # QUESTION: I have chosen here to load the data into the Measurements object
-        # when needed rather than have to constantly refer back to something like
-        # self.cutouts.co_dict_noload[self.index_in_sources], although that would
-        # be a perfectly acceptable way to access the data, and potentially involve
-        # less wasted memory. Is there any advantage (speed, database usage, etc) to
-        # doing it this way, or would it be better to use the relationship directly
-        # and skip populating the data temporarily in this Measurements object?
 
+        Importantly, the data for this measurements should have already
+        been loaded by the Co_Dict class
+        """
         groupname = f'source_index_{self.index_in_sources}'
+
+        if not self.cutouts.co_dict.get(groupname):
+            raise ValueError(f"No subdict found for {groupname}")
 
         co_data_dict = self.cutouts.co_dict[groupname] # get just the subdict with data for this
 
@@ -595,6 +593,9 @@ class Measurements(Base, AutoIDMixin, SpatiallyIndexed, HasBitFlagBadness):
         """Get the downstreams of this Measurements"""
         return []
 
+    def _get_inverse_badness(self):
+        return measurements_badness_inverse
+
     @classmethod
     def delete_list(cls, measurements_list, session=None, commit=True):
         """
@@ -628,21 +629,12 @@ def load_attribute(object, att):
     if not hasattr(object, f'_{att}'):
         raise AttributeError(f"The object {object} does not have the attribute {att}.")
     if getattr(object, f'_{att}') is None:
-        if object.cutouts.co_dict_noload == {} and object.cutouts.filepath is None:
+        if len(object.cutouts.co_dict) == 0 and object.cutouts.filepath is None:
             return None  # objects just now created and not saved cannot lazy load data!
-
+        
         groupname = f'source_index_{object.index_in_sources}'
-        if groupname not in object.cutouts.co_dict_noload.keys():
-            # try and load the info for this measurement
-            object.cutouts.load_one_co_dict(groupname)
-        if groupname not in object.cutouts.co_dict_noload.keys():
-            raise ValueError("This measurements not found in Cutouts data dict")
-        if att not in object.cutouts.co_dict_noload[groupname].keys():
-            raise ValueError(f"No matching entry in dict for key {att}")
-        object.get_data_from_cutouts() # this does load ALL 9 data attributes
-                                       # into this object, but that should only
-                                       # ever happen once, as future calls will
-                                       # find the data and just return it
+        if object.cutouts.co_dict[groupname] is not None:  # will check disk as Co_Dict
+            object.get_data_from_cutouts()
 
     # after data is filled, should be able to just return it
     return getattr(object, f'_{att}')

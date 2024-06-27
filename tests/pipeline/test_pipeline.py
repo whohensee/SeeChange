@@ -304,7 +304,6 @@ def test_bitflag_propagation(decam_exposure, decam_reference, decam_default_cali
         assert ds.zp._upstream_bitflag == 2
         assert ds.sub_image._upstream_bitflag == 2
         assert ds.detections._upstream_bitflag == 2
-        # for cutout in ds.cutouts:   # cutouts is a list of cutout objects
         assert ds.cutouts._upstream_bitflag == 2
 
         # test part 2: Add a second bitflag partway through and check it propagates to downstreams
@@ -322,13 +321,15 @@ def test_bitflag_propagation(decam_exposure, decam_reference, decam_default_cali
         desired_bitflag = 2 ** 1 + 2 ** 17  # bitflag for 'banding' and 'many sources'
         ds = p.run(ds)
 
+        breakpoint()
         assert ds.sources.bitflag == desired_bitflag
         assert ds.wcs._upstream_bitflag == desired_bitflag
         assert ds.zp._upstream_bitflag == desired_bitflag
         assert ds.sub_image._upstream_bitflag == desired_bitflag
         assert ds.detections._upstream_bitflag == desired_bitflag
-        # for cutout in ds.cutouts:
         assert ds.cutouts._upstream_bitflag == desired_bitflag
+        for m in ds.measurements:
+            assert m._upstream_bitflag == desired_bitflag
         assert ds.image.bitflag == 2 # not in the downstream of sources
 
         # test part 3: test update_downstream_badness() function by adding and removing flags
@@ -356,8 +357,9 @@ def test_bitflag_propagation(decam_exposure, decam_reference, decam_default_cali
             assert ds.zp.bitflag == desired_bitflag
             assert ds.sub_image.bitflag == desired_bitflag
             assert ds.detections.bitflag == desired_bitflag
-            # for cutout in ds.cutouts:
             assert ds.cutouts.bitflag == desired_bitflag
+            for m in ds.measurements:
+                assert m.bitflag == desired_bitflag
 
             # remove the bitflag and check that it disappears in downstreams
             ds.image._bitflag = 0  # remove 'bad subtraction'
@@ -373,8 +375,9 @@ def test_bitflag_propagation(decam_exposure, decam_reference, decam_default_cali
             assert ds.zp.bitflag == desired_bitflag
             assert ds.sub_image.bitflag == desired_bitflag
             assert ds.detections.bitflag == desired_bitflag
-            # for cutout in ds.cutouts:
             assert ds.cutouts.bitflag == desired_bitflag
+            for m in ds.measurements:
+                assert m.bitflag == desired_bitflag
 
     finally:
         if 'ds' in locals():
