@@ -1240,7 +1240,6 @@ class FileOnDiskMixin:
             that have remove_data_from_disk() implemented, and call it.
             Default is False.
         """
-        # SCLogger.debug(f"START remove_data_from_disk on {self}")
         if self.filepath is not None:
             # get the filepath, but don't check if the file exists!
             for f in self.get_fullpath(as_list=True, nofile=True):
@@ -1265,8 +1264,6 @@ class FileOnDiskMixin:
                         d[0].delete_list(d, remove_local=True, archive=False, database=False)
             except NotImplementedError as e:
                 pass  # if this object does not implement get_downstreams, it is ok
-        # SCLogger.debug(f"FINISH remove_data_from_disk on {self}")
-        
 
     def delete_from_archive(self, remove_downstreams=False):
         """Delete the file from the archive, if it exists.
@@ -1348,16 +1345,12 @@ class FileOnDiskMixin:
         if session is None and not commit:
             raise RuntimeError("When session=None, commit must be True!")
 
-        # breakpoint()
         SeeChangeBase.delete_from_database(self, session=session, commit=commit, remove_downstreams=remove_downstreams)
 
-        # breakpoint()
         self.remove_data_from_disk(remove_folders=remove_folders, remove_downstreams=remove_downstreams)
 
-        # breakpoint()
         if archive:
             self.delete_from_archive(remove_downstreams=remove_downstreams)
-
 
         # make sure these are set to null just in case we fail
         # to commit later on, we will at least know something is wrong

@@ -1284,6 +1284,7 @@ class DataStore:
             provenance = self._get_provenance_for_an_upstream(process_name, session)
 
         if self.cutouts is not None:
+            self.cutouts.load_all_co_data()
             if self.cutouts.co_dict == {}:
                 self.cutouts = None  # TODO: what about images that actually don't have any detections?
 

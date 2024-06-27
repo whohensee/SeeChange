@@ -57,7 +57,7 @@ def test_make_save_load_cutouts(decam_detection_list, cutter):
         c2 = Cutouts()
         c2.filepath = ds.cutouts.filepath
         c2.sources = ds.cutouts.sources  # necessary for co_dict
-        c2.load() # explicitly load co_dict
+        c2.load_all_co_data() # explicitly load co_dict
 
         co_subdict2 = c2.co_dict[subdict_key]
 
@@ -85,6 +85,7 @@ def test_make_save_load_cutouts(decam_detection_list, cutter):
             ds.cutouts = session.merge(ds.cutouts)
             session.commit() # QUESTION: does this necessitate cleanup in the finally block?
 
+        ds.cutouts.load_all_co_data()  # need to re-load after merge
         assert ds.cutouts is not None
         assert len(ds.cutouts.co_dict) > 0
 
@@ -96,6 +97,7 @@ def test_make_save_load_cutouts(decam_detection_list, cutter):
             loaded_cutouts = loaded_cutouts[0]
 
             # make sure data is correct
+            loaded_cutouts.load_all_co_data()
             co_subdict = loaded_cutouts.co_dict[subdict_key]
             for im in ['sub', 'ref', 'new']:
                 for att in ['data', 'weight', 'flags']:

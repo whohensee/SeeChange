@@ -198,6 +198,8 @@ class Measurer:
                     raise ValueError(f'Cannot find a source list corresponding to the datastore inputs: {ds.get_inputs()}')
 
                 cutouts = ds.get_cutouts(session=session)
+                if cutouts is not None:
+                    cutouts.load_all_co_data()
 
                 # prepare the filter bank for this batch of cutouts
                 if self._filter_psf_fwhm is None or self._filter_psf_fwhm != cutouts.sources.image.get_psf().fwhm_pixels:
@@ -205,7 +207,7 @@ class Measurer:
 
                 # go over each cutouts object and produce a measurements object
                 measurements_list = []
-                for key, co_dict in cutouts.co_dict.items():
+                for key, co_subdict in cutouts.co_dict.items():
                     m = Measurements(cutouts=cutouts)
                     # make sure to remember which cutout belongs to this measurement,
                     # before either of them is in the DB and then use the cutouts_id instead
@@ -231,7 +233,7 @@ class Measurer:
                         ignore_bits |= 2 ** BitFlagConverter.convert(badness)
 
                     # remove the bad pixels that we want to ignore
-                    flags = co_dict['sub_flags'].astype('uint16') & ~np.array(ignore_bits).astype('uint16')
+                    flags = co_subdict['sub_flags'].astype('uint16') & ~np.array(ignore_bits).astype('uint16')
 
                     annulus_radii_pixels = self.pars.annulus_radii
                     if self.pars.annulus_units == 'fwhm':
@@ -240,8 +242,8 @@ class Measurer:
 
                     # TODO: consider if there are any additional parameters that photometry needs
                     output = iterative_cutouts_photometry(
-                        co_dict['sub_data'],
-                        co_dict['sub_weight'],
+                        co_subdict['sub_data'],
+                        co_subdict['sub_weight'],
                         flags,
                         radii=m.aper_radii,
                         annulus=annulus_radii_pixels,

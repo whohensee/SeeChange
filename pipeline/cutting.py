@@ -74,6 +74,8 @@ class Cutter:
 
             # try to find some measurements in memory or in the database:
             cutouts = ds.get_cutouts(prov, session=session)
+            if cutouts is not None:
+                cutouts.load_all_co_data()
 
             if cutouts is None or cutouts.co_dict == {}:
 
