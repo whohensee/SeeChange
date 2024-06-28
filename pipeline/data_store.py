@@ -389,11 +389,8 @@ class DataStore:
             if key == 'detections' and not isinstance(value, SourceList):
                 raise ValueError(f'detections must be a SourceList object, got {type(value)}')
 
-            if key == 'cutouts' and not isinstance(value, list):
-                raise ValueError(f'cutouts must be a list of Cutout objects, got {type(value)}')
-
-            if key == 'cutouts' and not all([isinstance(c, Cutouts) for c in value]):
-                raise ValueError(f'cutouts must be a list of Cutouts objects, got list with {[type(c) for c in value]}')
+            if key == 'cutouts' and not isinstance(value, Cutouts):
+                raise ValueError(f'cutouts must be a Cutouts object, got {type(value)}')
 
             if key == 'measurements' and not isinstance(value, list):
                 raise ValueError(f'measurements must be a list of Measurements objects, got {type(value)}')
@@ -1285,16 +1282,16 @@ class DataStore:
         if provenance is None:  # try to get the provenance from the prov_tree
             provenance = self._get_provenance_for_an_upstream(process_name, session)
 
-        # not in memory, look for it on the DB
         if self.cutouts is not None:
-            if len(self.cutouts) == 0:
+            self.cutouts.load_all_co_data()
+            if len(self.cutouts.co_dict) == 0:
                 self.cutouts = None  # TODO: what about images that actually don't have any detections?
 
             # make sure the cutouts have the correct provenance
             if self.cutouts is not None:
-                if self.cutouts[0].provenance is None:
+                if self.cutouts.provenance is None:
                     raise ValueError('Cutouts have no provenance!')
-                if provenance is not None and provenance.id != self.cutouts[0].provenance.id:
+                if provenance is not None and provenance.id != self.cutouts.provenance.id:
                     self.cutouts = None
 
         # not in memory, look for it on the DB
@@ -1316,7 +1313,7 @@ class DataStore:
                         Cutouts.sources_id == sub_image.sources.id,
                         Cutouts.provenance_id == provenance.id,
                     )
-                ).all()
+                ).first()
 
         return self.cutouts
 
@@ -1360,11 +1357,10 @@ class DataStore:
         if self.measurements is None:
             with SmartSession(session, self.session) as session:
                 cutouts = self.get_cutouts(session=session)
-                cutout_ids = [c.id for c in cutouts]
 
                 self.measurements = session.scalars(
                     sa.select(Measurements).where(
-                        Measurements.cutouts_id.in_(cutout_ids),
+                        Measurements.cutouts_id == cutouts.id,
                         Measurements.provenance_id == provenance.id,
                     )
                 ).all()
@@ -1485,11 +1481,6 @@ class DataStore:
             if obj is None:
                 continue
 
-            if isinstance(obj, list) and len(obj) > 0:  # handle cutouts and measurements
-                if hasattr(obj[0], 'save_list'):
-                    obj[0].save_list(obj, overwrite=overwrite, exists_ok=exists_ok, no_archive=no_archive)
-                continue
-
             SCLogger.debug( f'save_and_commit considering a {obj.__class__.__name__} with filepath '
                             f'{obj.filepath if isinstance(obj,FileOnDiskMixin) else "<none>"}' )
 
@@ -1569,19 +1560,14 @@ class DataStore:
             if self.detections is not None:
                 more_products = 'detections'
                 if self.cutouts is not None:
-                    if self.measurements is not None:  # keep track of which cutouts goes to which measurements
-                        for m in self.measurements:
-                            idx = [c.index_in_sources for c in self.cutouts].index(m.cutouts.index_in_sources)
-                            m._cutouts_list_index = idx
-                    for cutout in self.cutouts:
-                        cutout.sources = self.detections
-                    self.cutouts = Cutouts.merge_list(self.cutouts, session)
+                    self.cutouts.sources = self.detections
+                    self.cutouts = session.merge(self.cutouts)
                     more_products += ', cutouts'
 
                 if self.measurements is not None:
                     for i, m in enumerate(self.measurements):
                         # use the new, merged cutouts
-                        self.measurements[i].cutouts = self.measurements[i].find_cutouts_in_list(self.cutouts)
+                        self.measurements[i].cutouts = self.cutouts
                         self.measurements[i].associate_object(session)
                         self.measurements[i] = session.merge(self.measurements[i])
                         self.measurements[i].object.measurements.append(self.measurements[i])

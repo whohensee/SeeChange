@@ -410,8 +410,8 @@ bg_badness_dict = {
 bg_badness_inverse = {EnumConverter.c(v): k for k, v in bg_badness_dict.items()}
 
 
-# these are the ways a Cutouts object is allowed to be bad
-cutouts_badness_dict = {
+# these are the ways a Measurements object is allowed to be bad
+measurements_badness_dict = {
     41: 'cosmic ray',
     42: 'ghost',
     43: 'satellite',
@@ -419,13 +419,13 @@ cutouts_badness_dict = {
     45: 'bad pixel',
     46: 'bleed trail',
 }
-cutouts_badness_inverse = {EnumConverter.c(v): k for k, v in cutouts_badness_dict.items()}
+measurements_badness_inverse = {EnumConverter.c(v): k for k, v in measurements_badness_dict.items()}
 
 
 # join the badness:
 data_badness_dict = {}
 data_badness_dict.update(image_badness_dict)
-data_badness_dict.update(cutouts_badness_dict)
+data_badness_dict.update(measurements_badness_dict)
 data_badness_dict.update(source_list_badness_dict)
 data_badness_dict.update(psf_badness_dict)
 data_badness_dict.update(bg_badness_dict)

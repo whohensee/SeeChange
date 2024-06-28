@@ -119,21 +119,19 @@ def check_datastore_and_database_have_everything(exp_id, sec_id, ref_id, session
     assert det is not None
     assert ds.detections.id == det.id
 
-    # find the Cutouts list
+    # find the Cutouts
     cutouts = session.scalars(
         sa.select(Cutouts).where(
             Cutouts.sources_id == det.id,
-            Cutouts.provenance_id == ds.cutouts[0].provenance_id,
+            Cutouts.provenance_id == ds.cutouts.provenance_id,
         )
-    ).all()
-    assert len(cutouts) > 0
-    assert len(ds.cutouts) == len(cutouts)
-    assert set([c.id for c in ds.cutouts]) == set([c.id for c in cutouts])
+    ).first()
+    assert ds.cutouts.id == cutouts.id
 
     # Measurements
     measurements = session.scalars(
         sa.select(Measurements).where(
-            Measurements.cutouts_id.in_([c.id for c in cutouts]),
+            Measurements.cutouts_id == cutouts.id,
             Measurements.provenance_id == ds.measurements[0].provenance_id,
         )
     ).all()
@@ -302,8 +300,7 @@ def test_bitflag_propagation(decam_exposure, decam_reference, decam_default_cali
         assert ds.zp._upstream_bitflag == 2
         assert ds.sub_image._upstream_bitflag == 2
         assert ds.detections._upstream_bitflag == 2
-        for cutout in ds.cutouts:   # cutouts is a list of cutout objects
-            assert cutout._upstream_bitflag == 2
+        assert ds.cutouts._upstream_bitflag == 2
 
         # test part 2: Add a second bitflag partway through and check it propagates to downstreams
 
@@ -325,9 +322,10 @@ def test_bitflag_propagation(decam_exposure, decam_reference, decam_default_cali
         assert ds.zp._upstream_bitflag == desired_bitflag
         assert ds.sub_image._upstream_bitflag == desired_bitflag
         assert ds.detections._upstream_bitflag == desired_bitflag
-        for cutout in ds.cutouts:
-            assert cutout._upstream_bitflag == desired_bitflag
-        assert ds.image.bitflag == 2  # not in the downstream of sources
+        assert ds.cutouts._upstream_bitflag == desired_bitflag
+        for m in ds.measurements:
+            assert m._upstream_bitflag == desired_bitflag
+        assert ds.image.bitflag == 2 # not in the downstream of sources
 
         # test part 3: test update_downstream_badness() function by adding and removing flags
         # and observing propagation
@@ -354,8 +352,9 @@ def test_bitflag_propagation(decam_exposure, decam_reference, decam_default_cali
             assert ds.zp.bitflag == desired_bitflag
             assert ds.sub_image.bitflag == desired_bitflag
             assert ds.detections.bitflag == desired_bitflag
-            for cutout in ds.cutouts:
-                assert cutout.bitflag == desired_bitflag
+            assert ds.cutouts.bitflag == desired_bitflag
+            for m in ds.measurements:
+                assert m.bitflag == desired_bitflag
 
             # remove the bitflag and check that it disappears in downstreams
             ds.image._bitflag = 0  # remove 'bad subtraction'
@@ -371,8 +370,9 @@ def test_bitflag_propagation(decam_exposure, decam_reference, decam_default_cali
             assert ds.zp.bitflag == desired_bitflag
             assert ds.sub_image.bitflag == desired_bitflag
             assert ds.detections.bitflag == desired_bitflag
-            for cutout in ds.cutouts:
-                assert cutout.bitflag == desired_bitflag
+            assert ds.cutouts.bitflag == desired_bitflag
+            for m in ds.measurements:
+                assert m.bitflag == desired_bitflag
 
     finally:
         if 'ds' in locals():
@@ -425,14 +425,10 @@ def test_get_upstreams_and_downstreams(decam_exposure, decam_reference, decam_de
                 ds.zp.id,
             ])
             assert [upstream.id for upstream in ds.detections.get_upstreams(session)] == [ds.sub_image.id]
-            for cutout in ds.cutouts:
-                assert [upstream.id for upstream in cutout.get_upstreams(session)] == [ds.detections.id]
-            #  measurements are a challenge to make sure the *right* measurement is with the right cutout
-            # for the time being, check that the measurements upstream is one of the cutouts
-            cutout_ids = np.unique([cutout.id for cutout in ds.cutouts])
+            assert [upstream.id for upstream in ds.cutouts.get_upstreams(session)] == [ds.detections.id]
+
             for measurement in ds.measurements:
-                m_upstream_ids =  np.array([upstream.id for upstream in measurement.get_upstreams(session)])
-                assert np.all(np.isin(m_upstream_ids, cutout_ids))
+                assert [upstream.id for upstream in measurement.get_upstreams(session)] == [ds.cutouts.id]
 
             # test get_downstreams
             assert [downstream.id for downstream in ds.exposure.get_downstreams(session)] == [ds.image.id]
@@ -449,14 +445,9 @@ def test_get_upstreams_and_downstreams(decam_exposure, decam_reference, decam_de
             assert [downstream.id for downstream in ds.wcs.get_downstreams(session)] == [ds.sub_image.id]
             assert [downstream.id for downstream in ds.zp.get_downstreams(session)] == [ds.sub_image.id]
             assert [downstream.id for downstream in ds.sub_image.get_downstreams(session)] == [ds.detections.id]
-            assert np.all(np.isin([downstream.id for downstream in ds.detections.get_downstreams(session)], cutout_ids))
-            # basic test: check the downstreams of cutouts is one of the measurements
-            measurement_ids = np.unique([measurement.id for measurement in ds.measurements])
-            for cutout in ds.cutouts:
-                c_downstream_ids = [downstream.id for downstream in cutout.get_downstreams(session)]
-                assert np.all(np.isin(c_downstream_ids, measurement_ids))
-            for measurement in ds.measurements:
-                assert [downstream.id for downstream in measurement.get_downstreams(session)] == []
+            assert [downstream.id for downstream in ds.detections.get_downstreams(session)] == [ds.cutouts.id]
+            measurement_ids = set([measurement.id for measurement in ds.measurements])
+            assert set([downstream.id for downstream in ds.cutouts.get_downstreams(session)]) == measurement_ids
 
     finally:
         if 'ds' in locals():
@@ -478,8 +469,8 @@ def test_datastore_delete_everything(decam_datastore):
     sub_paths = sub.get_fullpath(as_list=True)
     det = decam_datastore.detections
     det_path = det.get_fullpath()
-    cutouts_list = decam_datastore.cutouts
-    cutouts_file_path = cutouts_list[0].get_fullpath()
+    cutouts = decam_datastore.cutouts
+    cutouts_file_path = cutouts.get_fullpath()
     measurements_list = decam_datastore.measurements
 
     # make sure we can delete everything
@@ -508,7 +499,7 @@ def test_datastore_delete_everything(decam_datastore):
         assert session.scalars(sa.select(PSF).where(PSF.id == psf.id)).first() is None
         assert session.scalars(sa.select(Image).where(Image.id == sub.id)).first() is None
         assert session.scalars(sa.select(SourceList).where(SourceList.id == det.id)).first() is None
-        assert session.scalars(sa.select(Cutouts).where(Cutouts.id == cutouts_list[0].id)).first() is None
+        assert session.scalars(sa.select(Cutouts).where(Cutouts.id == cutouts.id)).first() is None
         if len(measurements_list) > 0:
             assert session.scalars(
                 sa.select(Measurements).where(Measurements.id == measurements_list[0].id)
@@ -531,7 +522,7 @@ def test_provenance_tree(pipeline_for_tests, decam_exposure, decam_datastore, de
     assert ds.zp.provenance_id == provs['extraction'].id
     assert ds.sub_image.provenance_id == provs['subtraction'].id
     assert ds.detections.provenance_id == provs['detection'].id
-    assert ds.cutouts[0].provenance_id == provs['cutting'].id
+    assert ds.cutouts.provenance_id == provs['cutting'].id
     assert ds.measurements[0].provenance_id == provs['measuring'].id
 
     with SmartSession() as session:

@@ -607,7 +607,7 @@ def sim_sub_image_list(
 
             ds = cutter.run(sub.sources)
             sub.sources.cutouts = ds.cutouts
-            Cutouts.save_list(ds.cutouts)
+            ds.cutouts.save()
 
             sub = sub.merge_all(session)
             ds.detections = sub.sources
