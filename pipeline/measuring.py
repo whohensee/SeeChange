@@ -212,8 +212,8 @@ class Measurer:
 
                     m.best_aperture = cutouts.sources.best_aper_num
 
-                    m.x = cutouts.sources.x[m.index_in_sources]  # These will be rounded by Measurements.__setattr__
-                    m.y = cutouts.sources.y[m.index_in_sources]
+                    m.center_x_pixel = cutouts.sources.x[m.index_in_sources]  # These will be rounded by Measurements.__setattr__
+                    m.center_y_pixel = cutouts.sources.y[m.index_in_sources]
 
                     m.aper_radii = cutouts.sources.image.new_image.zp.aper_cor_radii  # zero point corrected aperture radii
 
@@ -253,8 +253,8 @@ class Measurer:
                     m.position_angle = output['angle']
 
                     # update the coordinates using the centroid offsets
-                    x = m.x + m.offset_x
-                    y = m.y + m.offset_y
+                    x = m.center_x_pixel + m.offset_x
+                    y = m.center_y_pixel + m.offset_y
                     ra, dec = m.cutouts.sources.image.new_image.wcs.wcs.pixel_to_world_values(x, y)
                     m.ra = float(ra)
                     m.dec = float(dec)

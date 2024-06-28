@@ -198,7 +198,7 @@ class Measurements(Base, AutoIDMixin, SpatiallyIndexed, HasBitFlagBadness):
 
     @property
     def psf(self):
-        return self.sources.image.get_psf().get_clip(x=self.x, y=self.y)
+        return self.sources.image.get_psf().get_clip(x=self.center_x_pixel, y=self.center_y_pixel)
 
     @property
     def pixel_scale(self):
@@ -253,16 +253,18 @@ class Measurements(Base, AutoIDMixin, SpatiallyIndexed, HasBitFlagBadness):
         doc="Areas of the apertures used for calculating flux. Remove a * background from the flux measurement. "
     )
 
-    x = sa.Column(
+    center_x_pixel = sa.Column(
         sa.Integer,
         nullable=False,
-        doc="X pixel coordinate of the center of the cutout. "
+        doc="X pixel coordinate of the center of the cutout (in the full image coordinates),"
+            "rounded to nearest integer pixel. "
     )
 
-    y = sa.Column(
+    center_y_pixel = sa.Column(
         sa.Integer,
         nullable=False,
-        doc="Y pixel coordinate of the center of the cutout. "
+        doc="Y pixel coordinate of the center of the cutout (in the full image coordinates),"
+            "rounded to nearest integer pixel. "
     )
 
     offset_x = sa.Column(
@@ -386,14 +388,14 @@ class Measurements(Base, AutoIDMixin, SpatiallyIndexed, HasBitFlagBadness):
             f"from SourceList {self.cutouts.sources_id} "
             f"(number {self.index_in_sources}) "
             f"from Image {self.cutouts.sub_image_id} "
-            f"at x,y= {self.x}, {self.y}>"
+            f"at x,y= {self.center_x_pixel}, {self.center_y_pixel}>"
         )
 
     def __setattr__(self, key, value):
         if key in ['flux_apertures', 'flux_apertures_err', 'aper_radii']:
             value = np.array(value)
 
-        if key in ['x', 'y'] and value is not None:
+        if key in ['center_x_pixel', 'center_y_pixel'] and value is not None:
             value = int(round(value)) # improc/tools::make_cutouts uses np.round()
                                       # should I change to match?
 
@@ -532,8 +534,8 @@ class Measurements(Base, AutoIDMixin, SpatiallyIndexed, HasBitFlagBadness):
         image_pixel_x = wcs.world_to_pixel_values(ra, dec)[0]
         image_pixel_y = wcs.world_to_pixel_values(ra, dec)[1]
 
-        offset_x = image_pixel_x - self.x
-        offset_y = image_pixel_y - self.y
+        offset_x = image_pixel_x - self.center_x_pixel
+        offset_y = image_pixel_y - self.center_y_pixel
 
         if abs(offset_x) > im.shape[1] / 2 or abs(offset_y) > im.shape[0] / 2:
             return np.nan, np.nan, np.nan  # quietly return NaNs for large offsets, they will fail the cuts anyway...
