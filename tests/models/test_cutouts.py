@@ -12,7 +12,6 @@ from models.cutouts import Cutouts
 
 def test_make_save_load_cutouts(decam_detection_list, cutter):
     try:
-        # blabla
         cutter.pars.test_parameter = uuid.uuid4().hex
         ds = cutter.run(decam_detection_list)
 

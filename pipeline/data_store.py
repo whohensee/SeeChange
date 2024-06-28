@@ -1481,14 +1481,6 @@ class DataStore:
             if obj is None:
                 continue
 
-            # QUESTION: This whole block can never be reached, as cutouts is not a list and measurements
-            # don't save to disk. I want to kill it all. Objections?
-            if isinstance(obj, list) and len(obj) > 0:  # handle cutouts and measurements
-                if hasattr(obj[0], 'save_list'):
-                    raise ValueError("AFTER CUTOUTS IS NO LONGER A LIST, SHOULD NEVER GET HERE!")
-                    obj[0].save_list(obj, overwrite=overwrite, exists_ok=exists_ok, no_archive=no_archive)
-                continue
-
             SCLogger.debug( f'save_and_commit considering a {obj.__class__.__name__} with filepath '
                             f'{obj.filepath if isinstance(obj,FileOnDiskMixin) else "<none>"}' )
 

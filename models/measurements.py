@@ -20,8 +20,6 @@ class Measurements(Base, AutoIDMixin, SpatiallyIndexed, HasBitFlagBadness):
     __tablename__ = 'measurements'
 
     __table_args__ = (
-        # At first I just removed this constraint, but I THINK
-        # adding index_in_sources keeps the intent of uniqueness
         UniqueConstraint('cutouts_id', 'index_in_sources', 'provenance_id', name='_measurements_cutouts_provenance_uc'),
         sa.Index("ix_measurements_scores_gin", "disqualifier_scores", postgresql_using="gin"),
     )
@@ -382,10 +380,6 @@ class Measurements(Base, AutoIDMixin, SpatiallyIndexed, HasBitFlagBadness):
         self._new_weight = None
         self._new_flags = None
 
-        # self.calculate_coordinates()  # should already be loaded from a column I think?
-
-        # does this reconstructor look okay?
-
     def __repr__(self):
         return (
             f"<Measurements {self.id} "
@@ -618,7 +612,7 @@ class Measurements(Base, AutoIDMixin, SpatiallyIndexed, HasBitFlagBadness):
             if commit:
                 session.commit()
 
-# use these two functions to quickly add the "property" accessor methods
+# use these three functions to quickly add the "property" accessor methods
 def load_attribute(object, att):
     """Load the data for a given attribute of the object. Load from Cutouts, but
     if the data needs to be loaded from disk, ONLY load the subdict that contains

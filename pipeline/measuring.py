@@ -158,7 +158,6 @@ class Measurer:
         """
         self.has_recalculated = False
         try:  # first make sure we get back a datastore, even an empty one
-            # can no longer receive a list, just a single Cutouts
             if isinstance(args[0], Cutouts):
                 args, kwargs, session = parse_session(*args, **kwargs)
                 ds = DataStore()
@@ -209,9 +208,8 @@ class Measurer:
                 measurements_list = []
                 for key, co_subdict in cutouts.co_dict.items():
                     m = Measurements(cutouts=cutouts)
-                    # make sure to remember which cutout belongs to this measurement,
-                    # before either of them is in the DB and then use the cutouts_id instead
                     m.index_in_sources = int(key[13:]) # grab just the number from "source_index_xxx"
+
                     m.best_aperture = cutouts.sources.best_aper_num
 
                     m.x = cutouts.sources.x[m.index_in_sources]  # These will be rounded by Measurements.__setattr__

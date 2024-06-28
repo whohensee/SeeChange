@@ -201,6 +201,15 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
         return names
 
     def load_all_co_data(self):
+        """Intended method for a Cutouts object to ensure that the data for all
+        sources is loaded into its co_dict attribute. Will only actually load
+        from disk if any subdictionaries (one per source in SourceList) are missing.
+
+        Should be used before, for example, iterating over the dictionary as in
+        the creation of Measurements objects. Not necessary for accessing
+        individual subdictionaries however, because the Co_Dict class can lazy
+        load those as they are requested (eg. co_dict["source_index_0"]).
+        """
         if self.sources.num_sources is None:
             raise ValueError("The detections of this cutouts has no num_sources attr")
         proper_length = self.sources.num_sources
@@ -234,8 +243,6 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
         cutout = Cutouts()
         cutout.sources = detections
         cutout.provenance = provenance
-        # cutout.provenance_id = provenance.id # I couldn't find this being set anywhere else?
-                                               # but I don't know where it is being set
 
         # update the bitflag
         cutout._upstream_bitflag = detections.bitflag
@@ -400,6 +407,7 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
         if os.path.exists(filepath): # WHPR revisit this check... necessary?
             if self.format == 'hdf5':
                 with h5py.File(filepath, 'r') as file:
+                    # quirk: the resulting dict is sorted alphabetically... likely harmless
                     for groupname in file:
                         self.co_dict[groupname] = self._load_dataset_dict_from_hdf5(file, groupname)
 
