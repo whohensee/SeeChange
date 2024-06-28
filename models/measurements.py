@@ -396,8 +396,7 @@ class Measurements(Base, AutoIDMixin, SpatiallyIndexed, HasBitFlagBadness):
             value = np.array(value)
 
         if key in ['center_x_pixel', 'center_y_pixel'] and value is not None:
-            value = int(round(value)) # improc/tools::make_cutouts uses np.round()
-                                      # should I change to match?
+            value = int(np.round(value))
 
         super().__setattr__(key, value)
 

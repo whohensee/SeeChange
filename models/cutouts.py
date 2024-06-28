@@ -349,7 +349,6 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
         # make sure to also save using the FileOnDiskMixin method
         FileOnDiskMixin.save(self, fullname, overwrite=overwrite, **kwargs)
 
-    # WHPR this might be able to become a class method... Is that better?
     def _load_dataset_dict_from_hdf5(self, file, groupname):
         """Load the dataset from an HDF5 group into one co_subdict and return.
 
@@ -404,7 +403,7 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
         self.co_dict = Co_Dict()
         self.co_dict.cutouts = self
 
-        if os.path.exists(filepath): # WHPR revisit this check... necessary?
+        if os.path.exists(filepath):
             if self.format == 'hdf5':
                 with h5py.File(filepath, 'r') as file:
                     # quirk: the resulting dict is sorted alphabetically... likely harmless
