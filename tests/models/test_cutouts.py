@@ -10,6 +10,7 @@ import sqlalchemy as sa
 from models.base import SmartSession
 from models.cutouts import Cutouts
 
+
 def test_make_save_load_cutouts(decam_detection_list, cutter):
     try:
         cutter.pars.test_parameter = uuid.uuid4().hex
@@ -51,12 +52,11 @@ def test_make_save_load_cutouts(decam_detection_list, cutter):
                     assert np.array_equal(co_subdict.get(f'{im}_{att}'),
                                           file[subdict_key][f'{im}_{att}'])
 
-
         # load a cutouts from file and compare
         c2 = Cutouts()
         c2.filepath = ds.cutouts.filepath
         c2.sources = ds.cutouts.sources  # necessary for co_dict
-        c2.load_all_co_data() # explicitly load co_dict
+        c2.load_all_co_data()  # explicitly load co_dict
 
         co_subdict2 = c2.co_dict[subdict_key]
 
@@ -65,11 +65,11 @@ def test_make_save_load_cutouts(decam_detection_list, cutter):
                 assert np.array_equal(co_subdict.get(f'{im}_{att}'),
                                         co_subdict2.get(f'{im}_{att}'))
 
-        assert c2.bitflag == 0 # should not load all column data from file
+        assert c2.bitflag == 0  # should not load all column data from file
 
         # change the value of one of the arrays
         ds.cutouts.co_dict[subdict_key]['sub_data'][0, 0] = 100
-        co_subdict2['sub_data'][0, 0] = 100 # for comparison later
+        co_subdict2['sub_data'][0, 0] = 100  # for comparison later
 
         # make sure we can re-save
         ds.cutouts.save()
@@ -77,7 +77,7 @@ def test_make_save_load_cutouts(decam_detection_list, cutter):
         with h5py.File(ds.cutouts.get_fullpath(), 'r') as file:
             assert np.array_equal(ds.cutouts.co_dict[subdict_key]['sub_data'],
                                 file[subdict_key]['sub_data'])
-            assert file[subdict_key]['sub_data'][0, 0] == 100 # change has propagated
+            assert file[subdict_key]['sub_data'][0, 0] == 100  # change has propagated
 
         # check that we can add the cutouts to the database
         with SmartSession() as session:
@@ -102,7 +102,6 @@ def test_make_save_load_cutouts(decam_detection_list, cutter):
                 for att in ['data', 'weight', 'flags']:
                     assert np.array_equal(co_subdict.get(f'{im}_{att}'),
                                             co_subdict2.get(f'{im}_{att}'))
-
 
     finally:
         if 'ds' in locals() and ds.cutouts is not None:

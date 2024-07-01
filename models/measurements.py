@@ -562,9 +562,14 @@ class Measurements(Base, AutoIDMixin, SpatiallyIndexed, HasBitFlagBadness):
             mask = np.zeros_like(im, dtype=float)
             mask[start_y:end_y, start_x:end_x] = psf_clip[start_y + dy:end_y + dy, start_x + dx:end_x + dx]
             mask[np.isnan(im)] = 0  # exclude bad pixels from the mask
-            flux = np.nansum(im * mask) / np.nansum(mask ** 2)
-            fluxerr = self.bkg_std / np.sqrt(np.nansum(mask ** 2))
-            area = np.nansum(mask) / (np.nansum(mask ** 2))
+
+            mask_sum = np.nansum(mask ** 2)
+            if mask_sum > 0:
+                flux = np.nansum(im * mask) / np.nansum(mask ** 2)
+                fluxerr = self.bkg_std / np.sqrt(np.nansum(mask ** 2))
+                area = np.nansum(mask) / (np.nansum(mask ** 2))
+            else:
+                flux = fluxerr = area = np.nan
         else:
             radius = self.aper_radii[aperture]
             # get the aperture mask

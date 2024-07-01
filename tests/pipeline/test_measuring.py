@@ -9,6 +9,8 @@ from models.base import SmartSession
 
 from improc.tools import make_gaussian
 
+from tests.conftest import SKIP_WARNING_TESTS
+
 
 @pytest.mark.flaky(max_runs=3)
 def test_measuring(measurer, decam_cutouts, decam_default_calibrators):
@@ -219,12 +221,13 @@ def test_measuring(measurer, decam_cutouts, decam_default_calibrators):
 
 
 def test_warnings_and_exceptions(decam_datastore, measurer):
-    measurer.pars.inject_warnings = 1
+    if not SKIP_WARNING_TESTS:
+        measurer.pars.inject_warnings = 1
 
-    with pytest.warns(UserWarning) as record:
-        measurer.run(decam_datastore)
-    assert len(record) > 0
-    assert any("Warning injected by pipeline parameters in process 'measuring'." in str(w.message) for w in record)
+        with pytest.warns(UserWarning) as record:
+            measurer.run(decam_datastore)
+        assert len(record) > 0
+        assert any("Warning injected by pipeline parameters in process 'measuring'." in str(w.message) for w in record)
 
     measurer.pars.inject_exceptions = 1
     measurer.pars.inject_warnings = 0

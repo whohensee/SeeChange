@@ -280,7 +280,7 @@ def sim_reference(provenance_preprocessing, provenance_extra):
         ref.image = ref_image
         ref.provenance = Provenance(
             code_version=provenance_extra.code_version,
-            process='reference',
+            process='referencing',
             parameters={'test_parameter': 'test_value'},
             upstreams=[provenance_extra],
             is_testing=True,

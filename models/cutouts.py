@@ -42,6 +42,7 @@ class Co_Dict(dict):
                 self.cutouts.load_one_co_dict(key) # no change if not found
         return super().__getitem__(key)
 
+
 class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
 
     __tablename__ = 'cutouts'

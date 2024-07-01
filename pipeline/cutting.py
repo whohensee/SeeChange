@@ -1,4 +1,3 @@
-import os
 import time
 
 from improc.tools import make_cutouts
@@ -9,7 +8,7 @@ from models.cutouts import Cutouts
 from pipeline.parameters import Parameters
 from pipeline.data_store import DataStore
 
-from util.util import parse_session, parse_bool
+from util.util import parse_session, env_as_bool
 
 
 class ParsCutter(Parameters):
@@ -63,7 +62,7 @@ class Cutter:
 
         try:
             t_start = time.perf_counter()
-            if parse_bool(os.getenv('SEECHANGE_TRACEMALLOC')):
+            if env_as_bool('SEECHANGE_TRACEMALLOC'):
                 import tracemalloc
                 tracemalloc.reset_peak()  # start accounting for the peak memory usage from here
 
@@ -72,24 +71,21 @@ class Cutter:
             # get the provenance for this step:
             prov = ds.get_provenance('cutting', self.pars.get_critical_pars(), session=session)
 
-            # try to find some measurements in memory or in the database:
+            detections = ds.get_detections(session=session)
+            if detections is None:
+                raise ValueError(
+                    f'Cannot find a detections source list corresponding to the datastore inputs: {ds.get_inputs()}'
+                )
+
+            # try to find some cutouts in memory or in the database:
             cutouts = ds.get_cutouts(prov, session=session)
+
             if cutouts is not None:
                 cutouts.load_all_co_data()
 
             if cutouts is None or len(cutouts.co_dict) == 0:
-
                 self.has_recalculated = True
-                # use the latest source list in the data store,
-                # or load using the provenance given in the
-                # data store's upstream_provs, or just use
-                # the most recent provenance for "detection"
-                detections = ds.get_detections(session=session)
-
-                if detections is None:
-                    raise ValueError(
-                        f'Cannot find a source list corresponding to the datastore inputs: {ds.get_inputs()}'
-                    )
+                # find detections in order to get the cutouts
 
                 x = detections.x
                 y = detections.y
@@ -116,9 +112,6 @@ class Cutter:
 
                 cutouts = Cutouts.from_detections(detections, provenance=prov)
 
-                cutouts._upstream_bitflag = 0
-                cutouts._upstream_bitflag |= detections.bitflag
-
                 for i, source in enumerate(detections.data):
                     data_dict = {}
                     data_dict["sub_data"] = sub_stamps_data[i]
@@ -138,6 +131,9 @@ class Cutter:
                     data_dict["new_flags"] = new_stamps_flags[i]
                     cutouts.co_dict[f"source_index_{i}"] = data_dict
 
+            # regardless of whether we loaded or calculated the cutouts, we need to update the bitflag
+            cutouts._upstream_bitflag = 0
+            cutouts._upstream_bitflag |= detections.bitflag
 
             # add the resulting Cutouts to the data store
             if cutouts.provenance is None:
@@ -152,7 +148,7 @@ class Cutter:
             ds.cutouts = cutouts
 
             ds.runtimes['cutting'] = time.perf_counter() - t_start
-            if parse_bool(os.getenv('SEECHANGE_TRACEMALLOC')):
+            if env_as_bool('SEECHANGE_TRACEMALLOC'):
                 import tracemalloc
                 ds.memory_usages['cutting'] = tracemalloc.get_traced_memory()[1] / 1024 ** 2  # in MB
 

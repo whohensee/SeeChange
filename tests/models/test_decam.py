@@ -6,7 +6,6 @@ import hashlib
 import pytest
 
 import numpy as np
-import sqlalchemy as sa
 
 from astropy.io import fits
 
@@ -18,8 +17,10 @@ from models.calibratorfile import CalibratorFile
 from models.image import Image
 from models.instrument import Instrument
 from models.decam import DECam
+
 import util.radec
 from util.logger import SCLogger
+from util.util import env_as_bool
 
 
 def test_decam_exposure(decam_filename):
@@ -118,7 +119,7 @@ def test_image_from_decam_exposure(decam_filename, provenance_base, data_dir):
 # guidance for how to do things, do *not* write code that mucks about
 # with the _frame member of one of those objects; that's internal state
 # not intended for external consumption.
-@pytest.mark.skipif( os.getenv('SKIP_NOIRLAB_DOWNLOADS'), reason="SKIP_NOIRLAB_DOWNLOADS is set" )
+@pytest.mark.skipif( env_as_bool('SKIP_NOIRLAB_DOWNLOADS'), reason="SKIP_NOIRLAB_DOWNLOADS is set" )
 def test_decam_search_noirlab( decam_reduced_origin_exposures ):
     origloglevel = SCLogger.get().getEffectiveLevel()
     try:
@@ -161,7 +162,7 @@ def test_decam_search_noirlab( decam_reduced_origin_exposures ):
         SCLogger.setLevel( origloglevel )
 
 
-@pytest.mark.skipif( os.getenv('SKIP_NOIRLAB_DOWNLOADS'), reason="SKIP_NOIRLAB_DOWNLOADS is set" )
+@pytest.mark.skipif( env_as_bool('SKIP_NOIRLAB_DOWNLOADS'), reason="SKIP_NOIRLAB_DOWNLOADS is set" )
 def test_decam_download_origin_exposure( decam_reduced_origin_exposures, cache_dir ):
     assert all( [ row.proc_type == 'instcal' for i, row in decam_reduced_origin_exposures._frame.iterrows() ] )
     try:
@@ -201,12 +202,14 @@ def test_decam_download_origin_exposure( decam_reduced_origin_exposures, cache_d
                     md5.update( ifp.read() )
                 assert md5.hexdigest() == decam_reduced_origin_exposures._frame.loc[ dex, extname ].md5sum
 
-    finally:
-        # Don't clean up for efficiency of rerunning tests.
-        pass
+    finally:  # cleanup
+        for d in downloaded:
+            for path in d.values():
+                if os.path.isfile( path ):
+                    os.unlink( path )
 
 
-@pytest.mark.skipif( os.getenv('SKIP_NOIRLAB_DOWNLOADS'), reason="SKIP_NOIRLAB_DOWNLOADS is set" )
+@pytest.mark.skipif( env_as_bool('SKIP_NOIRLAB_DOWNLOADS'), reason="SKIP_NOIRLAB_DOWNLOADS is set" )
 def test_decam_download_and_commit_exposure(
         code_version, decam_raw_origin_exposures, cache_dir, data_dir, test_config, archive
 ):
@@ -271,15 +274,11 @@ def test_decam_download_and_commit_exposure(
                     path = os.path.join(data_dir, d['exposure'].name)
                     if os.path.isfile(path):
                         os.unlink(path)
-
-            if 'downloaded' in locals():
-                for d in downloaded:
-                    path = os.path.join(data_dir, d['exposure'].name)
-                    if os.path.isfile(path):
-                        os.unlink(path)
+                    if os.path.isfile(d['exposure']):
+                        os.unlink(d['exposure'])
 
 
-@pytest.mark.skipif( os.getenv('RUN_SLOW_TESTS') is None, reason="Set RUN_SLOW_TESTS to run this test" )
+@pytest.mark.skipif( not env_as_bool('RUN_SLOW_TESTS'), reason="Set RUN_SLOW_TESTS to run this test" )
 def test_get_default_calibrators( decam_default_calibrators ):
     sections, filters = decam_default_calibrators
     decam = get_instrument_instance( 'DECam' )

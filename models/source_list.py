@@ -762,13 +762,15 @@ class SourceList(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
         from models.provenance import Provenance
 
         with SmartSession(session) as session:
-            subs = session.scalars(
-                sa.select(Image).where(
-                    Image.provenance.has(Provenance.upstreams.any(Provenance.id == self.provenance.id)),
-                    Image.upstream_images.any(Image.id == self.image_id),
-                )
-            ).all()
-            output = subs
+            output = []
+            if self.image_id is not None and self.provenance is not None:
+                subs = session.scalars(
+                    sa.select(Image).where(
+                        Image.provenance.has(Provenance.upstreams.any(Provenance.id == self.provenance.id)),
+                        Image.upstream_images.any(Image.id == self.image_id),
+                    )
+                ).all()
+                output += subs
 
             if self.is_sub:
                 cutouts = session.scalars(sa.select(Cutouts).where(Cutouts.sources_id == self.id)).all()

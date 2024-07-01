@@ -1,4 +1,3 @@
-import os
 import time
 import warnings
 import numpy as np
@@ -17,7 +16,7 @@ from models.enums_and_bitflags import BitFlagConverter, BadnessConverter
 from pipeline.parameters import Parameters
 from pipeline.data_store import DataStore
 
-from util.util import parse_session, parse_bool
+from util.util import parse_session, env_as_bool
 
 
 class ParsMeasurer(Parameters):
@@ -172,7 +171,7 @@ class Measurer:
 
         try:
             t_start = time.perf_counter()
-            if parse_bool(os.getenv('SEECHANGE_TRACEMALLOC')):
+            if env_as_bool('SEECHANGE_TRACEMALLOC'):
                 import tracemalloc
                 tracemalloc.reset_peak()  # start accounting for the peak memory usage from here
 
@@ -181,24 +180,22 @@ class Measurer:
             # get the provenance for this step:
             prov = ds.get_provenance('measuring', self.pars.get_critical_pars(), session=session)
 
+            detections = ds.get_detections(session=session)
+            if detections is None:
+                raise ValueError(f'Cannot find a source list corresponding to the datastore inputs: {ds.get_inputs()}')
+
+            cutouts = ds.get_cutouts(session=session)
+            if cutouts is None:
+                raise ValueError(f'Cannot find cutouts corresponding to the datastore inputs: {ds.get_inputs()}')
+            else:
+                cutouts.load_all_co_data()
+
             # try to find some measurements in memory or in the database:
             measurements_list = ds.get_measurements(prov, session=session)
 
             # note that if measurements_list is found, there will not be an all_measurements appended to datastore!
             if measurements_list is None or len(measurements_list) == 0:  # must create a new list of Measurements
                 self.has_recalculated = True
-                # use the latest source list in the data store,
-                # or load using the provenance given in the
-                # data store's upstream_provs, or just use
-                # the most recent provenance for "detection"
-                detections = ds.get_detections(session=session)
-
-                if detections is None:
-                    raise ValueError(f'Cannot find a source list corresponding to the datastore inputs: {ds.get_inputs()}')
-
-                cutouts = ds.get_cutouts(session=session)
-                if cutouts is not None:
-                    cutouts.load_all_co_data()
 
                 # prepare the filter bank for this batch of cutouts
                 if self._filter_psf_fwhm is None or self._filter_psf_fwhm != cutouts.sources.image.get_psf().fwhm_pixels:
@@ -297,7 +294,14 @@ class Measurer:
                     if m.bkg_mean != 0 and m.bkg_std > 0.1:
                         norm_data = (m.sub_nandata - m.bkg_mean) / m.bkg_std  # normalize
                     else:
-                        warnings.warn(f'Background mean= {m.bkg_mean}, std= {m.bkg_std}, normalization skipped!')
+                        # only provide this warning if the offset is within the image
+                        # otherwise, this measurement is never going to pass any cuts
+                        # and we don't want to spam the logs with this warning
+                        if (
+                                abs(m.offset_x) < m.sub_data.shape[1] and
+                                abs(m.offset_y) < m.sub_data.shape[0]
+                        ):
+                            warnings.warn(f'Background mean= {m.bkg_mean}, std= {m.bkg_std}, normalization skipped!')
                         norm_data = m.sub_nandata  # no good background measurement, do not normalize!
 
                     positives = np.sum(norm_data > self.pars.outlier_sigma)
@@ -330,31 +334,35 @@ class Measurer:
 
                     # TODO: add additional disqualifiers
 
-                    m._upstream_bitflag = 0
-                    m._upstream_bitflag |= cutouts.bitflag
-
-                    ignore_bits = 0
-                    for badness in self.pars.bad_flag_exclude:
-                        ignore_bits |= 2 ** BadnessConverter.convert(badness)
-
-                    m.disqualifier_scores['bad_flag'] = np.bitwise_and(
-                        np.array(m.bitflag).astype('uint64'),
-                        ~np.array(ignore_bits).astype('uint64'),
-                    )
-
                     # make sure disqualifier scores don't have any numpy types
                     for k, v in m.disqualifier_scores.items():
                         if isinstance(v, np.number):
                             m.disqualifier_scores[k] = v.item()
 
                     measurements_list.append(m)
+            else:
+                [setattr(m, 'cutouts', cutouts) for m in measurements_list]  # update with newest cutouts
 
-                saved_measurements = []
-                for m in measurements_list:
-                    threshold_comparison = self.compare_measurement_to_thresholds(m)
-                    if threshold_comparison != "delete":  # all disqualifiers are below threshold
-                        m.is_bad = threshold_comparison == "bad"
-                        saved_measurements.append(m)
+            saved_measurements = []
+            for m in measurements_list:
+                # regardless of wether we created these now, or loaded from DB,
+                # the bitflag should be updated based on the most recent data
+                m._upstream_bitflag = 0
+                m._upstream_bitflag |= m.cutouts.bitflag
+
+                ignore_bits = 0
+                for badness in self.pars.bad_flag_exclude:
+                    ignore_bits |= 2 ** BadnessConverter.convert(badness)
+
+                m.disqualifier_scores['bad_flag'] = int(np.bitwise_and(
+                    np.array(m.bitflag).astype('uint64'),
+                    ~np.array(ignore_bits).astype('uint64'),
+                ))
+
+                threshold_comparison = self.compare_measurement_to_thresholds(m)
+                if threshold_comparison != "delete":  # all disqualifiers are below threshold
+                    m.is_bad = threshold_comparison == "bad"
+                    saved_measurements.append(m)
 
                 # add the resulting measurements to the data store
                 ds.all_measurements = measurements_list  # debugging only
@@ -363,7 +371,7 @@ class Measurer:
                 ds.sub_image.measurements = saved_measurements
 
             ds.runtimes['measuring'] = time.perf_counter() - t_start
-            if parse_bool(os.getenv('SEECHANGE_TRACEMALLOC')):
+            if env_as_bool('SEECHANGE_TRACEMALLOC'):
                 import tracemalloc
                 ds.memory_usages['measuring'] = tracemalloc.get_traced_memory()[1] / 1024 ** 2  # in MB
 

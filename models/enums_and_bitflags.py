@@ -100,6 +100,20 @@ class EnumConverter:
         else:
             raise ValueError(f'{cls.__name__} must be integer/float key or string value, not {type(value)}')
 
+    @classmethod
+    def to_int(cls, value):
+        if isinstance(value, int):
+            return value
+        else:
+            return cls.convert(value)
+
+    @classmethod
+    def to_string(cls, value):
+        if isinstance(value, str):
+            return value
+        else:
+            return cls.convert(value)
+
 
 class FormatConverter( EnumConverter ):
     # This is the master format dictionary, that contains all file types for
