@@ -1423,6 +1423,7 @@ class FileOnDiskMixin:
         from models.exposure import Exposure
         from tests.util.testing_classes import DiskFile
         from models.datafile import DataFile
+        from models.catalog_excerpt import CatalogExcerpt
         #add in commit check
 
         # first, acquire the set of all downstreams plus this item that need to be removed
@@ -1446,7 +1447,9 @@ class FileOnDiskMixin:
                            ZeroPoint,
                            Image, # not sub_image
                            Exposure,
+                           # Below are other models used more rarely
                            DiskFile, # WHPR only used in testing, find a better solution than adding it here
+                           CatalogExcerpt,
                            DataFile] 
 
         # Iterate through the object types, doing
@@ -1495,7 +1498,7 @@ class FileOnDiskMixin:
 
         if len(objs_to_delete) != len(deleted_objs):
             # breakpoint()
-            raise ValueError(f"Not all objects were deleted. Still have some")
+            raise ValueError(f"Not all objects were deleted. Still have {objs_to_delete}")
 
         if need_commit and commit:
             session.commit()
