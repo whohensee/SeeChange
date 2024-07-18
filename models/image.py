@@ -20,7 +20,7 @@ import astropy.units as u
 
 from util.util import read_fits_image, save_fits_image_file, parse_dateobs, listify
 from util.radec import parse_ra_hms_to_deg, parse_dec_dms_to_deg
-
+from util.logger import SCLogger
 
 from models.base import (
     Base,
@@ -1112,6 +1112,7 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
 
         aligned = []
         for i, image in enumerate(self.upstream_images):
+            SCLogger.debug( f"Aligning {image.id} ({image.filepath})" )
             new_image = self._aligner.run(image, alignment_target)
             aligned.append(new_image)
             # ImageAligner.temp_images.append(new_image)  # keep track of all these images for cleanup purposes
@@ -1226,7 +1227,8 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
             f"type: {self.type}, "
             f"exp: {self.exp_time}s, "
             f"filt: {self.filter_short}, "
-            f"from: {self.instrument}/{self.telescope}"
+            f"from: {self.instrument}/{self.telescope} {self.section_id}, "
+            f"filepath: {self.filepath}"
         )
 
         output += ")"

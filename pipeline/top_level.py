@@ -15,7 +15,7 @@ from pipeline.detection import Detector
 from pipeline.cutting import Cutter
 from pipeline.measuring import Measurer
 
-from models.base import SmartSession
+from models.base import SmartSession, merge_concurrent
 from models.provenance import Provenance
 from models.refset import RefSet
 from models.exposure import Exposure
@@ -239,8 +239,7 @@ class Pipeline:
                     )
                 ).all()
                 report.num_prev_reports = len(prev_rep)
-                report = dbsession.merge(report)
-                dbsession.commit()
+                report = merge_concurrent( report, dbsession, True )
 
             if report.exposure_id is None:
                 raise RuntimeError('Report did not get a valid exposure_id!')
@@ -252,8 +251,8 @@ class Pipeline:
         return ds, session
 
     def run(self, *args, **kwargs):
-        """
-        Run the entire pipeline on a specific CCD in a specific exposure.
+        """Run the entire pipeline on a specific CCD in a specific exposure.
+
         Will open a database session and grab any existing data,
         and calculate and commit any new data that did not exist.
 
@@ -269,6 +268,7 @@ class Pipeline:
         -------
         ds : DataStore
             The DataStore object that includes all the data products.
+
         """
         try:  # first make sure we get back a datastore, even an empty one
             ds, session = self.setup_datastore(*args, **kwargs)

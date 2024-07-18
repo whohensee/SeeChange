@@ -1,5 +1,6 @@
 import warnings
 import os
+import time
 import math
 import types
 import hashlib
@@ -23,6 +24,8 @@ from sqlalchemy.orm.exc import DetachedInstanceError
 from sqlalchemy.dialects.postgresql import UUID as sqlUUID
 from sqlalchemy.dialects.postgresql import array as sqlarray
 from sqlalchemy.dialects.postgresql import ARRAY
+from sqlalchemy.exc import IntegrityError
+from psycopg2.errors import UniqueViolation
 
 from sqlalchemy.schema import CheckConstraint
 
@@ -36,6 +39,7 @@ from models.enums_and_bitflags import (
 import util.config as config
 from util.archive import Archive
 from util.logger import SCLogger
+from util.radec import radec_to_gal_ecl
 
 utcnow = func.timezone("UTC", func.current_timestamp())
 
@@ -112,7 +116,15 @@ def Session():
 
     if _Session is None:
         cfg = config.Config.get()
-        url = (f'{cfg.value("db.engine")}://{cfg.value("db.user")}:{cfg.value("db.password")}'
+
+        password = cfg.value( "db.password" )
+        if password is None:
+            if cfg.value( "db.password_file" ) is None:
+                raise RuntimeError( "Must specify either db.password or db.password_file in config" )
+            with open( cfg.value( "db.password_file" ) ) as ifp:
+                password = ifp.readline().strip()
+
+        url = (f'{cfg.value("db.engine")}://{cfg.value("db.user")}:{password}'
                f'@{cfg.value("db.host")}:{cfg.value("db.port")}/{cfg.value("db.database")}')
         _engine = sa.create_engine(url, future=True, poolclass=sa.pool.NullPool)
 
@@ -190,15 +202,17 @@ def get_all_database_objects(display=False, session=None):
     from models.cutouts import Cutouts
     from models.measurements import Measurements
     from models.object import Object
-    from models.calibratorfile import CalibratorFile
+    from models.calibratorfile import CalibratorFile, CalibratorFileDownloadLock
     from models.catalog_excerpt import CatalogExcerpt
     from models.reference import Reference
     from models.instrument import SensorSection
+    from models.user import AuthUser, PasswordLink
 
     models = [
         CodeHash, CodeVersion, Provenance, DataFile, Exposure, Image,
         SourceList, PSF, WorldCoordinates, ZeroPoint, Cutouts, Measurements, Object,
-        CalibratorFile, CatalogExcerpt, Reference, SensorSection
+        CalibratorFile, CalibratorFileDownloadLock, CatalogExcerpt, Reference, SensorSection,
+        AuthUser, PasswordLink
     ]
 
     output = {}
@@ -344,8 +358,8 @@ class SeeChangeBase:
         """
         raise NotImplementedError('get_downstreams not implemented for this class')
 
-    def delete_from_database(self, session=None, commit=True, remove_downstreams=False):
-        """Remove the object from the database.
+    def _delete_from_database(self, session=None, commit=True, remove_downstreams=False):
+        """Remove the object from the database -- don't call this, call delete_from_disk_and_database.
 
         This does not remove any associated files (if this is a FileOnDiskMixin)
         and does not remove the object from the archive.
@@ -378,8 +392,8 @@ class SeeChangeBase:
                 try:
                     downstreams = self.get_downstreams(session=session)
                     for d in downstreams:
-                        if hasattr(d, 'delete_from_database'):
-                            if d.delete_from_database(session=session, commit=False, remove_downstreams=True):
+                        if hasattr(d, '_delete_from_database'):
+                            if d._delete_from_database(session=session, commit=False, remove_downstreams=True):
                                 need_commit = True
                         if isinstance(d, list) and len(d) > 0 and hasattr(d[0], 'delete_list'):
                             d[0].delete_list(d, remove_local=False, archive=False, commit=False, session=session)
@@ -405,6 +419,85 @@ class SeeChangeBase:
                 session.commit()
 
         return need_commit  # to be able to recursively report back if there's a need to commit
+
+    def delete_from_disk_and_database(
+            self, session=None, commit=True, remove_folders=True, remove_downstreams=False, archive=True,
+    ):
+        """Delete any data from disk, archive and the database.
+
+        Use this to clean up an entry from all locations, as relevant
+        for the particular class.  Will delete the object from the DB
+        using the given session (or using an internal session).  If
+        using an internal session, commit must be True, to allow the
+        change to be committed before closing it.
+
+        This will silently continue if the file does not exist
+        (locally or on the archive), or if it isn't on the database,
+        and will attempt to delete from any locations regardless
+        of if it existed elsewhere or not.
+
+        TODO : this is sometimes broken if you don't pass a session.
+
+        Parameters
+        ----------
+        session: sqlalchemy session
+            The session to use for the deletion. If None, will open a new session,
+            which will also close at the end of the call.
+        commit: bool
+            Whether to commit the deletion to the database.
+            Default is True. When session=None then commit must be True,
+            otherwise the session will exit without committing
+            (in this case the function will raise a RuntimeException).
+        remove_folders: bool
+            If True, will remove any folders on the path to the files
+            associated to this object, if they are empty.
+        remove_downstreams: bool
+            If True, will also remove any downstream data.
+            Will recursively call get_downstreams() and find any objects
+            that can have their data deleted from disk, archive and database.
+            Default is False.
+        archive: bool
+            If True, will also delete the file from the archive.
+            Default is True.
+
+        """
+        if session is None and not commit:
+            raise RuntimeError("When session=None, commit must be True!")
+
+        # Recursively remove downstreams first
+
+        if remove_downstreams:
+            downstreams = self.get_downstreams()
+            for d in downstreams:
+                if hasattr( d, 'delete_from_disk_and_database' ):
+                    d.delete_from_disk_and_database( session=session, commit=commit,
+                                                     remove_folders=remove_folders, archive=archive,
+                                                     remove_downstreams=True )
+
+        if archive and hasattr( self, "filepath" ):
+            if self.filepath is not None:
+                if self.filepath_extensions is None:
+                    self.archive.delete( self.filepath, okifmissing=True )
+                else:
+                    for ext in self.filepath_extensions:
+                        self.archive.delete( f"{self.filepath}{ext}", okifmissing=True )
+
+            # make sure these are set to null just in case we fail
+            # to commit later on, we will at least know something is wrong
+            self.md5sum = None
+            self.md5sum_extensions = None
+
+
+        if hasattr( self, "remove_data_from_disk" ):
+            self.remove_data_from_disk( remove_folders=remove_folders )
+            # make sure these are set to null just in case we fail
+            # to commit later on, we will at least know something is wrong
+            self.filepath_extensions = None
+            self.filepath = None
+
+        # Don't pass remove_downstreams here because we took care of downstreams above.
+        SeeChangeBase._delete_from_database( self, session=session, commit=commit, remove_downstreams=False )
+
 
     def to_dict(self):
         """Translate all the SQLAlchemy columns into a dictionary.
@@ -459,7 +552,12 @@ class SeeChangeBase:
             if isinstance(value, np.number):
                 value = value.item()
 
-            if key in ['modified', 'created_at'] and isinstance(value, datetime.datetime):
+            # 'claim_time' is from knownexposure, lastheartbeat is from PipelineWorker
+            # We should probably define a class-level variable "_datetimecolumns" and list them
+            #   there, other than adding to what's hardcoded here.  (Likewise for the ndarray aper stuff
+            #   above.)
+            if (   ( key in ['modified', 'created_at', 'claim_time', 'lastheartbeat'] ) and
+                   isinstance(value, datetime.datetime) ):
                 value = value.isoformat()
 
             if isinstance(value, (datetime.datetime, np.ndarray)):
@@ -521,8 +619,23 @@ class SeeChangeBase:
         """Make a new instance of this object, with all column-based attributed (shallow) copied. """
         new = self.__class__()
         for key in sa.inspect(self).mapper.columns.keys():
-            value = getattr(self, key)
-            setattr(new, key, value)
+            # HACK ALERT
+            # I was getting a sqlalchemy.orm.exc.DetachedInstanceError
+            #   trying to copy a zeropoint deep inside alignment, and it
+            #   was on the line value = getattr(self, key) trying to load
+            #   the "modified" colum.  Rather than trying to figure out WTF
+            #   is going on with SQLAlchmey *this* time, I just decided that
+            #   when we copy an object, we don't copy the modified field,
+            #   so that I could move on with life.
+            # (This isn't necessarily terrible; one could make the argument
+            #   that the modified field of the new object *should* be now(),
+            #   which is the default.  The real worry is that it's yet another
+            #   mysterious SQLAlchemy thing, which just happened to be this field
+            #   this time around.  As long as we're tied to the albatross that is
+            #   SQLAlchemy, these kinds of things are going to keep happening.)
+            if key != 'modified':
+                value = getattr(self, key)
+                setattr(new, key, value)
 
         return new
 
@@ -541,6 +654,37 @@ def get_archive_object():
         if archive_specs is not None:
             ARCHIVE = Archive(**archive_specs)
     return ARCHIVE
+
+def merge_concurrent( obj, session=None, commit=True ):
+    """Merge a database object but make sure it doesn't exist before adding it to the database.
+
+    When multiple processes are running at the same time, and they might
+    create the same objects (which usually happens with provenances),
+    there can be a race condition inside sqlalchemy that leads to a
+    merge failure because of a duplicate primary key violation.  Here,
+    try the merge repeatedly until it works, sleeping an increasing
+    amount of time; if we wait to long, fail for real.
+
+    """
+    output = None
+    with SmartSession(session) as session:
+        for i in range(5):
+            try:
+                output = session.merge(obj)
+                if commit:
+                    session.commit()
+                break
+            except ( IntegrityError, UniqueViolation ) as e:
+                if 'violates unique constraint' in str(e):
+                    session.rollback()
+                    SCLogger.debug( f"Merge failed, sleeping {0.1 * 2**i} seconds before retrying" )
+                    time.sleep(0.1 * 2 ** i)  # exponential sleep
+                else:
+                    raise e
+        else:  # if we didn't break out of the loop, there must have been some integrity error
+            raise e
+
+    return output
 
 
 class FileOnDiskMixin:
@@ -1222,29 +1366,20 @@ class FileOnDiskMixin:
             else:
                 self.md5sum = remmd5
 
-    def remove_data_from_disk(self, remove_folders=True, remove_downstreams=False):
+    def remove_data_from_disk(self, remove_folders=True):
         """Delete the data from local disk, if it exists.
         If remove_folders=True, will also remove any folders
         if they are empty after the deletion.
-        Use remove_downstreams=True to also remove any
-        downstream data (e.g., for an Image, that would be the
-        data for the SourceLists and PSFs that depend on this Image).
-        This function will not remove database rows or archive files,
-        only cleanup local storage for this object and its downstreams.
 
         To remove both the files and the database entry, use
-        delete_from_disk_and_database() instead.
+        delete_from_disk_and_database() instead.  That one
+        also supports removing downstreams.
 
         Parameters
         ----------
         remove_folders: bool
             If True, will remove any folders on the path to the files
             associated to this object, if they are empty.
-        remove_downstreams: bool
-            If True, will also remove any downstream data.
-            Will recursively call get_downstreams() and find any objects
-            that have remove_data_from_disk() implemented, and call it.
-            Default is False.
         """
         if self.filepath is not None:
             # get the filepath, but don't check if the file exists!
@@ -1259,109 +1394,6 @@ class FileOnDiskMixin:
                                 os.rmdir(folder)
                             else:
                                 break
-
-        if remove_downstreams:
-            try:
-                downstreams = self.get_downstreams()
-                for d in downstreams:
-                    if hasattr(d, 'remove_data_from_disk'):
-                        d.remove_data_from_disk(remove_folders=remove_folders, remove_downstreams=True)
-                    if isinstance(d, list) and len(d) > 0 and hasattr(d[0], 'delete_list'):
-                        d[0].delete_list(d, remove_local=True, archive=False, database=False)
-            except NotImplementedError as e:
-                pass  # if this object does not implement get_downstreams, it is ok
-
-    def delete_from_archive(self, remove_downstreams=False):
-        """Delete the file from the archive, if it exists.
-        This will not remove the file from local disk, nor
-        from the database.  Use delete_from_disk_and_database()
-        to do that.
-
-        Parameters
-        ----------
-        remove_downstreams: bool
-            If True, will also remove any downstream data.
-            Will recursively call get_downstreams() and find any objects
-            that have delete_from_archive() implemented, and call it.
-            Default is False.
-        """
-        if remove_downstreams:
-            try:
-                downstreams = self.get_downstreams()
-                for d in downstreams:
-                    if hasattr(d, 'delete_from_archive'):
-                        d.delete_from_archive(remove_downstreams=True)  # TODO: do we need remove_folders?
-                    if isinstance(d, list) and len(d) > 0 and hasattr(d[0], 'delete_list'):
-                        d[0].delete_list(d, remove_local=False, archive=True, database=False)
-            except NotImplementedError as e:
-                pass  # if this object does not implement get_downstreams, it is ok
-
-        if self.filepath is not None:
-            if self.filepath_extensions is None:
-                self.archive.delete( self.filepath, okifmissing=True )
-            else:
-                for ext in self.filepath_extensions:
-                    self.archive.delete( f"{self.filepath}{ext}", okifmissing=True )
-
-        # make sure these are set to null just in case we fail
-        # to commit later on, we will at least know something is wrong
-        self.md5sum = None
-        self.md5sum_extensions = None
-
-    def delete_from_disk_and_database(
-            self, session=None, commit=True, remove_folders=True, remove_downstreams=False, archive=True,
-    ):
-        """
-        Delete the data from disk, archive and the database.
-        Use this to clean up an entry from all locations.
-        Will delete the object from the DB using the given session
-        (or using an internal session).
-        If using an internal session, commit must be True,
-        to allow the change to be committed before closing it.
-
-        This will silently continue if the file does not exist
-        (locally or on the archive), or if it isn't on the database,
-        and will attempt to delete from any locations regardless
-        of if it existed elsewhere or not.
-
-        TODO : this is sometimes broken if you don't pass a session.
-
-        Parameters
-        ----------
-        session: sqlalchemy session
-            The session to use for the deletion. If None, will open a new session,
-            which will also close at the end of the call.
-        commit: bool
-            Whether to commit the deletion to the database.
-            Default is True. When session=None then commit must be True,
-            otherwise the session will exit without committing
-            (in this case the function will raise a RuntimeException).
-        remove_folders: bool
-            If True, will remove any folders on the path to the files
-            associated to this object, if they are empty.
-        remove_downstreams: bool
-            If True, will also remove any downstream data.
-            Will recursively call get_downstreams() and find any objects
-            that can have their data deleted from disk, archive and database.
-            Default is False.
-        archive: bool
-            If True, will also delete the file from the archive.
-            Default is True.
-        """
-        if session is None and not commit:
-            raise RuntimeError("When session=None, commit must be True!")
-
-        SeeChangeBase.delete_from_database(self, session=session, commit=commit, remove_downstreams=remove_downstreams)
-
-        self.remove_data_from_disk(remove_folders=remove_folders, remove_downstreams=remove_downstreams)
-
-        if archive:
-            self.delete_from_archive(remove_downstreams=remove_downstreams)
-
-        # make sure these are set to null just in case we fail
-        # to commit later on, we will at least know something is wrong
-        self.filepath_extensions = None
-        self.filepath = None
 
 
 # load the default paths from the config
@@ -1410,11 +1442,8 @@ class SpatiallyIndexed:
         if self.ra is None or self.dec is None:
             return
 
-        coords = SkyCoord(self.ra, self.dec, unit="deg", frame="icrs")
-        self.gallat = float(coords.galactic.b.deg)
-        self.gallon = float(coords.galactic.l.deg)
-        self.ecllat = float(coords.barycentrictrueecliptic.lat.deg)
-        self.ecllon = float(coords.barycentrictrueecliptic.lon.deg)
+        self.gallat, self.gallon, self.ecllat, self.ecllon = radec_to_gal_ecl( self.ra, self.dec )
+
 
     @hybrid_method
     def within( self, fourcorn ):
@@ -1506,9 +1535,9 @@ class FourCorners:
         Parameters
         ----------
           ras: list of float
-             Four ra values in a list. 
+             Four ra values in a list.
           decs: list of float
-             Four dec values in a list. 
+             Four dec values in a list.
 
         Returns
         -------
