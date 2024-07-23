@@ -114,7 +114,6 @@ class EnumConverter:
         else:
             return cls.convert(value)
 
-
 class FormatConverter( EnumConverter ):
     # This is the master format dictionary, that contains all file types for
     # all data models. Each model will get a subset of this dictionary.

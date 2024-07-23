@@ -16,7 +16,7 @@ from improc.alignment import ImageAligner
 from improc.tools import sigma_clipping
 
 from util.util import env_as_bool
-
+from util.logger import SCLogger
 
 class ParsSubtractor(Parameters):
     def __init__(self, **kwargs):
@@ -40,6 +40,17 @@ class ParsSubtractor(Parameters):
             {'method': 'swarp', 'to_index': 'new'},
             dict,
             'How to align the reference image to the new image. This will be ingested by ImageAligner. '
+        )
+
+        self.reference = self.add_par(
+            'reference',
+            {'minovfrac': 0.85,
+             'must_match_instrument': True,
+             'must_match_filter': True,
+             'must_match_section': False,
+             'must_match_target': False },
+            dict,
+            'Parameters passed to DataStore.get_reference for identifying references'
         )
 
         self.inpainting = self.add_par(
@@ -280,8 +291,11 @@ class Subtractor:
                     # the most recent provenance for "preprocessing"
                     image = ds.get_image(session=session)
                     if image is None:
-                        raise ValueError(f'Cannot find an image corresponding to the datastore inputs: {ds.get_inputs()}')
+                        raise ValueError(f'Cannot find an image corresponding to the datastore inputs: '
+                                         f'{ds.get_inputs()}')
 
+                    SCLogger.debug( f"Making new subtraction from image {image.id} path {image.filepath} , "
+                                    f"reference {ref.image.id} path {ref.image.filepath}" )
                     sub_image = Image.from_ref_and_new(ref.image, image)
                     sub_image.is_sub = True
                     sub_image.provenance = prov
@@ -306,13 +320,17 @@ class Subtractor:
                 ref_image = ref_image[0]
 
                 if self.pars.method == 'naive':
+                    SCLogger.debug( "Subtracting with naive" )
                     outdict = self._subtract_naive(new_image, ref_image)
                 elif self.pars.method == 'hotpants':
+                    SCLogger.debug( "Subtracting with hotpants" )
                     outdict = self._subtract_hotpants(new_image, ref_image)
                 elif self.pars.method == 'zogy':
+                    SCLogger.debug( "Subtracting with zogy" )
                     outdict = self._subtract_zogy(new_image, ref_image)
                 else:
                     raise ValueError(f'Unknown subtraction method {self.pars.method}')
+                SCLogger.debug( "Subtraction complete" )
 
                 sub_image.data = outdict['outim']
                 sub_image.weight = outdict['outwt']
