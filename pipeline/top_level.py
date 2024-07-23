@@ -14,6 +14,7 @@ from pipeline.subtraction import Subtractor
 from pipeline.detection import Detector
 from pipeline.cutting import Cutter
 from pipeline.measuring import Measurer
+from pipeline.scoring import Scorer
 
 from models.base import SmartSession
 from models.provenance import Provenance
@@ -155,6 +156,12 @@ class Pipeline:
         measuring_config.update(kwargs.get('measuring', {}))
         self.pars.add_defaults_to_dict(measuring_config)
         self.measurer = Measurer(**measuring_config)
+
+        # assign r/b and ml/dl scores
+        scoring_config = config.value('scoring', {})
+        scoring_config.update(kwargs.get('scoring', {}))
+        self.pars.add_defaults_to_dict(scoring_config)
+        self.scorer = Scorer(**scoring_config)
 
     def override_parameters(self, **kwargs):
         """Override some of the parameters for this object and its sub-objects, using Parameters.override(). """

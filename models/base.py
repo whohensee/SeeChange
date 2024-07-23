@@ -284,7 +284,7 @@ class SeeChangeBase:
 
         if hasattr(self, '_bitflag'):
             self._bitflag = 0
-        if hasattr(self, 'upstream__bitflag'):
+        if hasattr(self, 'upstream_bitflag'):
             self._upstream_bitflag = 0
 
         for k, v in kwargs.items():

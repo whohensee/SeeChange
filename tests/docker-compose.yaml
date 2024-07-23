@@ -86,7 +86,7 @@ services:
       context: ../webap
     user: ${USERID:-0}:${GROUPID:-0}
     ports:
-      - "8081:8081"
+      - "${WEBAP_PORT:-8081}:8081"
     healthcheck:
       test: netcat -w 1 localhost 8081
       interval: 5s
