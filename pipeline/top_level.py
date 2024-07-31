@@ -158,10 +158,12 @@ class Pipeline:
         self.measurer = Measurer(**measuring_config)
 
         # assign r/b and ml/dl scores
-        scoring_config = config.value('scoring', {})
-        scoring_config.update(kwargs.get('scoring', {}))
-        self.pars.add_defaults_to_dict(scoring_config)
-        self.scorer = Scorer(**scoring_config)
+        scoring_configs = config.value('scoring', {})  # dict of subdicts, each represents a prov
+        scoring_configs.update(kwargs.get('scoring', {}))
+        self.scorers = []
+        for key in scoring_configs.keys():
+            self.pars.add_defaults_to_dict(scoring_configs[key])
+            self.scorers.append(Scorer(**scoring_configs[key]))
 
     def override_parameters(self, **kwargs):
         """Override some of the parameters for this object and its sub-objects, using Parameters.override(). """
@@ -358,7 +360,10 @@ class Pipeline:
                 ds.update_report('measuring', session=None)
 
                 # measure deep learning models on the cutouts/measurements
-                # TODO: add this...
+                for i, scorer in enumerate(self.scorers):
+                    SCLogger.info(f"scorer {i} for image id {ds.image.id}")
+                    ds = scorer.run(ds, session)
+                ds.update_report('scoring', session=None)
 
                 if self.pars.save_at_finish:
                     t_start = time.perf_counter()

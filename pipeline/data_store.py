@@ -1,6 +1,7 @@
 import warnings
 import datetime
 import sqlalchemy as sa
+import numpy as np
 
 from util.util import parse_session, listify
 from util.logger import SCLogger
@@ -27,6 +28,7 @@ UPSTREAM_STEPS = {
     'detection': ['subtraction'],
     'cutting': ['detection'],
     'measuring': ['cutting'],
+    'scoring': ['measuring'],
 }
 
 # The products that are made at each processing step.
@@ -41,6 +43,7 @@ PROCESS_PRODUCTS = {
     'detection': 'detections',
     'cutting': 'cutouts',
     'measuring': 'measurements',
+    'scoring': 'deep_score'  # WHPR figure out where this is used and if the name looks good
 }
 
 
@@ -62,7 +65,8 @@ class DataStore:
         'sub_image',
         'detections',
         'cutouts',
-        'measurements'
+        'measurements',
+        'scores',
     ]
 
     # these get cleared but not saved
@@ -282,6 +286,7 @@ class DataStore:
         self.cutouts = None  # cutouts around sources
         self.measurements = None  # photometry and other measurements for each source
         self.objects = None  # a list of Object associations of Measurements
+        self.scores = None # a list of r/b and ml/dl scores for Measurements
 
         # these need to be added to the products_to_clear list
         self.ref_image = None  # to be used to make subtractions
@@ -1343,7 +1348,7 @@ class DataStore:
         """
         attributes = [] if omit_exposure else [ '_exposure' ]
         attributes.extend( [ 'image', 'wcs', 'sources', 'psf', 'bg', 'zp', 'sub_image',
-                             'detections', 'cutouts', 'measurements' ] )
+                             'detections', 'cutouts', 'measurements', 'scores' ] )
         result = {att: getattr(self, att) for att in attributes}
         if output == 'dict':
             return result
@@ -1521,6 +1526,14 @@ class DataStore:
                     self.cutouts = session.merge(self.cutouts)
                     more_products += ', cutouts'
 
+                # need to keep track of which scores go to which measurements
+                # WHPR TODO: consider implementing a more efficient method here
+                s_m_dict = {}
+                m_list = np.array(self.measurements)
+                for i, s in enumerate(self.scores):
+                    # store the index of corresponding measurement
+                    s_m_dict[i] = np.argwhere(m_list == s.measurements)[0][0]
+
                 if self.measurements is not None:
                     for i, m in enumerate(self.measurements):
                         # use the new, merged cutouts
@@ -1529,6 +1542,12 @@ class DataStore:
                         self.measurements[i] = session.merge(self.measurements[i])
                         self.measurements[i].object.measurements.append(self.measurements[i])
                     more_products += ', measurements'
+
+                if self.scores is not None:
+                    for i, m in enumerate(self.scores):
+                        self.scores[i].measurements = self.measurements[s_m_dict[i]]
+                        self.scores[i] = session.merge(self.scores[i])
+                    more_products += ', scores'
 
                 session.commit()
                 self.products_committed += ', ' + more_products
