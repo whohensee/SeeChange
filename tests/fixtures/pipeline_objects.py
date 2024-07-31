@@ -1,5 +1,11 @@
 import pytest
 
+import sqlalchemy as sa
+
+from util.logger import SCLogger
+
+from models.base import SmartSession
+
 from pipeline.preprocessing import Preprocessor
 from pipeline.detection import Detector
 from pipeline.backgrounding import Backgrounder
@@ -237,8 +243,11 @@ def pipeline_factory(
         measurer_factory,
         test_config,
 ):
-    def make_pipeline():
-        p = Pipeline(**test_config.value('pipeline'))
+    def make_pipeline( provtag=None ):
+        kwargs = {}
+        if provtag is not None:
+            kwargs['pipeline'] = { 'provenance_tag': provtag }
+        p = Pipeline(**kwargs)
         p.pars.save_before_subtraction = False
         p.pars.save_at_finish = False
         p.preprocessor = preprocessor_factory()
@@ -271,7 +280,14 @@ def pipeline_factory(
 
 @pytest.fixture
 def pipeline_for_tests(pipeline_factory):
-    return pipeline_factory()
+    p = pipeline_factory( 'pipeline_for_tests' )
+    yield p
+
+    # Clean up the provenance tag potentially created by the pipeline
+    with SmartSession() as session:
+        session.execute( sa.text( "DELETE FROM provenance_tags WHERE tag=:tag" ), {'tag': 'pipeline_for_tests' } )
+        session.commit()
+
 
 
 @pytest.fixture(scope='session')
@@ -316,14 +332,14 @@ def coadd_pipeline_for_tests(coadd_pipeline_factory):
 @pytest.fixture(scope='session')
 def refmaker_factory(test_config, pipeline_factory, coadd_pipeline_factory):
 
-    def make_refmaker(name, instrument):
+    def make_refmaker(name, instrument, provtag='refmaker_factory'):
         maker = RefMaker(maker={'name': name, 'instruments': [instrument]})
         maker.pars._enforce_no_new_attrs = False
         maker.pars.test_parameter = maker.pars.add_par(
             'test_parameter', 'test_value', str, 'parameter to define unique tests', critical=True
         )
         maker.pars._enforce_no_new_attrs = True
-        maker.pipeline = pipeline_factory()
+        maker.pipeline = pipeline_factory( provtag )
         maker.pipeline.override_parameters(**test_config.value('referencing.pipeline'))
         maker.coadd_pipeline = coadd_pipeline_factory()
         maker.coadd_pipeline.override_parameters(**test_config.value('referencing.coaddition'))

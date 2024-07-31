@@ -29,7 +29,7 @@ from improc.alignment import ImageAligner
 
 from util.retrydownload import retry_download
 from util.logger import SCLogger
-from util.cache import copy_to_cache, copy_list_to_cache, copy_from_cache, copy_list_from_cache
+from util.cache import copy_to_cache, copy_from_cache
 from util.util import env_as_bool
 
 
@@ -175,11 +175,17 @@ def ptf_datastore(datastore_factory, ptf_exposure, ptf_ref, ptf_cache_dir, ptf_b
         cache_base_name='187/PTF_20110429_040004_11_R_Sci_BNKEKA',
         overrides={'extraction': {'threshold': 5}, 'subtraction': {'refset': 'test_refset_ptf'}},
         bad_pixel_map=ptf_bad_pixel_map,
+        provtag='ptf_datastore'
     )
     yield ds
     ds.delete_everything()
 
     ImageAligner.cleanup_temp_images()
+
+    # Clean out the provenance tag that may have been created by the datastore_factory
+    with SmartSession() as session:
+        session.execute( sa.text( "DELETE FROM provenance_tags WHERE tag=:tag" ), {'tag': 'ptf_datastore' } )
+        session.commit()
 
 
 @pytest.fixture(scope='session')
@@ -207,7 +213,7 @@ def ptf_urls(download_url):
 @pytest.fixture(scope='session')
 def ptf_images_factory(ptf_urls, ptf_downloader, datastore_factory, ptf_cache_dir, ptf_bad_pixel_map):
 
-    def factory(start_date='2009-04-04', end_date='2013-03-03', max_images=None):
+    def factory(start_date='2009-04-04', end_date='2013-03-03', max_images=None, provtag='ptf_images_factory'):
         # see if any of the cache names were saved to a manifest file
         cache_names = {}
         if (   ( not env_as_bool( "LIMIT_CACHE_USAGE" ) ) and
@@ -247,6 +253,7 @@ def ptf_images_factory(ptf_urls, ptf_downloader, datastore_factory, ptf_cache_di
                     cache_base_name=cache_names.get(url, None),
                     overrides={'extraction': {'threshold': 5}},
                     bad_pixel_map=ptf_bad_pixel_map,
+                    provtag=provtag
                 )
 
                 if (
@@ -283,7 +290,7 @@ def ptf_images_factory(ptf_urls, ptf_downloader, datastore_factory, ptf_cache_di
 
 @pytest.fixture(scope='session')
 def ptf_reference_images(ptf_images_factory):
-    images = ptf_images_factory('2009-04-05', '2009-05-01', max_images=5)
+    images = ptf_images_factory('2009-04-05', '2009-05-01', max_images=5, provtag='ptf_reference_images')
 
     yield images
 
@@ -312,20 +319,15 @@ def ptf_reference_images(ptf_images_factory):
     for image in imgs:
         image.delete_from_disk_and_database( commit=True, remove_downstreams=True )
 
-    # ROB REMOVE THIS COMMENT
-    # with SmartSession() as session:
-    #     session.autoflush = False
-
-    #     for image in images:
-    #         image = session.merge(image)
-    #         image.exposure.delete_from_disk_and_database(session=session, commit=False)
-    #         image.delete_from_disk_and_database(session=session, commit=False, remove_downstreams=True)
-    #     session.commit()
+    # Clean out the provenance tag that may have been created by the datastore_factory
+    with SmartSession() as session:
+        session.execute( sa.text( "DELETE FROM provenance_tags WHERE tag=:tag" ), {'tag': 'ptf_reference_images' } )
+        session.commit()
 
 
 @pytest.fixture(scope='session')
 def ptf_supernova_images(ptf_images_factory):
-    images = ptf_images_factory('2010-02-01', '2013-12-31', max_images=2)
+    images = ptf_images_factory('2010-02-01', '2013-12-31', max_images=2, provtag='ptf_supernova_images')
 
     yield images
 
@@ -340,25 +342,24 @@ def ptf_supernova_images(ptf_images_factory):
     for image in imgs:
         image.delete_from_disk_and_database( commit=True, remove_downstreams=True )
 
-    # ROB REMOVE THIS COMMENT
-    # with SmartSession() as session:
-    #     session.autoflush = False
-
-    #     for image in images:
-    #         image = session.merge(image)
-    #         # first delete the image and all it's products and the associated data (locally and on archive)
-    #         image.delete_from_disk_and_database(session=session, commit=False, remove_downstreams=True)
-    #         # only then delete the exposure, so it doesn't cascade delete the image and prevent deleting products
-    #         image.exposure.delete_from_disk_and_database(session=session, commit=False)
-
-    #     session.commit()
-
+    # Clean out the provenance tag that may have been created by the datastore_factory
+    with SmartSession() as session:
+        session.execute( sa.text( "DELETE FROM provenance_tags WHERE tag=:tag" ), {'tag': 'ptf_supernova_images' } )
+        session.commit()
 
 # conditionally call the ptf_reference_images fixture if cache is not there:
 # ref: https://stackoverflow.com/a/75337251
 @pytest.fixture(scope='session')
 def ptf_aligned_images(request, ptf_cache_dir, data_dir, code_version):
     cache_dir = os.path.join(ptf_cache_dir, 'aligned_images')
+
+    prov = Provenance(
+        code_version=code_version,
+        parameters={'alignment': {'method': 'swarp', 'to_index': 'last'}, 'test_parameter': 'test_value'},
+        upstreams=[],
+        process='coaddition',
+        is_testing=True,
+    )
 
     # try to load from cache
     if (    ( not env_as_bool( "LIMIT_CACHE_USAGE" ) ) and
@@ -370,20 +371,26 @@ def ptf_aligned_images(request, ptf_cache_dir, data_dir, code_version):
         for filename in filenames:
             imfile, psffile, bgfile = filename.split()
             output_images.append(copy_from_cache(Image, cache_dir, imfile + '.image.fits'))
+            output_images[-1].provenance = prov
+            # Associate other objects
+            # BROKEN -- we don't set the provenance properly below!
+            #   Set the provenance_id to None to explicitly indicate
+            #   that we're not depending on the proper provenance
+            #   to happen to have the same id this time around as it
+            #   did when the cache was written.
             output_images[-1].psf = copy_from_cache(PSF, cache_dir, psffile + '.fits')
+            output_images[-1].psf.image = output_images[-1]
+            output_images[-1].psf.provenance_id = None
             output_images[-1].bg = copy_from_cache(Background, cache_dir, bgfile)
+            output_images[-1].bg.image = output_images[-1]
+            output_images[-1].bg.provenance_id = None
             output_images[-1].zp = copy_from_cache(ZeroPoint, cache_dir, imfile + '.zp')
+            output_images[-1].zp.sources_id = None    # This isn't right, but we dont' have what we need
+            output_images[-1].zp.provenance_id = None
     else:  # no cache available
         ptf_reference_images = request.getfixturevalue('ptf_reference_images')
 
         images_to_align = ptf_reference_images
-        prov = Provenance(
-            code_version=code_version,
-            parameters={'alignment': {'method': 'swarp', 'to_index': 'last'}, 'test_parameter': 'test_value'},
-            upstreams=[],
-            process='coaddition',
-            is_testing=True,
-        )
         coadd_image = Image.from_images(images_to_align, index=-1)
         coadd_image.provenance = prov
         coadd_image.provenance_id = prov.id
@@ -449,18 +456,6 @@ def ptf_aligned_images(request, ptf_cache_dir, data_dir, code_version):
             # for image in ptf_reference_images:
             #     image.exposure.delete_from_disk_and_database( commit=True, remove_downstreams=True )
 
-        # ROB REMOVE THIS COMMENT
-        # with SmartSession() as session, warnings.catch_warnings():
-        #     warnings.filterwarnings(
-        #         action='ignore',
-        #         message=r'.*DELETE statement on table .* expected to delete \d* row\(s\).*',
-        #     )
-        #     for image in ptf_reference_images:
-        #         image = merge( session, image )
-        #         image.exposure.delete_from_disk_and_database(commit=False, session=session, remove_downstreams=True)
-        #         # image.delete_from_disk_and_database(commit=False, session=session, remove_downstreams=True)
-        #     session.commit()
-
 
 @pytest.fixture
 def ptf_ref(
@@ -471,7 +466,7 @@ def ptf_ref(
         data_dir,
         code_version
 ):
-    refmaker = refmaker_factory('test_ref_ptf', 'PTF')
+    refmaker = refmaker_factory('test_ref_ptf', 'PTF', provtag='ptf_ref')
     pipe = refmaker.coadd_pipeline
 
     # build up the provenance tree
@@ -522,16 +517,21 @@ def ptf_ref(
         coadd_image.sources = copy_from_cache(
             SourceList, ptf_cache_dir, cache_base_name + f'.sources_{sources_prov.id[:6]}.fits'
         )
+        # Make sure that any automated fields set in the database don't have
+        #  the values they happened to have when the cache was created
+        coadd_image.sources.image = coadd_image
         coadd_image.sources.provenance = sources_prov
         assert coadd_image.sources.provenance_id == coadd_image.sources.provenance.id
 
         # get the PSF:
         coadd_image.psf = copy_from_cache(PSF, ptf_cache_dir, cache_base_name + f'.psf_{sources_prov.id[:6]}.fits')
+        coadd_image.psf.image = coadd_image
         coadd_image.psf.provenance = sources_prov
         assert coadd_image.psf.provenance_id == coadd_image.psf.provenance.id
 
         # get the background:
         coadd_image.bg = copy_from_cache(Background, ptf_cache_dir, cache_base_name + f'.bg_{sources_prov.id[:6]}.h5')
+        coadd_image.bg.image = coadd_image
         coadd_image.bg.provenance = sources_prov
         assert coadd_image.bg.provenance_id == coadd_image.bg.provenance.id
 
@@ -539,12 +539,14 @@ def ptf_ref(
         coadd_image.wcs = copy_from_cache(
             WorldCoordinates, ptf_cache_dir, cache_base_name + f'.wcs_{sources_prov.id[:6]}.txt'
         )
+        coadd_image.wcs.sources = coadd_image.sources
         coadd_image.wcs.provenance = sources_prov
         coadd_image.sources.wcs = coadd_image.wcs
         assert coadd_image.wcs.provenance_id == coadd_image.wcs.provenance.id
 
         # get the zero point:
         coadd_image.zp = copy_from_cache(ZeroPoint, ptf_cache_dir, cache_base_name + '.zp')
+        coadd_image.zp.sources = coadd_image.sources
         coadd_image.zp.provenance = sources_prov
         coadd_image.sources.zp = coadd_image.zp
         assert coadd_image.zp.provenance_id == coadd_image.zp.provenance.id
@@ -585,6 +587,10 @@ def ptf_ref(
         ref_in_db = session.scalars(sa.select(Reference).where(Reference.id == ref.id)).first()
         assert ref_in_db is None  # should have been deleted by cascade when image is deleted
 
+    # Clean out the provenance tag that may have been created by the refmaker_factory
+    with SmartSession() as session:
+        session.execute( sa.text( "DELETE FROM provenance_tags WHERE tag=:tag" ), {'tag': 'ptf_ref' } )
+        session.commit()
 
 @pytest.fixture
 def ptf_ref_offset(ptf_ref):
@@ -620,7 +626,7 @@ def ptf_ref_offset(ptf_ref):
 
 @pytest.fixture(scope='session')
 def ptf_refset(refmaker_factory):
-    refmaker = refmaker_factory('test_refset_ptf', 'PTF')
+    refmaker = refmaker_factory('test_refset_ptf', 'PTF', 'ptf_refset')
     refmaker.pars.save_new_refs = True
 
     refmaker.make_refset()  # this makes a refset without making any references
@@ -636,6 +642,11 @@ def ptf_refset(refmaker_factory):
 
         session.delete(refmaker.refset)
 
+        session.commit()
+
+    # Clean out the provenance tag that may have been created by the refmaker_factory
+    with SmartSession() as session:
+        session.execute( sa.text( "DELETE FROM provenance_tags WHERE tag=:tag" ), {'tag': 'ptf_refset' } )
         session.commit()
 
 
@@ -664,7 +675,6 @@ def ptf_subtraction1(ptf_ref, ptf_supernova_images, subtractor, ptf_cache_dir):
         im = copy_from_cache(Image, ptf_cache_dir, cache_path)
         im.upstream_images = [ptf_ref.image, ptf_supernova_images[0]]
         im.ref_image_id = ptf_ref.image.id
-
         im.provenance = prov
 
     else:  # cannot find it on cache, need to produce it, using other fixtures
