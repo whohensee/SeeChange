@@ -43,7 +43,7 @@ PROCESS_OBJECTS = {
     'detection': 'detector',
     'cutting': 'cutter',
     'measuring': 'measurer',
-    # TODO: add one more for R/B deep learning scores
+    'scoring': 'scorers',
 }
 
 
@@ -460,6 +460,33 @@ class Pipeline:
             for step in PROCESS_OBJECTS:  # produce the provenance for this step
                 if step in overrides:  # accept override from user input
                     provs[step] = overrides[step]
+                elif step == 'scoring':
+                    # note that scoring is also weird, because it can accept multiple provenances
+                    # so this code is a specialized case of the else block below, and should be 
+                    # kept up to date with that block.
+                    obj_name = PROCESS_OBJECTS[step]   # 'scorers'
+                    scorers = getattr(self, obj_name)
+
+                    scoreprovs = []
+
+                    for scorer in scorers:
+                        parameters = scorer.pars.get_critical_pars()
+
+                        up_steps = UPSTREAM_STEPS[step]
+                        upstream_provs = []
+                        for upstream in up_steps:
+                            upstream_provs.append(provs[upstream])
+
+                        scoreprovs.append( Provenance(
+                            code_version=code_version,
+                            process=step,
+                            parameters=parameters,
+                            upstreams=upstream_provs,
+                            is_testing=is_testing,
+                        ))
+
+                    provs[step] = scoreprovs  # note this is a list
+                        
                 else:  # load the parameters from the objects on the pipeline
                     obj_name = PROCESS_OBJECTS[step]  # translate the step to the object name
                     if isinstance(obj_name, dict):  # sub-objects, e.g., extraction.sources, extraction.wcs, etc.
@@ -492,7 +519,11 @@ class Pipeline:
                         is_testing=is_testing,
                     )
 
-                provs[step] = provs[step].merge_concurrent(session=session, commit=commit)
+                if isinstance(provs[step], list):
+                    for i, p in enumerate(provs[step]):
+                        provs[step][i] = provs[step][i].merge_concurrent(session=session, commit=commit)
+                else:
+                    provs[step] = provs[step].merge_concurrent(session=session, commit=commit)
 
             if commit:
                 session.commit()

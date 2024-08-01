@@ -546,6 +546,9 @@ class DataStore:
         This is used to get the provenance of upstream objects.
         Looks for a matching provenance in the prov_tree attribute.
 
+        NOTE: In the case of deepscore, which has a list of provenances in the prov_tree,
+        this WILL return that list to be handled outside the function (or None).
+
         Example:
         When making a SourceList in the extraction phase, we will want to know the provenance
         of the Image object (from the preprocessing phase).
@@ -557,7 +560,16 @@ class DataStore:
         # see if it is in the prov_tree
         if self.prov_tree is not None:
             if process in self.prov_tree:
-                return self.prov_tree[process]
+
+                # handle deepscore case, which has a list in prov tree
+                # Currently behaves identically, but note that it returns
+                # a list of provs to be handled outside the func.
+                if isinstance(self.prov_tree[process], list):
+                    prov = self.prov_tree[process]
+                else:
+                    prov = self.prov_tree[process]
+
+                return prov
             else:
                 raise ValueError(f'No provenance found for process "{process}" in prov_tree!')
 
@@ -1321,6 +1333,61 @@ class DataStore:
                 ).all()
 
         return self.measurements
+    
+    def get_deepscores(self, session=None):
+        """Get a list of DeepScores, either from memory or from database.
+
+        Parameters
+        ----------
+        provenance: Provenance object
+            The provenance to use for the deepscores.
+            This provenance should be consistent with
+            the current code version and critical parameters.
+            If none is given, will use the latest provenance
+            for the "scoring" process.
+            Usually the provenance is not given when the subtraction is loaded
+            in order to be used as an upstream of the current process.
+        session: sqlalchemy.orm.session.Session
+            An optional session to use for the database query.
+            If not given, will use the session stored inside the
+            DataStore object; if there is none, will open a new session
+            and close it at the end of the function.
+
+        Returns
+        -------
+        deepscores: list of DeepScore objects
+            The list of deepscores, that will be empty if no matching deepscores are found.
+
+        """
+        from models.deepscore import DeepScore
+        process_name = 'scoring'
+
+        provenances = self._get_provenance_for_an_upstream(process_name, session)
+        
+        if provenances is not None:
+            prov_ids = [p.id for p in provenances]
+
+            # make sure the deepscores have the correct provenance
+            if self.scores is not None:
+                if any([s.provenance is None for s in self.scores]):
+                    raise ValueError('One of the deepscores has no provenance!')
+                if provenances is not None and any([s.provenance.id not in prov_ids for s in self.scores]):
+                    self.scores = None
+
+            # not in memory, look for it on the DB
+            if self.scores is None:
+                with SmartSession(session, self.session) as session:
+                    measurements = self.get_measurements(session=session)
+                    m_ids = [m.id for m in measurements]
+
+                    self.scores = session.scalars(
+                        sa.select(DeepScore).filter(
+                            DeepScore.measurements_id.in_(m_ids),
+                            DeepScore.provenance_id.in_(prov_ids),
+                        )
+                    ).all()
+
+        return self.scores
 
     def get_all_data_products(self, output='dict', omit_exposure=False):
         """Get all the data products associated with this Exposure.
@@ -1528,11 +1595,12 @@ class DataStore:
 
                 # need to keep track of which scores go to which measurements
                 # WHPR TODO: consider implementing a more efficient method here
-                s_m_dict = {}
-                m_list = np.array(self.measurements)
-                for i, s in enumerate(self.scores):
-                    # store the index of corresponding measurement
-                    s_m_dict[i] = np.argwhere(m_list == s.measurements)[0][0]
+                if self.scores is not None:
+                    s_m_dict = {}
+                    m_list = np.array(self.measurements)
+                    for i, s in enumerate(self.scores):
+                        # store the index of corresponding measurement
+                        s_m_dict[i] = np.argwhere(m_list == s.measurements)[0][0]
 
                 if self.measurements is not None:
                     for i, m in enumerate(self.measurements):

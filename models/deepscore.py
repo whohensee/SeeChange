@@ -9,9 +9,6 @@ from models.measurements import Measurements
 from models.enums_and_bitflags import DeepscoreAlgorithmConverter
 
 
-# if more are added, update evaluate_scores() accordingly
-DEEPSCORE_ALGORITHMS = ['random']
-
 class DeepScore(Base, AutoIDMixin):
     __tablename__ = 'deepscores'
 
@@ -24,7 +21,10 @@ class DeepScore(Base, AutoIDMixin):
         sa.SMALLINT,
         nullable=False,
         default=DeepscoreAlgorithmConverter.convert('random'),
-        doc="Integer which represents which of the ML/DL algorithms was used for this object."
+        doc=(
+            "Integer which represents which of the ML/DL algorithms was used for this object. "
+            "Also specifies necessary parameters for a given algorithm."
+        )
     )
 
     @hybrid_property
@@ -48,8 +48,6 @@ class DeepScore(Base, AutoIDMixin):
         doc="ID of the measurements this DeepScore is associated with. ",
     )
 
-    # measurements (potentially a relationship)
-    # WHPR investigate the difference btw association_proxy (as in zp) and relationship
     measurements = orm.relationship(
         'Measurements',
         lazy='selectin',
@@ -103,8 +101,8 @@ class DeepScore(Base, AutoIDMixin):
     # consider how much data is useful adding into repr
     def __repr__(self):
         return (
-            f"DeepScore {self.id} "
-            f"from Measurements {self.measurements_id} "
+            f"<DeepScore {self.id} "
+            f"from Measurements {self.measurements_id}>"
         )
 
     @staticmethod
@@ -128,20 +126,22 @@ class DeepScore(Base, AutoIDMixin):
         """
         # consider doing cases, for now just an if-block
 
+        algo = self.provenance.parameters['algorithm']
+
         # random ML score
-        if self.provenance.parameters['algorithm']  == 'random':
+        if algo  == 'random':
             self.score = np.random.default_rng().random()
             self.algorithm = 'random'
 
-        elif self.provenance.parameters['algorithm']  == 'allperfect':
+        elif algo  == 'allperfect':
             self.score = 1.0
             self.algorithm = 'allperfect'
 
-        elif self.provenance.parameters['algorithm'] in DEEPSCORE_ALGORITHMS:
-            raise NotImplementedError(f"ML algorithm {self.provenance.algorithm} is not implemented yet")
+        elif algo in DeepscoreAlgorithmConverter.dict_inverse:
+            raise NotImplementedError(f"ML algorithm {algo} is not implemented yet")
         
         else:
-            raise ValueError(f"{self.provenance.algorithm} is not a valid ML algorithm.")
+            raise ValueError(f"{algo} is not a valid ML algorithm.")
 
         return None
 

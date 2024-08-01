@@ -20,14 +20,13 @@ class ParsScorer(Parameters):
             'A totally fake value for testing. '
         )
 
+        # would we rather this be the integer in the enum list instead?
         self.algorithm = self.add_par(
             'algorithm',
             'random',
             str,
             'The name of the algorithm used to generate a score for this object.'
         )
-
-
 
         self._enforce_no_new_attrs = True
 
@@ -85,29 +84,34 @@ class Scorer:
                 )
 
             # find if this deepscore object has already been made in the ds
-            # scores = ds.get_deepscore(prov, session=session) # WHPR TODO: potentially create this function
-            self.has_recalculated = True
-            if hasattr(ds, 'scores') and ds.scores is not None:
-                # TODO: Note that this will cause issues if, for some reason, you run different versions of the
-                # same algorithm in a single run. Consider another solution?
-                badscores = [s for s in ds.scores if s.provenance.parameters['algorithm'] == self.pars.algorithm]
-                ds.scores = [s for s in ds.scores if s not in badscores]
-            else:
-                ds.scores = []
+            scores = ds.get_deepscores( session=session )
 
-            scores = []
-            # iterate over the measurements, creating an appropriate DeepScore object for each.
-            for m in measurements:
+            if scores is not None:
+                # WHPR TODO: consider if comparing something other than the algorithm is better
+                same_algo_scores = [s for s in scores if s.provenance.parameters['algorithm'] == self.pars.algorithm]
 
-                # make a deepscore object for a specific measurement
-                score = DeepScore.from_measurements(m, provenance=prov)
+            if scores is None or len(same_algo_scores) == 0:
 
-                score.evaluate_scores() # calculate the rb and ml scores
+                self.has_recalculated = True
+                if hasattr(ds, 'scores') and ds.scores is not None:
+                    badscores = [s for s in ds.scores if s.provenance.parameters['algorithm'] == self.pars.algorithm]
+                    ds.scores = [s for s in ds.scores if s not in badscores] # take out deepscores matching this algo
+                else:
+                    ds.scores = []
 
-                # add it to the list
-                scores.append(score)
+                newscores = []
+                # iterate over the measurements, creating an appropriate DeepScore object for each.
+                for m in measurements:
 
-            ds.scores.extend(scores)
+                    # make a deepscore object for a specific measurement
+                    newscore = DeepScore.from_measurements(m, provenance=prov)
+
+                    newscore.evaluate_scores() # calculate the rb and ml scores
+
+                    # add it to the list
+                    newscores.append(newscore)
+
+                ds.scores.extend(newscores)
 
             ds.runtimes['scoring'] = time.perf_counter() - t_start
             if env_as_bool('SEECHANGE_TRACEMALLOC'):
