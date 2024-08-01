@@ -7,7 +7,7 @@ import sqlalchemy as sa
 import numpy as np
 
 from models.base import SmartSession, FileOnDiskMixin
-from models.provenance import Provenance
+from models.provenance import Provenance, ProvenanceTag
 from models.image import Image, image_upstreams_association_table
 from models.calibratorfile import CalibratorFile
 from models.source_list import SourceList
@@ -311,7 +311,7 @@ def test_bitflag_propagation(decam_exposure, decam_reference, decam_default_cali
     sec_id = ref.section_id
 
     try:  # cleanup the file at the end
-        p = Pipeline()
+        p = Pipeline( pipeline={'provenance_tag': 'test_bitflag_propagation'} )
         p.subtractor.pars.refset = 'test_refset_decam'
         p.pars.save_before_subtraction = False
         exposure.badness = 'banding'  # add a bitflag to check for propagation
@@ -415,6 +415,9 @@ def test_bitflag_propagation(decam_exposure, decam_reference, decam_default_cali
             ds.exposure.bitflag = 0
             session.merge(ds.exposure)
             session.commit()
+            # Remove the ProvenanceTag that will have been created
+            session.execute( sa.text( "DELETE FROM provenance_tags WHERE tag='test_bitflag_propagation'" ) )
+            session.commit()
 
 
 def test_get_upstreams_and_downstreams(decam_exposure, decam_reference, decam_default_calibrators, archive):
@@ -426,7 +429,7 @@ def test_get_upstreams_and_downstreams(decam_exposure, decam_reference, decam_de
     sec_id = ref.section_id
 
     try:  # cleanup the file at the end
-        p = Pipeline()
+        p = Pipeline( pipeline={'provenance_tag': 'test_get_upstreams_and_downstreams'} )
         p.subtractor.pars.refset = 'test_refset_decam'
         ds = p.run(exposure, sec_id)
 
@@ -502,6 +505,11 @@ def test_get_upstreams_and_downstreams(decam_exposure, decam_reference, decam_de
     finally:
         if 'ds' in locals():
             ds.delete_everything()
+        # Clean up the provenance tag created by the pipeline
+        with SmartSession() as session:
+            session.execute( sa.text( "DELETE FROM provenance_tags WHERE tag=:tag" ),
+                            { 'tag': 'test_get_upstreams_and_downstreams' } )
+            session.commit()
         # added this cleanup to make sure the temp data folder is cleaned up
         # this should be removed after we add datastore failure modes (issue #150)
         shutil.rmtree(os.path.join(os.path.dirname(exposure.get_fullpath()), '115'), ignore_errors=True)
@@ -560,8 +568,25 @@ def test_provenance_tree(pipeline_for_tests, decam_refset, decam_exposure, decam
     p = pipeline_for_tests
     p.subtractor.pars.refset = 'test_refset_decam'
 
-    provs = p.make_provenance_tree(decam_exposure)
+    def check_prov_tag( provs, ptagname ):
+        with SmartSession() as session:
+            ptags = session.query( ProvenanceTag ).filter( ProvenanceTag.tag==ptagname ).all()
+        provids = []
+        for prov in provs:
+            if isinstance( prov, list ):
+                provids.extend( [ i.id for i in prov ] )
+            else:
+                provids.append( prov.id )
+        ptagprovids = [ ptag.provenance_id for ptag in ptags ]
+        assert all( [ pid in provids for pid in ptagprovids ] )
+        assert all( [ pid in ptagprovids for pid in provids ] )
+        return ptags
+
+    provs = p.make_provenance_tree( decam_exposure )
     assert isinstance(provs, dict)
+
+    # Make sure the ProvenanceTag got created properly
+    ptags = check_prov_tag( provs.values(), 'pipeline_for_tests' )
 
     t_start = datetime.datetime.utcnow()
     ds = p.run(decam_exposure, 'S3')  # the data should all be there so this should be quick
@@ -585,6 +610,33 @@ def test_provenance_tree(pipeline_for_tests, decam_refset, decam_exposure, decam
         assert report.success
         assert abs(report.start_time - t_start) < datetime.timedelta(seconds=1)
         assert abs(report.finish_time - t_end) < datetime.timedelta(seconds=1)
+
+    # Make sure that the provenance tags are reused if we ask for the same thing
+    newprovs = p.make_provenance_tree( decam_exposure )
+    provids = []
+    for prov in provs.values():
+        if isinstance( prov, list ):
+            provids.extend( [ i.id for i in prov ] )
+        else:
+            provids.append( prov.id )
+    newprovids = []
+    for prov in newprovs.values():
+        if isinstance( prov, list ):
+            newprovids.extend( [ i.id for i in prov ] )
+        else:
+            newprovids.append( prov.id )
+    assert set( newprovids ) == set( provids )
+    newptags = check_prov_tag( newprovs.values(), 'pipeline_for_tests' )
+    assert set( [ i.id for i in newptags ] ) == set( [ i.id for i in ptags ] )
+
+    # Make sure that we get an exception if we ask for a mismatched provenance tree
+    # Do this by creating a new pipeline with inconsistent parameters but asking
+    # for the same provenance tag.
+    newp = Pipeline( pipeline={'provenance_tag': 'pipeline_for_tests'},
+                     extraction={'sources': { 'threshold': 42. } } )
+    with pytest.raises( RuntimeError,
+                        match='The following provenances are not associated with provenance tag pipeline_for_tests' ):
+        newp.make_provenance_tree( decam_exposure )
 
 
 def test_inject_warnings_errors(decam_datastore, decam_reference, pipeline_for_tests):

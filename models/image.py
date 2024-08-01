@@ -562,8 +562,40 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
         Must provide a session to merge into. Need to commit at the end.
 
         Returns the merged image with all its products on the same session.
+
+        DEVELOPER NOTE: changing what gets merged in this function
+        requires a corresponding change in
+        pipeline/data_store.py::DataStore.save_and_commit
+
         """
         new_image = self.safe_merge(session=session)
+
+        # Note -- this next block of code is useful for trying to debug
+        #  sqlalchemy weirdness.  However, because it calls the __repr__
+        #  method of various objects, it actually causes tests to fail.
+        #  In particular, there are tests that use 'ZTF' as the instrument,
+        #  but the code has no ZTF instrument defined, so calling
+        #  Image.__repr__ throws an error.  As such, comment the
+        #  code out below, but leave it here in case somebody wants
+        #  to temporarily re-enable it for debugging purposes.
+        #
+        # import io
+        # strio = io.StringIO()
+        # strio.write( "In image.merge_all; objects in session:\n" )
+        # if len( session.new ) > 0 :
+        #     strio.write( "    NEW:\n" )
+        #     for obj in session.new:
+        #         strio.write( f"        {obj}\n" )
+        # if len( session.dirty ) > 0:
+        #     strio.write( "    DIRTY:\n" )
+        #     for obj in session.dirty:
+        #         strio.write( f"        {obj}\n" )
+        # if len( session.deleted ) > 0:
+        #     strio.write( "    DELETED:\n" )
+        #     for obj in session.deleted:
+        #         strio.write( f"        {obj}\n" )
+        # SCLogger.debug( strio.getvalue() )
+
         session.flush()  # make sure new_image gets an ID
 
         if self.sources is not None:
@@ -672,10 +704,14 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
         self.ra_corner_01 = ras[1]
         self.ra_corner_10 = ras[2]
         self.ra_corner_11 = ras[3]
+        self.minra = min( ras )
+        self.maxra = max( ras )
         self.dec_corner_00 = decs[0]
         self.dec_corner_01 = decs[1]
         self.dec_corner_10 = decs[2]
         self.dec_corner_11 = decs[3]
+        self.mindec = min( decs )
+        self.maxdec = max( decs )
 
         if setradec:
             sc = wcs.pixel_to_world( data.shape[1] / 2., data.shape[0] / 2. )
@@ -796,10 +832,14 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
             new.ra_corner_01 = ra0
             new.ra_corner_10 = ra1
             new.ra_corner_11 = ra1
+            new.minra = ra0
+            new.maxra = ra1
             new.dec_corner_00 = dec0
             new.dec_corner_01 = dec1
             new.dec_corner_10 = dec0
             new.dec_corner_11 = dec1
+            new.mindec = dec0
+            new.maxdec = dec1
 
         new.info = header_info  # save any additional header keys into a JSONB column
 
@@ -870,6 +910,8 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
         for axis in ['ra', 'dec']:
             for corner in ['00', '01', '10', '11']:
                 setattr(new, f'{axis}_corner_{corner}', getattr(image, f'{axis}_corner_{corner}'))
+            setattr( new, f'min{axis}', getattr( image, f'min{axis}' ) )
+            setattr( new, f'max{axis}', getattr( image, f'max{axis}' ) )
 
         return new
 
@@ -923,6 +965,8 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
             copy_by_index_attributes.append(att)
             for corner in ['00', '01', '10', '11']:
                 copy_by_index_attributes.append(f'{att}_corner_{corner}')
+            copy_by_index_attributes.append( f'min{att}' )
+            copy_by_index_attributes.append( f'max{att}' )
 
         copy_by_index_attributes += ['gallon', 'gallat', 'ecllon', 'ecllat']
 
@@ -1056,7 +1100,8 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
                     'exp_time', 'airmass', 'mjd', 'end_mjd', 'info', 'header',
                     'gallon', 'gallat', 'ecllon', 'ecllat', 'ra', 'dec',
                     'ra_corner_00', 'ra_corner_01', 'ra_corner_10', 'ra_corner_11',
-                    'dec_corner_00', 'dec_corner_01', 'dec_corner_10', 'dec_corner_11' ]:
+                    'dec_corner_00', 'dec_corner_01', 'dec_corner_10', 'dec_corner_11',
+                    'minra', 'maxra', 'mindec', 'maxdec' ]:
             output.__setattr__(att, getattr(new_image, att))
 
         output.type = 'Diff'
@@ -1184,7 +1229,8 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
         target = self._get_alignment_target_image()
         for att in ['ra', 'dec',
                     'ra_corner_00', 'ra_corner_01', 'ra_corner_10', 'ra_corner_11',
-                    'dec_corner_00', 'dec_corner_01', 'dec_corner_10', 'dec_corner_11' ]:
+                    'dec_corner_00', 'dec_corner_01', 'dec_corner_10', 'dec_corner_11',
+                    'minra', 'maxra', 'mindec', 'maxdec' ]:
             self.__setattr__(att, getattr(target, att))
 
     @property
@@ -2219,7 +2265,7 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
         """Finds the combined image that was made from exactly the list of images (with a given provenance). """
         with SmartSession(session) as session:
             association = image_upstreams_association_table
-            
+
             stmt = sa.select(Image).join(
                 association, Image.id == association.c.downstream_id
             ).group_by(Image.id).having(
@@ -2415,7 +2461,5 @@ class Image(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, FourCorners, H
 
 
 if __name__ == '__main__':
-    filename = '/home/guyn/Dropbox/python/SeeChange/data/DECam_examples/c4d_221104_074232_ori.fits.fz'
-    e = Exposure(filename)
-    im = Image.from_exposure(e, section_id=1)
+    SCLogger.warning( "Running image.py doesn't actually do anything." )
 

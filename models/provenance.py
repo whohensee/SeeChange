@@ -2,16 +2,19 @@ import time
 import json
 import base64
 import hashlib
+from collections import defaultdict
 import sqlalchemy as sa
+import sqlalchemy.orm as orm
 from sqlalchemy import event
 from sqlalchemy.orm import relationship
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.schema import UniqueConstraint
 
 from util.util import get_git_hash
 
 import models.base
-from models.base import Base, SeeChangeBase, SmartSession, safe_merge
+from models.base import Base, AutoIDMixin, SeeChangeBase, SmartSession, safe_merge
 
 
 class CodeHash(Base):
@@ -375,3 +378,144 @@ CodeVersion.provenances = relationship(
     foreign_keys="Provenance.code_version_id",
     passive_deletes=True,
 )
+
+
+class ProvenanceTagExistsError(Exception):
+    pass
+
+class ProvenanceTag(Base, AutoIDMixin):
+    """A human-readable tag to associate with provenances.
+
+    A well-defined provenane tag will have a provenance defined for every step, but there will
+    only be a *single* provenance for each step (except for refrenceing, where there could be
+    multiple provenances defined).  The class method validate can check this for duplicates.
+
+    """
+
+    __tablename__ = "provenance_tags"
+
+    __table_args__ = ( UniqueConstraint( 'tag', 'provenance_id', name='_provenancetag_prov_tag_uc' ), )
+
+    tag = sa.Column(
+        sa.String,
+        nullable=False,
+        index=True,
+        doc='Human-readable tag name; one tag has many provenances associated with it.'
+    )
+
+    provenance_id = sa.Column(
+        sa.ForeignKey( 'provenances.id', ondelete="CASCADE", name='provenance_tags_provenance_id_fkey' ),
+        index=True,
+        doc='Provenance ID.  Each tag/process should only have one provenance.'
+    )
+
+    provenance = orm.relationship(
+        'Provenance',
+        cascade='save-update, merge, refresh-expire, expunge',
+        lazy='selectin',
+        doc=( "Provenance" )
+    )
+
+    def __repr__( self ):
+        return ( '<ProvenanceTag('
+                 f'tag={self.tag}, '
+                 f'provenance_id={self.provenance_id}>' )
+
+    @classmethod
+    def newtag( cls, tag, provs, session=None ):
+        """Add a new ProvenanceTag.  Will thrown an error if it already exists.
+
+        Usually, this is called from pipeline.top_level.make_provenance_tree, not directly.
+
+        Always commits.
+
+        Parameters
+        ----------
+          tag: str
+            The human-readable provenance tag.  For cleanliness, should be ASCII, no spaces.
+
+          provs: list of str or Provenance
+            The provenances to include in this tag.  Usually, you want to make sure to include
+            a provenance for every process in the pipeline: exposure, referencing, preprocessing,
+            extraction, subtraction, detection, cutting, measuring, [TODO MORE: deepscore, alert]
+
+            -oo- load_exposure, download, import_image, alignment or aligning, coaddition
+
+        """
+
+        with SmartSession( session ) as sess:
+            # Get all the provenance IDs we're going to insert
+            provids = set()
+            for prov in provs:
+                if isinstance( prov, Provenance ):
+                    provids.add( prov.id )
+                elif isinstance( prov, str ):
+                    provobj = sess.get( Provenance, prov )
+                    if provobj is None:
+                        raise ValueError( f"Unknown Provenance ID {prov}" )
+                    provids.add( provobj.id )
+                else:
+                    raise TypeError( f"Everything in the provs list must be Provenance or str, not {type(prov)}" )
+
+            try:
+                # Make sure that this tag doesn't already exist.  To avoid race
+                #  conditions of two processes creating it at once (which,
+                #  given how we expect the code to be used, should probably
+                #  not happen in practice), lock the table before searching
+                #  and only unlock after inserting.
+                sess.connection().execute( sa.text( "LOCK TABLE provenance_tags" ) )
+                current = sess.query( ProvenanceTag ).filter( ProvenanceTag.tag == tag )
+                if current.count() != 0:
+                    sess.rollback()
+                    raise ProvenanceTagExistsError( f"ProvenanceTag {tag} already exists." )
+
+                for provid in provids:
+                    sess.add( ProvenanceTag( tag=tag, provenance_id=provid ) )
+
+                sess.commit()
+            finally:
+                # Make sure no lock is left behind; exiting the with block
+                #   ought to do this, but be paranoid.
+                sess.rollback()
+
+    @classmethod
+    def validate( cls, tag, processes=None, session=None ):
+        """Verify that a given tag doesn't have multiply defined processes.
+
+        One exception: referenceing can have multiply defined processes.
+
+        Raises an exception if things don't work.
+
+        Parameters
+        ----------
+          tag: str
+            The tag to validate
+
+          processes: list of str
+            The processes to make sure are present.  If None, won't make sure
+            that any processes are present, will just make sure there are no
+            duplicates.
+
+        """
+
+        repeatok = { 'referencing' }
+
+        with SmartSession( session ) as sess:
+            ptags = ( sess.query( (ProvenanceTag.id,Provenance.process) )
+                      .filter( ProvenanceTag.provenance_id==Provenance.id )
+                      .filter( ProvenanceTag.tag==tag )
+                     ).all()
+
+        count = defaultdict( lambda: 0 )
+        for ptagid, process in ptags:
+            count[ process ] += 1
+
+        multiples = [ i for i in count.keys() if count[i] > 1 and i not in repeatok ]
+        if len(multiples) > 0:
+            raise ValueError( f"Database integrity error: ProcessTag {tag} has more than one "
+                              f"provenance for processes {multiples}" )
+
+        if processes is not None:
+            missing = [ i for i in processes if i not in count.keys() ]
+            if len( missing ) > 0:
+                raise ValueError( f"Some processes missing from ProcessTag {tag}: {missing}" )
