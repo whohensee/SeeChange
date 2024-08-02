@@ -15,9 +15,12 @@ class DeepScore(Base, AutoIDMixin):
 
     # Does this feel like a good unique constraint? Ensure any given measurements only ever
     # has a single entry per ML/DL method ('_algorithm' includes method+parameters)
-    __table_args__ = (
-        UniqueConstraint('measurements_id', '_algorithm', name='_score_measurements_algorithm_uc'),
-    )
+    # NOTE: various versions of this unique constraint gave me sqlalchemy session headaches, so I am leaving it out
+    # for the time being. If we are removing relationships, I will revisit it afterwards, because the merging
+    # is rough. 
+    # __table_args__ = (
+    #     UniqueConstraint('measurements_id', '_algorithm', 'provenance_id', name='_score_measurements_algorithm_provenance_uc'),
+    # )
 
     _algorithm = sa.Column(
         sa.SMALLINT,

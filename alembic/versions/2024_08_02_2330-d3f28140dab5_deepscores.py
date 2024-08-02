@@ -1,8 +1,8 @@
-"""deepscore
+"""deepscores
 
-Revision ID: 7bf744e82e72
+Revision ID: d3f28140dab5
 Revises: 05bb57675701
-Create Date: 2024-08-02 20:10:28.964183
+Create Date: 2024-08-02 23:30:26.853086
 
 """
 from alembic import op
@@ -10,7 +10,7 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision = '7bf744e82e72'
+revision = 'd3f28140dab5'
 down_revision = '05bb57675701'
 branch_labels = None
 depends_on = None
@@ -28,8 +28,7 @@ def upgrade() -> None:
     sa.Column('id', sa.BigInteger(), autoincrement=True, nullable=False),
     sa.ForeignKeyConstraint(['measurements_id'], ['measurements.id'], name='deep_score_measurements_id_fkey', ondelete='CASCADE'),
     sa.ForeignKeyConstraint(['provenance_id'], ['provenances.id'], name='deep_score_provenance_id_fkey', ondelete='CASCADE'),
-    sa.PrimaryKeyConstraint('id'),
-    sa.UniqueConstraint('measurements_id', '_algorithm', name='_score_measurements_algorithm_uc')
+    sa.PrimaryKeyConstraint('id')
     )
     op.create_index(op.f('ix_deepscores_created_at'), 'deepscores', ['created_at'], unique=False)
     op.create_index(op.f('ix_deepscores_id'), 'deepscores', ['id'], unique=False)
