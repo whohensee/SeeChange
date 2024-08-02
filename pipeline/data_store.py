@@ -19,6 +19,8 @@ from models.zero_point import ZeroPoint
 from models.reference import Reference
 from models.cutouts import Cutouts
 from models.measurements import Measurements
+from models.deepscore import DeepScore
+
 
 # for each process step, list the steps that go into its upstream
 UPSTREAM_STEPS = {
@@ -1334,13 +1336,9 @@ class DataStore:
                 ).all()
 
         return self.measurements
-    
-    def get_deepscores(self, session=None):
-        """Get a list of DeepScores, either from memory or from database.
 
-        NOTE: Differs from the other get_<product> functions as it cannot
-        accept a prov. Instead, it will use all of the (potentially) multiple
-        provs associated with the datastore via the provenance_tree.
+    def get_deepscores(self, provenance=None, session=None):
+        """Get a list of DeepScores, either from memory or from database.
 
         Parameters
         ----------
@@ -1364,24 +1362,34 @@ class DataStore:
             The list of deepscores, that will be empty if no matching deepscores are found.
 
         """
-        from models.deepscore import DeepScore
         process_name = 'scoring'
 
-        provenances = self._get_provenance_for_an_upstream(process_name, session)
+        # retrieve 'acceptable' provenances for deepscores
+        ok_provenances = self._get_provenance_for_an_upstream(process_name, session)
 
-        if provenances is not None:
-            # list of provenances used by this datastore scores
-            prov_ids = [p.id for p in provenances]
+        # add the requested provenance
+        if provenance is not None:
+            if ok_provenances is not None:
+                ok_provenances.append(provenance) # this could be a duplicate, but shouldn't matter
+            else:
+                ok_provenances = [provenance]
+
+        if ok_provenances is not None:
+            # list of acceptable provenance ids
+            prov_ids = [p.id for p in ok_provenances]
 
             # make sure the deepscores have the correct provenance
             if self.scores is not None:
                 if any([s.provenance is None for s in self.scores]):
                     raise ValueError('One of the deepscores has no provenance!')
-                if provenances is not None and any([s.provenance.id not in prov_ids for s in self.scores]):
+
+                # if we have any scores that do not belong, reset self.scores
+                if any([s.provenance.id not in prov_ids for s in self.scores]):
                     self.scores = None
 
             # not in memory, look for it on the DB
             if self.scores is None:
+
                 with SmartSession(session, self.session) as session:
                     measurements = self.get_measurements(session=session)
                     m_ids = [m.id for m in measurements]
