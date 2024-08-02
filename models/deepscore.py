@@ -102,7 +102,8 @@ class DeepScore(Base, AutoIDMixin):
     def __repr__(self):
         return (
             f"<DeepScore {self.id} "
-            f"from Measurements {self.measurements_id}>"
+            f"from Measurements {self.measurements_id} "
+            f"with algorithm {self.algorithm}>"
         )
 
     @staticmethod

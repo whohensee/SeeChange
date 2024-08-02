@@ -1605,13 +1605,14 @@ class DataStore:
                     more_products += ', cutouts'
 
                 # need to keep track of which scores go to which measurements
-                # WHPR TODO: consider implementing a more efficient method here
-                if self.scores is not None:
+                # Best I could manage was to track by index_in_sources, which
+                # should be always present and independent of session status
+                if self.scores is not None and len(self.scores) != 0:
                     s_m_dict = {}
-                    m_list = np.array(self.measurements)
+                    m_idx_list = np.array([m.index_in_sources for m in self.measurements])
                     for i, s in enumerate(self.scores):
                         # store the index of corresponding measurement
-                        s_m_dict[i] = np.argwhere(m_list == s.measurements)[0][0]
+                        s_m_dict[i] = np.argwhere(m_idx_list == s.measurements.index_in_sources)[0][0]
 
                 if self.measurements is not None:
                     for i, m in enumerate(self.measurements):

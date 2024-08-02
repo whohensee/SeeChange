@@ -365,6 +365,9 @@ class Pipeline:
 
                 # measure deep learning models on the cutouts/measurements
                 for i, scorer in enumerate(self.scorers):
+                    # stop scoring if any errors occur (this prevents issues with reports)
+                    if ds.exception is not None: 
+                        continue
                     SCLogger.info(f"scorer {i} for image id {ds.image.id}")
                     ds = scorer.run(ds, session)
                 ds.update_report('scoring', session=None)
@@ -583,7 +586,10 @@ class Pipeline:
                     ptags = sess.query( ProvenanceTag ).filter( ProvenanceTag.tag==provtag ).all()
                     ptag_pids = [ pt.provenance_id for pt in ptags ]
                 for step, prov in provs.items():
-                    if isinstance( prov, list ):
+                    # treat scoring list differently
+                    if step == 'scoring' and isinstance( prov, list):
+                        missing.extend( [p for p in provs[step] if p.id not in ptag_pids] )
+                    elif isinstance( prov, list ):
                         missing.extend( [ i.id for i in prov if i.id not in ptag_pids ] )
                     elif prov.id not in ptag_pids:
                         missing.append( prov )

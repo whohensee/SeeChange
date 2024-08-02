@@ -5,9 +5,6 @@ import sqlalchemy as sa
 
 from models.base import SmartSession
 from models.deepscore import DeepScore
-from pipeline.scoring import Scorer
-
-from util.config import Config
 
 def test_deepscore_creation():
     return None
@@ -48,9 +45,35 @@ def test_single_algorithm(ptf_datastore, scorers):
                 .filter(DeepScore._algorithm == 1)
                 .filter(DeepScore.measurements_id.in_(m_ids))
             ).all()
-
+        assert scorer1.has_recalculated
+        assert scorer2.has_recalculated
         assert len(scores1) == m_count
         assert len(scores2) == m_count
+
+        # check the logic for running when the scores are already in db
+
+        with SmartSession() as session:
+            ds = scorer1.run(ds, session)
+            ds.save_and_commit()
+
+        assert not scorer1.has_recalculated
+        assert len(ds.scores) == m_count * 2
+
+        with SmartSession() as session:
+            scores1 = session.scalars(
+                sa.select(DeepScore)
+                .filter(DeepScore._algorithm == 0)
+                .filter(DeepScore.measurements_id.in_(m_ids))
+            ).all()
+
+            allscores = session.scalars(
+                sa.select(DeepScore)
+                .filter(DeepScore.measurements_id.in_(m_ids))
+            ).all()
+
+        assert len(scores1) == m_count
+        assert len(allscores) == m_count * 2
+
 
     finally:
         return None
@@ -60,4 +83,3 @@ def test_single_algorithm(ptf_datastore, scorers):
 
 def test_multiple_algorithms():
     return None
-
