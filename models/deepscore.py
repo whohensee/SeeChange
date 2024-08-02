@@ -16,7 +16,7 @@ class DeepScore(Base, AutoIDMixin):
     # Does this feel like a good unique constraint? Ensure any given measurements only ever
     # has a single entry per ML/DL method ('_algorithm' includes method+parameters)
     __table_args__ = (
-        UniqueConstraint('measurements_id', '_algorithm', name='_score_measurements_algorithm_uc')
+        UniqueConstraint('measurements_id', '_algorithm', name='_score_measurements_algorithm_uc'),
     )
 
     _algorithm = sa.Column(
