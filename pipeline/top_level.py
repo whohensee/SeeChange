@@ -366,7 +366,7 @@ class Pipeline:
                 # measure deep learning models on the cutouts/measurements
                 for i, scorer in enumerate(self.scorers):
                     # stop scoring if any errors occur (this prevents issues with reports)
-                    if ds.exception is not None: 
+                    if ds.exception is not None:
                         continue
                     SCLogger.info(f"scorer {i} for image id {ds.image.id}")
                     ds = scorer.run(ds, session)

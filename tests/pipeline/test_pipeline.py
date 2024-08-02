@@ -762,34 +762,3 @@ def test_multiprocessing_make_provenances_and_exposure(decam_exposure, decam_ref
     for _ in process_list:  # order is not kept but all outputs should be the same
         output_provs = queue.get()
         assert output_provs['measuring'].id == provs['measuring'].id
-
-def test_data_flow_xyz(decam_exposure, decam_reference, decam_default_calibrators, pipeline_for_tests, archive):
-    """Test that the pipeline runs end-to-end."""
-    exposure = decam_exposure
-
-    ref = decam_reference
-    sec_id = ref.section_id
-    try:  # cleanup the file at the end
-        p = pipeline_for_tests
-        p.subtractor.pars.refset = 'test_refset_decam'
-        assert p.extractor.pars.threshold != 3.14
-        assert p.detector.pars.threshold != 3.14
-
-        ds = p.run(exposure, sec_id)
-
-        # breakpoint()
-
-        with SmartSession() as session:
-            ds.save_and_commit(session=session)
-
-        # breakpoint()
-
-
-    finally:
-        if 'ds' in locals():
-            # breakpoint()
-            ds.delete_everything()
-        # added this cleanup to make sure the temp data folder is cleaned up
-        # this should be removed after we add datastore failure modes (issue #150)
-        shutil.rmtree(os.path.join(os.path.dirname(exposure.get_fullpath()), '115'), ignore_errors=True)
-        shutil.rmtree(os.path.join(archive.test_folder_path, '115'), ignore_errors=True)

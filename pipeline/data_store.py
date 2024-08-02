@@ -44,7 +44,7 @@ PROCESS_PRODUCTS = {
     'detection': 'detections',
     'cutting': 'cutouts',
     'measuring': 'measurements',
-    'scoring': 'deep_score'  # WHPR figure out where this is used and if the name looks good
+    'scoring': 'scores',
 }
 
 
@@ -1338,6 +1338,10 @@ class DataStore:
     def get_deepscores(self, session=None):
         """Get a list of DeepScores, either from memory or from database.
 
+        NOTE: Differs from the other get_<product> functions as it cannot
+        accept a prov. Instead, it will use all of the (potentially) multiple
+        provs associated with the datastore via the provenance_tree.
+
         Parameters
         ----------
         provenance: Provenance object
@@ -1364,8 +1368,9 @@ class DataStore:
         process_name = 'scoring'
 
         provenances = self._get_provenance_for_an_upstream(process_name, session)
-        
+
         if provenances is not None:
+            # list of provenances used by this datastore scores
             prov_ids = [p.id for p in provenances]
 
             # make sure the deepscores have the correct provenance

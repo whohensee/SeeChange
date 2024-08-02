@@ -504,7 +504,7 @@ process_steps_dict = {
     7: 'cutting',        # creates Cutouts from a subtraction Image
     8: 'measuring',      # creates Measurements from Cutouts
     9: 'scoring',        # creates DeepScore from Measurements
-    # TODO: add R/B scores and maybe an extra step for finalizing a report
+    # TODO: add maybe an extra step for finalizing a report
 }
 process_steps_inverse = {EnumConverter.c(v): k for k, v in process_steps_dict.items()}
 
