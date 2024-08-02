@@ -1,5 +1,6 @@
 import sqlalchemy as sa
 from sqlalchemy import orm
+from sqlalchemy.schema import UniqueConstraint
 import numpy as np
 
 from sqlalchemy.ext.hybrid import hybrid_property
@@ -12,10 +13,11 @@ from models.enums_and_bitflags import DeepscoreAlgorithmConverter
 class DeepScore(Base, AutoIDMixin):
     __tablename__ = 'deepscores'
 
-    # table args including unique constraints
-
-    # might be more specifically linked to a cutouts, but for now that will be a measurements
-    # might want to consider a unique constraint for this if its important to not redo
+    # Does this feel like a good unique constraint? Ensure any given measurements only ever
+    # has a single entry per ML/DL method ('_algorithm' includes method+parameters)
+    __table_args__ = (
+        UniqueConstraint('measurements_id', '_algorithm', name='_score_measurements_algorithm_uc')
+    )
 
     _algorithm = sa.Column(
         sa.SMALLINT,
@@ -40,7 +42,6 @@ class DeepScore(Base, AutoIDMixin):
     def algorithm( self, value ):
         self._algorithm = DeepscoreAlgorithmConverter.convert( value )
 
-    # measurements id
     measurements_id = sa.Column(
         sa.ForeignKey('measurements.id', ondelete='CASCADE', name='deep_score_measurements_id_fkey'),
         nullable=False,
@@ -56,7 +57,6 @@ class DeepScore(Base, AutoIDMixin):
         doc="The measurements this DeepScore is associated with. ",
     )
 
-    # provenance_id
     provenance_id = sa.Column(
         sa.ForeignKey('provenances.id', ondelete="CASCADE", name='deep_score_provenance_id_fkey'),
         nullable=False,
@@ -68,7 +68,6 @@ class DeepScore(Base, AutoIDMixin):
         )
     )
 
-    # provenance (relationship) described in proj
     provenance = orm.relationship(
         'Provenance',
         cascade='save-update, merge, refresh-expire, expunge',
@@ -79,26 +78,23 @@ class DeepScore(Base, AutoIDMixin):
             "and the parameters used to produce this DeepScore. "
         )
     )
-    # float score
+
     score = sa.Column(
         sa.REAL,
         nullable=False,
         doc="The score determined by the ML/DL algorithm used for this object. "
     )
 
-    # init
     def __init__(self, *args, **kwargs):
         SeeChangeBase.__init__(self) # don't pass kwargs as they could contain non-column key-values
 
         # manually set all properties (columns or not)
         self.set_attributes_from_dict(kwargs)
     
-    # reconstructor
     @orm.reconstructor
     def init_on_load(self):
         SeeChangeBase.init_on_load(self)
 
-    # consider how much data is useful adding into repr
     def __repr__(self):
         return (
             f"<DeepScore {self.id} "
@@ -116,7 +112,6 @@ class DeepScore(Base, AutoIDMixin):
         score = DeepScore()
         score.measurements = measurements
         score.provenance = provenance
-        # score.provenance_id = provenance.id # WHPR check if this should auto-fill somewhere
 
         return score
     
@@ -146,7 +141,6 @@ class DeepScore(Base, AutoIDMixin):
 
         return None
 
-    # get upstreams
     def get_upstreams(self, session=None):
         """Get the measurements that was used to make this deepscore. """
         with SmartSession(session) as session:

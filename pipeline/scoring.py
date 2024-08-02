@@ -12,7 +12,6 @@ class ParsScorer(Parameters):
     def __init__(self, **kwargs):
         super().__init__()
 
-        # add the necessary parameters
         self.test_rb_score = self.add_par(
             'test_rb_score',
             5,
@@ -43,7 +42,6 @@ class Scorer:
         # the object did any work or just loaded from DB or datastore
         self.has_recalculated = False
 
-    # create a run
     def run(self, *args, **kwargs):
         """
         Look at the measurements and assign scores based
@@ -68,7 +66,7 @@ class Scorer:
             self.pars.do_warning_exception_hangup_injection_here()
 
             # get the provenance for this step:
-            # WHPR TODO: as in issue, need capability potentially use multiple provenances
+            # NOTE: as in issue, need capability to use multiple provenances
             # For now this is solved by creating multiple scorer objects in top_level, since
             # if we pass all that info down into Scorer, it could cause some provenance trouble.
             # (A 'random' algorithm deepscore created in a pipeline run using only 'random' should
@@ -83,12 +81,15 @@ class Scorer:
                     f'Cannot find a measurements corresponding to the datastore inputs: {ds.get_inputs()}'
                 )
 
-            # find if this deepscore object has already been made in the ds
+            # find if these deepscores have already been made
             scores = ds.get_deepscores( session=session )
 
             if scores is not None:
-                # WHPR TODO: consider if comparing something other than the algorithm is better
+                # TODO: consider if comparing something other than the algorithm is better
+                # each scorer uniquely uses an algorithm, so any scores using this algo in this ds
+                # should only come from this scorer.
                 same_algo_scores = [s for s in scores if s.provenance.parameters['algorithm'] == self.pars.algorithm]
+
 
             if scores is None or len(same_algo_scores) == 0:
 

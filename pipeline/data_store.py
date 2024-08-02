@@ -1619,7 +1619,9 @@ class DataStore:
 
                 # need to keep track of which scores go to which measurements
                 # Best I could manage was to track by index_in_sources, which
-                # should be always present and independent of session status
+                # should be always present and independent of session status,
+                # but DOES rely on all measurements only pointing to a single
+                # cutout, which SHOULD always be true...
                 if self.scores is not None and len(self.scores) != 0:
                     s_m_dict = {}
                     m_idx_list = np.array([m.index_in_sources for m in self.measurements])
