@@ -207,6 +207,7 @@ def get_all_database_objects(display=False, session=None):
     from models.zero_point import ZeroPoint
     from models.cutouts import Cutouts
     from models.measurements import Measurements
+    from models.deepscore import DeepScore
     from models.object import Object
     from models.calibratorfile import CalibratorFile, CalibratorFileDownloadLock
     from models.catalog_excerpt import CatalogExcerpt
@@ -216,7 +217,7 @@ def get_all_database_objects(display=False, session=None):
 
     models = [
         CodeHash, CodeVersion, Provenance, ProvenanceTag, DataFile, Exposure, Image,
-        SourceList, PSF, WorldCoordinates, ZeroPoint, Cutouts, Measurements, Object,
+        SourceList, PSF, WorldCoordinates, ZeroPoint, Cutouts, Measurements, DeepScore, Object,
         CalibratorFile, CalibratorFileDownloadLock, CatalogExcerpt, Reference, SensorSection,
         AuthUser, PasswordLink, KnownExposure, PipelineWorker
     ]
