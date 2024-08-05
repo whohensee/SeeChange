@@ -12,13 +12,6 @@ class ParsScorer(Parameters):
     def __init__(self, **kwargs):
         super().__init__()
 
-        self.test_rb_score = self.add_par(
-            'test_rb_score',
-            5,
-            float,
-            'A totally fake value for testing. '
-        )
-
         # would we rather this be the integer in the enum list instead?
         self.algorithm = self.add_par(
             'algorithm',

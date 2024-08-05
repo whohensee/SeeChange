@@ -6,10 +6,7 @@ import sqlalchemy as sa
 from models.base import SmartSession
 from models.deepscore import DeepScore
 
-def test_deepscore_creation():
-    return None
-
-def test_single_algorithm(ptf_datastore, scorers):
+def test_deepscore_saving(ptf_datastore, scorers):
 
     scorer1 = scorers[0]  # 'random'
     scorer2 = scorers[1]  # 'allperfect'
@@ -80,6 +77,3 @@ def test_single_algorithm(ptf_datastore, scorers):
     # cleanup happens in ptf_datastore fixture
         if 'ds' in locals():
             ds.delete_everything()
-
-def test_multiple_algorithms():
-    return None
