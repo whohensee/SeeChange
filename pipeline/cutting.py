@@ -2,6 +2,7 @@ import time
 
 from improc.tools import make_cutouts
 
+from models.image import Image
 from models.source_list import SourceList
 from models.cutouts import Cutouts
 
@@ -49,12 +50,14 @@ class Cutter:
         """
         self.has_recalculated = False
         try:  # first make sure we get back a datastore, even an empty one
-            if isinstance(args[0], SourceList) and args[0].is_sub:  # most likely to get a SourceList detections object
-                args, kwargs, session = parse_session(*args, **kwargs)
-                ds = DataStore()
-                ds.detections = args[0]
-                ds.sub_image = args[0].image
-                ds.image = args[0].image.new_image
+            # if isinstance(args[0], SourceList) and args[0].is_sub:  # most likely to get a SourceList detections object
+            if isinstance( args[0], SourceList ):
+                raise RuntimeError( "Need to update the code for creating a Cutter from a detections list" )
+                # args, kwargs, session = parse_session(*args, **kwargs)
+                # ds = DataStore()
+                # ds.detections = args[0]
+                # ds.sub_image = args[0].image
+                # ds.image = args[0].image.new_image
             else:
                 ds, session = DataStore.from_args(*args, **kwargs)
         except Exception as e:
@@ -73,9 +76,8 @@ class Cutter:
 
             detections = ds.get_detections(session=session)
             if detections is None:
-                raise ValueError(
-                    f'Cannot find a detections source list corresponding to the datastore inputs: {ds.get_inputs()}'
-                )
+                raise ValueError( f'Cannot find a detections source list corresponding to '
+                                  f'the datastore inputs: {ds.get_inputs()}' )
 
             # try to find some cutouts in memory or in the database:
             cutouts = ds.get_cutouts(prov, session=session)
@@ -102,13 +104,13 @@ class Cutter:
                 #     sub_stamps_psfflux = None
                 #     sub_stamps_psffluxerr = None
 
-                ref_stamps_data = make_cutouts(ds.sub_image.ref_aligned_image.data, x, y, sz)
-                ref_stamps_weight = make_cutouts(ds.sub_image.ref_aligned_image.weight, x, y, sz, fillvalue=0)
-                ref_stamps_flags = make_cutouts(ds.sub_image.ref_aligned_image.flags, x, y, sz, fillvalue=0)
+                ref_stamps_data = make_cutouts(ds.aligned_ref_image.data, x, y, sz)
+                ref_stamps_weight = make_cutouts(ds.aligned_ref_image.weight, x, y, sz, fillvalue=0)
+                ref_stamps_flags = make_cutouts(ds.aligned_ref_image.flags, x, y, sz, fillvalue=0)
 
-                new_stamps_data = make_cutouts(ds.sub_image.new_aligned_image.data, x, y, sz)
-                new_stamps_weight = make_cutouts(ds.sub_image.new_aligned_image.weight, x, y, sz, fillvalue=0)
-                new_stamps_flags = make_cutouts(ds.sub_image.new_aligned_image.flags, x, y, sz, fillvalue=0)
+                new_stamps_data = make_cutouts(ds.aligned_new_image.data, x, y, sz)
+                new_stamps_weight = make_cutouts(ds.aligned_new_image.weight, x, y, sz, fillvalue=0)
+                new_stamps_flags = make_cutouts(ds.aligned_new_image.flags, x, y, sz, fillvalue=0)
 
                 cutouts = Cutouts.from_detections(detections, provenance=prov)
 
@@ -136,10 +138,10 @@ class Cutter:
             cutouts._upstream_bitflag |= detections.bitflag
 
             # add the resulting Cutouts to the data store
-            if cutouts.provenance is None:
-                cutouts.provenance = prov
+            if cutouts.provenance_id is None:
+                cutouts.provenance_id = prov.id
             else:
-                if cutouts.provenance.id != prov.id:
+                if cutouts.provenance_id != prov.id:
                     raise ValueError(
                             f'Provenance mismatch for cutout {cutouts.provenance.id[:6]} '
                             f'and preset provenance {prov.id[:6]}!'

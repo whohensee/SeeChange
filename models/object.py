@@ -6,18 +6,25 @@ from collections import defaultdict
 
 import sqlalchemy as sa
 from sqlalchemy import orm
+from sqlalchemy.ext.declarative import declared_attr
 
 from astropy.time import Time
 from astropy.coordinates import SkyCoord
 
-from models.base import Base, SeeChangeBase, SmartSession, AutoIDMixin, SpatiallyIndexed
+from models.base import Base, SeeChangeBase, SmartSession, UUIDMixin, SpatiallyIndexed
 from models.measurements import Measurements
 
 import util.config as config
 
 
-class Object(Base, AutoIDMixin, SpatiallyIndexed):
+class Object(Base, UUIDMixin, SpatiallyIndexed):
     __tablename__ = 'objects'
+
+    @declared_attr
+    def __table_args__(cls):
+        return (
+            sa.Index(f"{cls.__tablename__}_q3c_ang2ipix_idx", sa.func.q3c_ang2ipix(cls.ra, cls.dec)),
+        )
 
     name = sa.Column(
         sa.String,
@@ -30,14 +37,14 @@ class Object(Base, AutoIDMixin, SpatiallyIndexed):
     is_test = sa.Column(
         sa.Boolean,
         nullable=False,
-        default=False,
+        server_default='false',
         doc='Boolean flag to indicate if the object is a test object created during testing. '
     )
 
     is_fake = sa.Column(
         sa.Boolean,
         nullable=False,
-        default=False,
+        server_default='false',
         doc='Boolean flag to indicate if the object is a fake object that has been artificially injected. '
     )
 
@@ -48,14 +55,6 @@ class Object(Base, AutoIDMixin, SpatiallyIndexed):
         doc='Boolean flag to indicate if the object is associated with measurements marked "bad". '
     )
 
-    measurements = orm.relationship(
-        Measurements,
-        back_populates='object',
-        cascade='all, delete-orphan',
-        passive_deletes=True,
-        lazy='selectin',
-        doc='All Measurements related to the object, can include duplicates or bad measurements! '
-    )
 
     def __init__(self, **kwargs):
         SeeChangeBase.__init__(self)  # don't pass kwargs as they could contain non-column key-values
@@ -114,6 +113,7 @@ class Object(Base, AutoIDMixin, SpatiallyIndexed):
         -------
         list of Measurements
         """
+        raise RuntimeError( "Issue #346" )
         # this includes all measurements that are close to the discovery measurement
         # measurements = session.scalars(
         #     sa.select(Measurements).where(Measurements.cone_search(self.ra, self.dec, radius))
@@ -129,6 +129,38 @@ class Object(Base, AutoIDMixin, SpatiallyIndexed):
 
         if time_end is not None:
             mjd_end = Time(time_end).mjd
+
+
+        # IN PROGRESS.... MORE THOUGHT REQUIRED
+        # THIS WILL BE DONE IN A FUTURE PR  (Issue #346)
+
+        with SmartSession() as session:
+            q = session.query( Measurements, Image.mjd ).filter( Measurements.object_id==self._id )
+
+            if ( mjd_start is not None ) or ( mjd_end is not None ):
+                q = ( q.join( Cutouts, Measurements.cutouts_id==Cutouts._id )
+                      .join( SourceList, Cutouts.sources_id==Sources._id )
+                      .join( Image, SourceList.image_id==Image.id ) )
+                if mjd_start is not None:
+                    q = q.filter( Image.mjd >= mjd_start )
+                if mjd_end is not None:
+                    q = q.filter( Image.mjd <= mjd_end )
+
+            if radius is not None:
+                q = q.filter( sa.func.q3c_radial_query( Measurements.ra, Measurements.dec,
+                                                        self.ra, self.dec,
+                                                        radius/3600. ) )
+
+            if prov_hash_list is not None:
+                q = q.filter( Measurements.provenance_id.in_( prov_hash_list ) )
+
+            bigbank = measurements.all()
+
+        # Further filtering based on thresholds
+
+        # if thresholds is not None:
+        # ....stopped here, more thought required
+
 
         measurements = []
         if radius is not None:
@@ -214,6 +246,8 @@ class Object(Base, AutoIDMixin, SpatiallyIndexed):
         float, float
             The mean RA and Dec of the object.
         """
+
+        raise RuntimeError( "This is broken until we fix get_measurements_list" )
         measurements = self.get_measurements_list(**(measurement_list_kwargs or {}))
 
         ra = np.array([m.ra for m in measurements])
@@ -324,7 +358,7 @@ class Object(Base, AutoIDMixin, SpatiallyIndexed):
     @staticmethod
     def get_last_id_for_naming(convention, present_time=None, session=None):
         """Get the ID of the last object before the given date (defaults to now).
-
+o
         Will query the database for an object with a created_at which is the last before
         the start of this year, month or day (depending on what exists in the naming convention).
         Will return the ID of that object, or 0 if no object exists.
@@ -345,6 +379,8 @@ class Object(Base, AutoIDMixin, SpatiallyIndexed):
         int
             The ID of the last object before the given date.
         """
+        raise RuntimeError( "This no longer works now that we're not using numeric ids. (Issue #347.)" )
+
         if present_time is None:
             present_time = datetime.datetime.utcnow()
 
@@ -366,33 +402,49 @@ class Object(Base, AutoIDMixin, SpatiallyIndexed):
                 return 0
             return last_obj.id
 
+    # ======================================================================
+    # The fields below are things that we've deprecated; these definitions
+    #   are here to catch cases in the code where they're still used
 
-# add an event listener to catch objects before insert and generate a name for them
-@sa.event.listens_for(Object, 'before_insert')
-def generate_object_name(mapper, connection, target):
-    if target.name is None:
-        target.name = 'placeholder'
+    @property
+    def measurements( self ):
+        raise RuntimeError( f"Object.measurements is deprecated, don't use it" )
 
-
-@sa.event.listens_for(sa.orm.session.Session, 'after_flush_postexec')
-def receive_after_flush_postexec(session, flush_context):
-    cfg = config.Config.get()
-    convention = cfg.value('object_naming_function', '<instrument><yyyy><alpha>')
-    naming_func = Object.make_naming_function(convention)
-    last_id = Object.get_last_id_for_naming(convention, session=session)
-
-    for obj in session.identity_map.values():
-        if isinstance(obj, Object) and (obj.name is None or obj.name == 'placeholder'):
-            obj.name = naming_func(obj, last_id)
-            # print(f'Object ID: {obj.id} Name: {obj.name}')
+    @measurements.setter
+    def measurements( self, val ):
+        raise RuntimeError( f"Object.measurements is deprecated, don't use it" )
 
 
-if __name__ == '__main__':
-    import datetime
 
-    obj = Object()
-    obj.created_at = datetime.datetime.utcnow()
-    obj.id = 130
+# Issue #347 ; we may just delete the stuff below, or modify it.
 
-    fun = Object.make_naming_function('SeeChange<instrument>_<yyyy><alpha>')
-    print(fun(obj))
+# # add an event listener to catch objects before insert and generate a name for them
+# @sa.event.listens_for(Object, 'before_insert')
+# def generate_object_name(mapper, connection, target):
+#     if target.name is None:
+#         target.name = 'placeholder'
+
+
+# @sa.event.listens_for(sa.orm.session.Session, 'after_flush_postexec')
+# def receive_after_flush_postexec(session, flush_context):
+#     cfg = config.Config.get()
+#     convention = cfg.value('object_naming_function', '<instrument><yyyy><alpha>')
+#     naming_func = Object.make_naming_function(convention)
+#     # last_id = Object.get_last_id_for_naming(convention, session=session)
+#     last_id = 666
+
+#     for obj in session.identity_map.values():
+#         if isinstance(obj, Object) and (obj.name is None or obj.name == 'placeholder'):
+#             obj.name = naming_func(obj, last_id)
+#             # print(f'Object ID: {obj.id} Name: {obj.name}')
+
+
+# If __name__ == '__main__':
+#     import datetime
+
+#     obj = Object()
+#     obj.created_at = datetime.datetime.utcnow()
+#     obj.id = 130
+
+#     fun = Object.make_naming_function('SeeChange<instrument>_<yyyy><alpha>')
+#     print(fun(obj))

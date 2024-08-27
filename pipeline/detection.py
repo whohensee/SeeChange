@@ -222,7 +222,6 @@ class Detector:
         except Exception as e:
             return DataStore.catch_failure_to_parse(e, *args)
 
-        # try to find the sources/detections in memory or in the database:
         if self.pars.subtraction:
             try:
                 t_start = time.perf_counter()
@@ -233,43 +232,43 @@ class Detector:
                 self.pars.do_warning_exception_hangup_injection_here()
 
                 if ds.sub_image is None and ds.image is not None and ds.image.is_sub:
-                    ds.sub_image = ds.image
-                    ds.image = ds.sub_image.new_image  # back-fill the image from the sub_image
+                    # ...I think this should be an exception, it's an ill-constructed DataStore
+                    raise RuntimeError( "You have a DataStore whose image is a subtraction." )
+                    # ds.sub_image = ds.image
+                    # # back-fill the image from the sub image
+                    # ds.image = None
+                    # ds.image_id = ds.sub_image.new_image_id
+                    # ds.get_image( session=session )
+
+                if ds.sub_image is None:
+                    raise RuntimeError( "detection.py: self.pars.subtraction is true, but "
+                                        "DataStore has no sub_image" )
 
                 prov = ds.get_provenance('detection', self.pars.get_critical_pars(), session=session)
 
+                # try to find the sources/detections in memory or in the database:
                 detections = ds.get_detections(prov, session=session)
 
                 if detections is None:
                     self.has_recalculated = True
 
-                    # load the subtraction image from memory
-                    # or load using the provenance given in the
-                    # data store's upstream_provs, or just use
-                    # the most recent provenance for "subtraction"
-                    image = ds.get_subtraction(session=session)
-
-                    if image is None:
-                        raise ValueError(
-                            f'Cannot find a subtraction image corresponding to the datastore inputs: {ds.get_inputs()}'
-                        )
-
-                    # TODO -- should probably pass **kwargs along to extract_sources
-                    #  in any event, need a way of passing parameters
-                    #  Question: why is it not enough to just define what you need in the Parameters object?
-                    #  Related to issue #50
-                    detections, _, _, _ = self.extract_sources( image )
-
-                    detections.image = image
-
-                    if detections.provenance is None:
-                        detections.provenance = prov
+                    # NOTE -- we're assuming that the sub image is
+                    #  aligned with the new image here!  That assumption
+                    #  is also implicitly built into measurements.py,
+                    #  and in subtraction.py there is a RuntimeError if
+                    #  you try to align to ref instead of new.
+                    detections, _, _, _ = self.extract_sources( ds.sub_image,
+                                                                wcs=ds.wcs,
+                                                                score=getattr( ds, 'zogy_score', None  ),
+                                                                zogy_alpha=getattr( ds, 'zogy_alpha', None ) )
+                    detections.image_id = ds.sub_image.id
+                    if detections.provenance_id is None:
+                        detections.provenance_id = prov.id
                     else:
-                        if detections.provenance.id != prov.id:
-                            raise ValueError('Provenance mismatch for detections and provenance!')
+                        if detections.provenance_id != prov.id:
+                            raise ValueError('Provenance mismatch for detections!')
 
                 detections._upstream_bitflag |= ds.sub_image.bitflag
-                ds.sub_image.sources = detections
                 ds.detections = detections
 
                 ds.runtimes['detection'] = time.perf_counter() - t_start
@@ -292,8 +291,8 @@ class Detector:
 
                 self.pars.do_warning_exception_hangup_injection_here()
 
-                sources = ds.get_sources(prov, session=session)
-                psf = ds.get_psf(prov, session=session)
+                sources = ds.get_sources(provenance=prov, session=session)
+                psf = ds.get_psf(provenance=prov, session=session)
 
                 if sources is None or psf is None:
                     # TODO: when only one of these is not found (which is a strange situation)
@@ -309,27 +308,25 @@ class Detector:
                     image = ds.get_image(session=session)
 
                     if image is None:
-                        raise ValueError(f'Cannot find an image corresponding to the datastore inputs: {ds.get_inputs()}')
+                        raise ValueError(f'Cannot find an image corresponding to the datastore inputs: '
+                                         f'{ds.get_inputs()}')
 
-                    sources, psf, bkg, bkgsig = self.extract_sources( image )
+                    sources, psf, bkg, bkgsig = self.extract_sources( image, wcs=ds.wcs )
 
-                    sources.image = image
-                    if sources.provenance is None:
-                        sources.provenance = prov
+                    sources.image_id = image.id
+                    psf.sources_id = sources.id
+                    if sources.provenance_id is None:
+                        sources.provenance_id = prov.id
                     else:
-                        if sources.provenance.id != prov.id:
+                        if sources.provenance_id != prov.id:
                             raise ValueError('Provenance mismatch for sources and provenance!')
 
-                    psf.image_id = image.id
-                    if psf.provenance is None:
-                        psf.provenance = prov
-                    else:
-                        if psf.provenance.id != prov.id:
-                            raise ValueError('Provenance mismatch for PSF and extraction provenance!')
+                    psf.sources_id = sources.id
 
                 ds.sources = sources
                 ds.psf = psf
-                ds.image.fwhm_estimate = psf.fwhm_pixels  # TODO: should we only write if the property is None?
+                if ds.image.fwhm_estimate is None:
+                    ds.image.fwhm_estimate = psf.fwhm_pixels * ds.image.instrument_object.pixel_scale
 
                 ds.runtimes['extraction'] = time.perf_counter() - t_start
                 if env_as_bool('SEECHANGE_TRACEMALLOC'):
@@ -341,13 +338,24 @@ class Detector:
             finally:  # make sure datastore is returned to be used in the next step
                 return ds
 
-    def extract_sources(self, image):
+    def extract_sources(self, image, wcs=None, score=None, zogy_alpha=None):
         """Calls one of the extraction methods, based on self.pars.method.
 
         Parameters
         ----------
         image: Image
           The Image object from which to extract sources.
+
+        wcs: WorldCoordiantes or None
+          Needed if self.pars.method is 'filter'.  If self.pars.method
+          is 'sextractor', this will be used in place of the one in the
+          image header to get RA and Dec.
+
+        score: numpy array
+          ZOGY score image.  Needed if self.pars.method is 'filter'.
+
+        zogy_alpha: numpy array
+          ZOGY alpha.  Needed if self.pars.method is 'filter'
 
         Returns
         -------
@@ -374,7 +382,9 @@ class Detector:
                 sources, psf, bkg, bkgsig = self.extract_sources_sextractor(image)
         elif self.pars.method == 'filter':
             if self.pars.subtraction:
-                sources = self.extract_sources_filter(image)
+                if ( wcs is None ) or ( score is None ) or ( zogy_alpha is None ):
+                    raise RuntimeError( '"filter" extraction requires wcs, score, and zogy_alpha' )
+                sources = self.extract_sources_filter( image, score, zogy_alpha, wcs )
             else:
                 raise ValueError('Cannot use "filter" method on regular image!')
         else:
@@ -387,7 +397,7 @@ class Detector:
 
         return sources, psf, bkg, bkgsig
 
-    def extract_sources_sextractor( self, image, psffile=None ):
+    def extract_sources_sextractor( self, image, psffile=None, wcs=None ):
         tempnamebase = ''.join( random.choices( 'abcdefghijklmnopqrstuvwxyz', k=10 ) )
         sourcepath = pathlib.Path( FileOnDiskMixin.temp_path ) / f'{tempnamebase}.sources.fits'
         psfpath = pathlib.Path( psffile ) if psffile is not None else None
@@ -410,7 +420,7 @@ class Detector:
                         aperrad *= 2. / image.instrument_object.pixel_scale
                 SCLogger.debug( "detection: running sextractor once without PSF to get sources" )
                 sources, _, _ = self._run_sextractor_once( image, apers=[aperrad],
-                                                           psffile=None, tempname=tempnamebase )
+                                                           psffile=None, wcs=wcs, tempname=tempnamebase )
 
                 # Get the PSF
                 SCLogger.debug( "detection: determining psf" )
@@ -442,6 +452,7 @@ class Detector:
                 apers=apers,
                 psffile=psfpath,
                 psfnorm=psf_norm,
+                wcs=wcs,
                 tempname=tempnamebase,
             )
             SCLogger.debug( f"detection: sextractor found {len(sources.data)} sources on image {image.filepath}" )
@@ -454,6 +465,7 @@ class Detector:
             sources.num_sources = len( sources.data )
             sources.inf_aper_num = self.pars.inf_aper_num
             sources.best_aper_num = self.pars.best_aper_num
+            psf.sources_id = sources.id
 
         finally:
             # Clean up the temporary files created (that weren't already cleaned up by _run_sextractor_once)
@@ -466,7 +478,8 @@ class Detector:
 
         return sources, psf, bkg, bkgsig
 
-    def _run_sextractor_once(self, image, apers=[5, ], psffile=None, psfnorm=3.0, tempname=None, do_not_cleanup=False):
+    def _run_sextractor_once(self, image, apers=[5, ], psffile=None, psfnorm=3.0, wcs=None,
+                             tempname=None, do_not_cleanup=False):
         """Extract a SourceList from a FITS image using SExtractor.
 
         This function should not be called from outside this class.
@@ -489,6 +502,10 @@ class Detector:
             sum of squares of the psf values).  This is used to set the
             threshold for sextractor.  When the PSF is not known, we
             will use a rough approximation and set this value to 3.0.
+
+          wcs: WorldCoordinates or None
+            If passed, will replace the WCS in the image header with the
+            WCS from this object before passing it to SExtractor.
 
           tempname: str
             If not None, a filename base for where the catalog will be
@@ -602,16 +619,14 @@ class Detector:
                     ofp.write( f"{param}\n" )
 
         try:
+            if not isinstance( image.header, fits.Header ):
+                raise TypeError( f"Expected image.header to be an astropy.io.fits.Header, but it's a "
+                                 f"{type(image.header)}" )
+            hdr = image.header.copy()
+            if wcs is not None:
+                hdr.update( wcs.wcs.to_header() )
 
-            # TODO : if the image is already on disk, then we may not need
-            #  to do the writing here.  In that case, we do have to think
-            #  about whether the extensions are different HDUs in the same
-            #  file, or if they are separate files (which I think can just be
-            #  handled by changing the sextractor arguments a bit).  If
-            #  they're non-FITS files, we'll have to write them.  For
-            #  simplicity, right now, just write the temp files, even though
-            #  it might be redundant.
-            fits.writeto( tmpimage, image.data, header=image.header )
+            fits.writeto( tmpimage, image.data, header=hdr )
             fits.writeto( tmpweight, image.weight )
             fits.writeto( tmpflags, image.flags )
 
@@ -680,7 +695,7 @@ class Detector:
             bkg = sextrstat.array['Background_Mean'][0][0]
             bkgsig = sextrstat.array['Background_StDev'][0][0]
 
-            sourcelist = SourceList( image=image, format="sextrfits", aper_rads=apers )
+            sourcelist = SourceList( image_id=image.id, format="sextrfits", aper_rads=apers )
             # Since we don't set the filepath to the temp file, manually load
             # the _data and _info fields
             sourcelist.load( tmpsources )
@@ -804,10 +819,7 @@ class Detector:
                     if usepsfsize % 2 == 0:
                         usepsfsize += 1
 
-            psf = PSF(
-                format="psfex", image=image, image_id=image.id,
-                fwhm_pixels=float(psfstats.array['FWHM_FromFluxRadius_Mean'][0])
-            )
+            psf = PSF( format="psfex", fwhm_pixels=float(psfstats.array['FWHM_FromFluxRadius_Mean'][0]) )
             psf.load( psfpath=psffile, psfxmlpath=psfxmlfile )
             psf.header['IMAXIS1'] = image.data.shape[1]
             psf.header['IMAXIS2'] = image.data.shape[0]
@@ -861,11 +873,11 @@ class Detector:
         r, flags = sep.flux_radius(data_sub, objects['x'], objects['y'], 6.0 * objects['a'], 0.5, subpix=5)
         r = np.array(r, dtype=[('rhalf', '<f4')])
         objects = rfn.merge_arrays((objects, r), flatten=True)
-        sources = SourceList(image=image, data=objects, format='sepnpy')
+        sources = SourceList(image_id=image.id, data=objects, format='sepnpy')
 
         return sources
 
-    def extract_sources_filter(self, image):
+    def extract_sources_filter( self, image, score, zogy_alpha, wcs, fwhm=None ):
         """Find sources in an image using the matched-filter method.
 
         If the image has a "score" array, will use that.
@@ -882,13 +894,17 @@ class Detector:
         Parameters
         ----------
         image: Image
-            The image to extract sources from. Must have a score, or a PSF,
-            that can be gotten from one of these places (in order):
-            - a PSF object loaded on the Image object itself.
-            - a zogy_psf attribute attached to the Image object.
-            - a PSF object of the new_image attribute of the Image object.
-            If the image also has a zogy_alpha attribute, it will be used
-            to extract the PSF photometry.
+            The image to extract sources from.
+
+        score: numpy array
+            The score image from zogy
+
+        zogy_alpha: SOMETHING
+
+        wcs: WorldCoordiantes
+
+        fwhm: float or None
+            FWHM of the image in arcseconds; if None, will be read from image.fwhm_estimate
 
         Returns
         -------
@@ -898,10 +914,9 @@ class Detector:
             one source that was detected, along with all its properties.
 
         """
-        score = image.score.copy()
-
         if score is None:
             raise NotImplementedError('Still need to add the matched-filter cross correlation! ')
+        score = score.copy()
 
         # psf_image = None
         # if image.psf is not None:
@@ -909,13 +924,8 @@ class Detector:
         # elif getattr(image, 'zogy_psf', None) is not None:
         #     psf_image = image.zogy_psf
 
-        fwhm = image.fwhm_estimate
         if fwhm is None:
-            fwhm = image.new_image.fwhm_estimate
-        if fwhm is None and image.psf is not None:
-            fwhm = image.psf.fwhm_pixels
-        if fwhm is None and image.new_image.psf is not None:
-            fwhm = image.new_image.psf.fwhm_pixels
+            fwhm = image.fwhm_estimate
 
         if fwhm is None:
             raise RuntimeError("Cannot find a FWHM estimate from the given image or its new_image attribute.")
@@ -951,14 +961,14 @@ class Detector:
         xys = ndimage.center_of_mass(abs(image.data), labels, all_idx)
         x = np.array([xy[1] for xy in xys])
         y = np.array([xy[0] for xy in xys])
-        coords = image.get_wcs().wcs.pixel_to_world(x, y)
+        coords = wcs.wcs.pixel_to_world(x, y)
         ra = [c.ra.value for c in coords]
         dec = [c.dec.value for c in coords]
 
         label_fluxes = ndimage.sum(image.data, labels, all_idx)  # sum image values where labeled
 
         # run aperture and iterative PSF photometry
-        fluxes = ndimage.labeled_comprehension(image.psfflux, labels, all_idx, np.max, float, np.nan)
+        fluxes = ndimage.labeled_comprehension(zogy_alpha, labels, all_idx, np.max, float, np.nan)
 
         region_sizes = [np.sum(labels == i) for i in all_idx]
 
@@ -986,10 +996,3 @@ class Detector:
 
         return sources
 
-
-if __name__ == '__main__':
-    from models.base import Session
-    from models.provenance import Provenance
-    session = Session()
-    source_lists = session.scalars(sa.select(SourceList)).all()
-    prov = session.scalars(sa.select(Provenance)).all()

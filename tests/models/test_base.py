@@ -1,19 +1,26 @@
+import pytest
+
+import sys
 import os
 import hashlib
 import pathlib
 import random
 import uuid
 import json
+import logging
 
 import numpy as np
 
-import pytest
+import sqlalchemy as sa
+from sqlalchemy.exc import IntegrityError
 
 import util.config as config
+from util.logger import SCLogger
 import models.base
-from models.base import Base, SmartSession, AutoIDMixin, FileOnDiskMixin, FourCorners
+from models.base import Base, SmartSession, UUIDMixin, FileOnDiskMixin, FourCorners
 from models.image import Image
-
+from models.datafile import DataFile
+from models.object import Object
 
 def test_to_dict(data_dir):
     target = uuid.uuid4().hex
@@ -52,6 +59,224 @@ def test_to_dict(data_dir):
     finally:
         os.remove(filename)
 
+# ====================
+# Test basic database operations
+#
+# Using the DataFile model here because it's a relatively lightweight
+#   model with a minimum of relationships.  Will spoof md5sum so
+#   we don't have to actually save any data to disk.
+
+def test_insert( provenance_base ):
+
+    uuidstodel = [ uuid.uuid4() ]
+    try:
+        # Make sure we can insert
+        df = DataFile( _id=uuidstodel[0], filepath="foo", md5sum=uuid.uuid4(), provenance_id=provenance_base.id )
+        df.insert()
+
+        founddf = DataFile.get_by_id( df.id )
+        assert founddf is not None
+        assert founddf.filepath == df.filepath
+        assert founddf.md5sum == df.md5sum
+        # We could check that these times are less than datetime.datetime.now(tz=datetime.timezone.utc),
+        # but they might fail of the database server and host server clocks aren't exactly in sync.
+        assert founddf.created_at is not None
+        assert founddf.modified is not None
+
+        # Make sure we get an error if we try to insert something that already exists
+        newdf = DataFile( _id=df.id, filepath='bar', md5sum=uuid.uuid4(), provenance_id=provenance_base.id )
+        with pytest.raises( IntegrityError, match='duplicate key value violates unique constraint "data_files_pkey"' ):
+            df.insert()
+
+    finally:
+        # Clean up
+        with SmartSession() as sess:
+            sess.execute( sa.delete( DataFile ).where( DataFile._id.in_( uuidstodel ) ) )
+            sess.commit()
+
+def test_upsert( provenance_base ):
+
+    uuidstodel = [ uuid.uuid4() ]
+    try:
+        assert Image.get_by_id( uuidstodel[0] ) is None
+
+        image = Image( _id = uuidstodel[0],
+                       provenance_id = provenance_base.id,
+                       mjd = 60575.474664,
+                       end_mjd = 60575.4750116,
+                       exp_time = 30.,
+                       # instrument = 'DemoInstrument',
+                       telescope = 'DemoTelescope',
+                       project = 'test',
+                       target = 'nothing',
+                       filepath = 'foo/bar.fits',
+                       ra = '23.',
+                       dec = '42.',
+                       ra_corner_00 = 22.5,
+                       ra_corner_01 = 22.5,
+                       ra_corner_10 = 23.5,
+                       ra_corner_11 = 23.5,
+                       dec_corner_00 = 41.5,
+                       dec_corner_01 = 42.5,
+                       dec_corner_10 = 41.5,
+                       dec_corner_11 = 42.5,
+                       minra = 22.5,
+                       maxra = 23.5,
+                       mindec = 41.5,
+                       maxdec = 42.5,
+                       md5sum = uuid.uuid4()       # spoof since we didn't save a file
+                      )
+
+        # Make sure the database yells at us if a required column is missing
+
+        with pytest.raises( IntegrityError, match='null value in column "instrument".*violates not-null' ):
+            image.upsert()
+
+        # == Make sure we can insert a thing == a
+        image.instrument = 'DemoInstrument'
+        image.upsert()
+
+        # Object didn't get updated
+        assert image._format is None
+        assert image.preproc_bitflag is None
+        assert image.created_at is None
+        assert image.modified is None
+
+        found = Image.get_by_id( image.id )
+        assert found is not None
+
+        # Check the server side defaults
+        assert found._format == 1
+        assert found.preproc_bitflag == 0
+        assert found.created_at is not None
+        assert found.modified == found.created_at
+
+        # Change something, do an update
+        found.project = 'another_test'
+        found.upsert()
+        refound = Image.get_by_id( image.id )
+        for col in sa.inspect( Image ).c:
+            if col.name == 'modified':
+                assert refound.modified > found.modified
+            elif col.name == 'project':
+                assert refound.project == 'another_test'
+            else:
+                assert getattr( found, col.name ) == getattr( refound, col.name )
+
+        # Verify that we get a new image and the id is generated if the id starts undefined
+        refound._id = None
+        refound.filepath = 'foo/bar_none.fits'
+
+        refound.upsert()
+        assert refound._id is not None
+        uuidstodel.append( refound._id )
+
+        with SmartSession() as session:
+            multifound = session.query( Image ).filter( Image._id.in_( uuidstodel ) ).all()
+            assert len(multifound) == 2
+            assert set( [ i.id for i in multifound ] ) == set( uuidstodel )
+
+        # Now verify that server-side values *do* get updated if we ask for it
+
+        image.upsert( load_defaults=True )
+        assert image.created_at is not None
+        assert image.modified is not None
+        assert image.created_at < image.modified
+        assert image._format == 1
+        assert image.preproc_bitflag == 0
+
+        # Make sure they don't always revert to defaults
+        image._format = 2
+        image.upsert( load_defaults=True )
+        assert image._format == 2
+        found = Image.get_by_id( image.id )
+        assert found._format == 2
+
+    finally:
+        # Clean up
+        with SmartSession() as sess:
+            sess.execute( sa.delete( Image ).where( Image._id.in_( uuidstodel ) ) )
+            sess.commit()
+
+# TODO : test test_upsert_list when one of the object properties is a SQL array.
+
+# This test also implicitly tests UUIDMixin.get_by_id and UUIDMixin.get_back_by_ids
+def test_upsert_list( code_version, provenance_base, provenance_extra ):
+    # Set the logger to show the SQL emitted by SQLAlchemy for this test.
+    # (See comments in models/base.py UUIDMixin.upsert_list.)
+    # See this with pytest --capture=tee-sys
+    curloglevel = logging.getLogger( 'sqlalchemy.engine' ).level
+    logging.getLogger( 'sqlalchemy.engine' ).setLevel( logging.INFO )
+    loghandler = logging.StreamHandler( sys.stderr )
+    logging.getLogger( 'sqlalchemy.engine' ).addHandler( loghandler )
+
+    uuidstodel = []
+    try:
+        df1 = DataFile( filepath="foo", md5sum=uuid.uuid4(), provenance_id=provenance_base.id )
+        df2 = DataFile( filepath="bar", md5sum=uuid.uuid4(), provenance_id=provenance_base.id )
+        df3 = DataFile( filepath="cat", md5sum=uuid.uuid4(), provenance_id=provenance_base.id )
+        df4 = DataFile( filepath="dog", md5sum=uuid.uuid4(), provenance_id=provenance_base.id )
+        df5 = DataFile( filepath="mouse", md5sum=uuid.uuid4(), provenance_id=provenance_base.id )
+        uuidstodel.extend( [ df1.id, df2.id, df3.id, df4.id, df5.id ] )
+
+        # Make sure it yells at us if all the objects aren't the right thing,
+        #   and that it doesn't actually insert anything
+        SCLogger.debug( "Trying to fail" )
+        gratuitous = Object( name='nothing', ra=0., dec=0. )
+        with pytest.raises( TypeError, match="passed objects weren't all of this class!" ):
+            DataFile.upsert_list( [ df1, df2, gratuitous ] )
+
+        SCLogger.debug( "Making sure nothing got inserted" )
+        them = DataFile.get_batch_by_ids( [ df1.id, df2.id ] )
+        assert len(them) == 0
+
+        # Make sure we can insert
+        SCLogger.debug( "Upserting df1, df2" )
+        DataFile.upsert_list( [ df1, df2 ] )
+        SCLogger.debug( "Getting df1, df2, df3 by id one at a time" )
+        founddf1 = DataFile.get_by_id( df1.id )
+        founddf2 = DataFile.get_by_id( df2.id )
+        founddf3 = DataFile.get_by_id( df3.id )
+        assert founddf1 is not None
+        assert founddf2 is not None
+        assert founddf3 is None
+
+        df3.insert()
+
+        # Test updating and inserting at the same time (Doing extra
+        # files here so that we can see the generated SQL when lots of
+        # things happen in upsert_list.)
+        df1.filepath = "wombat"
+        df1.md5sum = uuid.uuid4()
+        df2.filepath = "mongoose"
+        df2.md5sum = uuid.uuid4()
+        SCLogger.debug( "Upserting df1, df2, df4, df5" )
+        DataFile.upsert_list( [ df1, df2, df4, df5 ] )
+
+        SCLogger.debug( "Getting df1 through df5 in a batch" )
+        objs = DataFile.get_batch_by_ids( [ df1.id, df2.id, df3.id, df4.id, df5.id ], return_dict=True )
+        assert objs[df1.id].filepath == "wombat"
+        assert objs[df1.id].md5sum == df1.md5sum
+        assert objs[df2.id].filepath == "mongoose"
+        assert objs[df2.id].md5sum == df2.md5sum
+        assert objs[df3.id].filepath == "cat"
+        assert objs[df4.id].filepath == df4.filepath
+        assert objs[df5.id].filepath == df5.filepath
+        assert objs[df1.id].modified > objs[df1.id].created_at
+        assert objs[df2.id].modified > objs[df2.id].created_at
+        assert objs[df3.id].modified == objs[df3.id].created_at
+        assert objs[df4.id].modified == objs[df4.id].created_at
+        assert objs[df5.id].modified == objs[df5.id].created_at
+
+    finally:
+        # Clean up
+        SCLogger.debug( "Cleaning up" )
+        with SmartSession() as sess:
+            sess.execute( sa.delete( DataFile ).where( DataFile._id.in_( uuidstodel ) ) )
+            sess.commit()
+        logging.getLogger( 'sqlalchemy.engine' ).setLevel( curloglevel )
+        logging.getLogger( 'sqlalchemy.engine' ).removeHandler( loghandler )
+
 
 # ======================================================================
 # FileOnDiskMixin test
@@ -61,7 +286,7 @@ def test_to_dict(data_dir):
 # test_image.py
 
 
-class DiskFile(Base, AutoIDMixin, FileOnDiskMixin):
+class DiskFile(Base, UUIDMixin, FileOnDiskMixin):
     """A temporary database table for testing FileOnDiskMixin
 
     """
@@ -69,6 +294,8 @@ class DiskFile(Base, AutoIDMixin, FileOnDiskMixin):
     __tablename__ = f"test_diskfiles_{hexbarf}"
     nofile = True
 
+    def get_downstreams( self, session=None ):
+        return []
 
 @pytest.fixture(scope='session')
 def diskfiletable():

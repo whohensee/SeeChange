@@ -397,8 +397,9 @@ class DECam(Instrument):
         from models.calibratorfile import CalibratorFile, CalibratorFileDownloadLock
 
         cfg = Config.get()
-        cv = Provenance.get_code_version()
-        prov = Provenance( process='DECam Default Calibrator', code_version=cv )
+        cv = Provenance.get_code_version( session=session )
+        prov = Provenance( process='DECam Default Calibrator', code_version_id=cv.id )
+        prov.insert_if_needed( session=session )
 
         reldatadir = pathlib.Path( "DECam_default_calibrators" )
         datadir = pathlib.Path( FileOnDiskMixin.local_path ) / reldatadir
@@ -440,7 +441,7 @@ class DECam(Instrument):
                 with SmartSession( session ) as dbsess:
                     # Gotta check to see if the file was there from
                     # something that didn't go all the way through
-                    # before, or if it was downloaded by anothe process
+                    # before, or if it was downloaded by another process
                     # while we were waiting for the
                     # calibfile_downloadlock
                     datafile = dbsess.scalars(sa.select(DataFile).where(DataFile.filepath == str(filepath))).first()
@@ -448,16 +449,15 @@ class DECam(Instrument):
 
                 if datafile is None:
                     retry_download( url, fileabspath )
-                    datafile = DataFile( filepath=str(filepath), provenance=prov )
+                    datafile = DataFile( filepath=str(filepath), provenance_id=prov.id )
                     datafile.save( str(fileabspath) )
-                    datafile = dbsess.merge( datafile )
-                    dbsess.commit()
-                    dbsess.refresh( datafile )
+                    datafile.insert( session=session )
 
                 # Linearity file applies for all chips, so load the database accordingly
                 # Once again, gotta check to make sure the entry doesn't already exist,
                 # because somebody else may have created it while we were waiting for
-                # the calibfile_downloadlock
+                # the calibfile_downloadlock.  No race condition here, because nobody
+                # else can muck with this table while we have the calibfile_downloadlock.
                 with SmartSession( session ) as dbsess:
                     for ssec in self._chip_radec_off.keys():
                         if ( dbsess.query( CalibratorFile )
@@ -466,7 +466,7 @@ class DECam(Instrument):
                              .filter( CalibratorFile.flat_type==None )
                              .filter( CalibratorFile.instrument=='DECam' )
                              .filter( CalibratorFile.sensor_section==ssec )
-                             .filter( CalibratorFile.datafile==datafile ) ).count() == 0:
+                             .filter( CalibratorFile.datafile_id==datafile.id ) ).count() == 0:
                             calfile = CalibratorFile( type='linearity',
                                                       calibrator_set="externally_supplied",
                                                       flat_type=None,
@@ -474,8 +474,7 @@ class DECam(Instrument):
                                                       sensor_section=ssec,
                                                       datafile_id=datafile.id
                                                      )
-                            dbsess.merge( calfile )
-                    dbsess.commit()
+                            calfile.insert( session=dbsess )
 
                     # Finally pull out the right entry for the sensor section we were actually asked for
                     calfile = ( dbsess.query( CalibratorFile )
@@ -484,7 +483,7 @@ class DECam(Instrument):
                                 .filter( CalibratorFile.flat_type==None )
                                 .filter( CalibratorFile.instrument=='DECam' )
                                 .filter( CalibratorFile.sensor_section==section )
-                                .filter( CalibratorFile.datafile_id==datafile.id )
+                                .filter( CalibratorFile.datafile_id==datafile._id )
                                ).first()
                     if calfile is None:
                         raise RuntimeError( f"Failed to get default calibrator file for DECam linearity; "
@@ -493,38 +492,37 @@ class DECam(Instrument):
             # No need to get a new calibfile_downloadlock, we should already have the one for this type and section
             retry_download( url, fileabspath )
 
-            with SmartSession( session ) as dbsess:
-                # We know calibtype will be one of fringe, flat, or illumination
-                if calibtype == 'fringe':
-                    dbtype = 'Fringe'
-                elif calibtype == 'flat':
-                    dbtype = 'ComDomeFlat'
-                elif calibtype == 'illumination':
-                    dbtype = 'ComSkyFlat'
-                mjd = float( cfg.value( "DECam.calibfiles.mjd" ) )
-                image = Image( format='fits', type=dbtype, provenance=prov, instrument='DECam',
-                               telescope='CTIO4m', filter=filter, section_id=section, filepath=str(filepath),
-                               mjd=mjd, end_mjd=mjd,
-                               info={}, exp_time=0, ra=0., dec=0.,
-                               ra_corner_00=0., ra_corner_01=0.,ra_corner_10=0., ra_corner_11=0.,
-                               dec_corner_00=0., dec_corner_01=0., dec_corner_10=0., dec_corner_11=0.,
-                               minra=0, maxra=0, mindec=0, maxdec=0,
-                               target="", project="" )
-                # Use FileOnDiskMixin.save instead of Image.save here because we're doing
-                # a lower-level operation.  image.save would be if we wanted to read and
-                # save FITS data, but here we just want to have it make sure the file
-                # is in the right place and check its md5sum.  (FileOnDiskMixin.save, when
-                # given a filename, will move that file to where it goes in the local data
-                # storage unless it's already in the right place.)
-                FileOnDiskMixin.save( image, fileabspath )
-                calfile = CalibratorFile( type=calibtype,
-                                          calibrator_set='externally_supplied',
-                                          flat_type='externally_supplied' if calibtype == 'flat' else None,
-                                          instrument='DECam',
-                                          sensor_section=section,
-                                          image=image )
-                calfile = dbsess.merge(calfile)
-                dbsess.commit()
+            # We know calibtype will be one of fringe, flat, or illumination
+            if calibtype == 'fringe':
+                dbtype = 'Fringe'
+            elif calibtype == 'flat':
+                dbtype = 'ComDomeFlat'
+            elif calibtype == 'illumination':
+                dbtype = 'ComSkyFlat'
+            mjd = float( cfg.value( "DECam.calibfiles.mjd" ) )
+            image = Image( format='fits', type=dbtype, provenance_id=prov.id, instrument='DECam',
+                           telescope='CTIO4m', filter=filter, section_id=section, filepath=str(filepath),
+                           mjd=mjd, end_mjd=mjd,
+                           info={}, exp_time=0, ra=0., dec=0.,
+                           ra_corner_00=0., ra_corner_01=0.,ra_corner_10=0., ra_corner_11=0.,
+                           dec_corner_00=0., dec_corner_01=0., dec_corner_10=0., dec_corner_11=0.,
+                           minra=0, maxra=0, mindec=0, maxdec=0,
+                           target="", project="" )
+            # Use FileOnDiskMixin.save instead of Image.save here because we're doing
+            # a lower-level operation.  image.save would be if we wanted to read and
+            # save FITS data, but here we just want to have it make sure the file
+            # is in the right place and check its md5sum.  (FileOnDiskMixin.save, when
+            # given a filename, will move that file to where it goes in the local data
+            # storage unless it's already in the right place.)
+            FileOnDiskMixin.save( image, fileabspath )
+            calfile = CalibratorFile( type=calibtype,
+                                      calibrator_set='externally_supplied',
+                                      flat_type='externally_supplied' if calibtype == 'flat' else None,
+                                      instrument='DECam',
+                                      sensor_section=section,
+                                      image_id=image.id )
+            image.insert( session=session )
+            calfile.insert( session=session )
 
         return calfile
 
@@ -631,26 +629,35 @@ class DECam(Instrument):
                        'zero': 'Bias'
                       }
 
-        with SmartSession(session) as dbsess:
-            provenance = Provenance(
-                process='download',
-                parameters={ 'proc_type': proc_type, 'Instrument': 'DECam' },
-                code_version=Provenance.get_code_version(session=dbsess)
-            )
-            provenance = provenance.merge_concurrent( dbsess, commit=True )
+        provenance = Provenance(
+            process='download',
+            parameters={ 'proc_type': proc_type, 'Instrument': 'DECam' },
+            code_version_id=Provenance.get_code_version( session=session ).id
+        )
+        provenance.insert_if_needed( session=session )
 
-            with fits.open( expfile ) as ifp:
-                hdr = { k: v for k, v in ifp[0].header.items()
-                        if k in ( 'PROCTYPE', 'PRODTYPE', 'FILENAME', 'TELESCOP', 'OBSERVAT', 'INSTRUME'
-                                  'OBS-LONG', 'OBS-LAT', 'EXPTIME', 'DARKTIME', 'OBSID',
-                                  'DATE-OBS', 'TIME-OBS', 'MJD-OBS', 'OBJECT', 'PROGRAM',
-                                  'OBSERVER', 'PROPID', 'FILTER', 'RA', 'DEC', 'HA', 'ZD', 'AIRMASS',
-                                  'VSUB', 'GSKYPHOT', 'LSKYPHOT' ) }
-            exphdrinfo = Instrument.extract_header_info( hdr, [ 'mjd', 'exp_time', 'filter',
-                                                                'project', 'target' ] )
-            ra = util.radec.parse_sexigesimal_degrees( hdr['RA'], hours=True )
-            dec = util.radec.parse_sexigesimal_degrees( hdr['DEC'] )
+        with fits.open( expfile ) as ifp:
+            hdr = { k: v for k, v in ifp[0].header.items()
+                    if k in ( 'PROCTYPE', 'PRODTYPE', 'FILENAME', 'TELESCOP', 'OBSERVAT', 'INSTRUME'
+                              'OBS-LONG', 'OBS-LAT', 'EXPTIME', 'DARKTIME', 'OBSID',
+                              'DATE-OBS', 'TIME-OBS', 'MJD-OBS', 'OBJECT', 'PROGRAM',
+                              'OBSERVER', 'PROPID', 'FILTER', 'RA', 'DEC', 'HA', 'ZD', 'AIRMASS',
+                              'VSUB', 'GSKYPHOT', 'LSKYPHOT' ) }
+        exphdrinfo = Instrument.extract_header_info( hdr, [ 'mjd', 'exp_time', 'filter',
+                                                            'project', 'target' ] )
+        ra = util.radec.parse_sexigesimal_degrees( hdr['RA'], hours=True )
+        dec = util.radec.parse_sexigesimal_degrees( hdr['DEC'] )
 
+        # NOTE -- there's a possible sort-of race condition here.  (Only
+        # sort-of because we'll get an error that we want to get.)  If
+        # multiple processes are working on images from the same
+        # exposure, then they could all be trying to save the same
+        # exposure at the same time, and most of them will become sad.
+        # In practice, however, e.g. in
+        # pipeline/pipeline_exposure_launcher.py, we'll have a single
+        # process dealing with a given exposure, so this shouldn't come
+        # up much.
+        with SmartSession( session ) as dbsess:
             q = ( dbsess.query( Exposure )
                   .filter( Exposure.instrument == 'DECam' )
                   .filter( Exposure.origin_identifier == origin_identifier )
@@ -668,13 +675,12 @@ class DECam(Instrument):
             else:
                 obs_type = obstypemap[ obs_type ]
             expobj = Exposure( current_file=expfile, invent_filepath=True,
-                               type=obs_type, format='fits', provenance=provenance, ra=ra, dec=dec,
+                               type=obs_type, format='fits', provenance_id=provenance.id, ra=ra, dec=dec,
                                instrument='DECam', origin_identifier=origin_identifier, header=hdr,
                                **exphdrinfo )
             dbpath = outdir / expobj.filepath
             expobj.save( expfile )
-            expobj = dbsess.merge( expobj )
-            dbsess.commit()
+            expobj.insert( session=dbsess )
 
         return expobj
 
@@ -927,8 +933,7 @@ class DECamOriginExposures:
                                     gallat=gallat,
                                     gallon=gallon
                                    )
-                dbsess.merge( ke )
-            dbsess.commit()
+                ke.insert( session=dbsess )
 
 
     def download_exposures( self, outdir=".", indexes=None, onlyexposures=True,

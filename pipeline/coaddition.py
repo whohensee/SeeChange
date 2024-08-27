@@ -6,7 +6,7 @@ from astropy.time import Time
 from sep import Background
 
 from models.base import SmartSession
-from models.provenance import Provenance
+from models.provenance import Provenance, CodeVersion
 from models.image import Image
 
 from pipeline.parameters import Parameters
@@ -15,7 +15,7 @@ from pipeline.detection import Detector
 from pipeline.backgrounding import Backgrounder
 from pipeline.astro_cal import AstroCalibrator
 from pipeline.photo_cal import PhotCalibrator
-from util.util import get_latest_provenance, parse_session
+from util.util import parse_session
 
 from improc.bitmask_tools import dilate_bitflag
 from improc.inpainting import Inpainter
@@ -24,7 +24,7 @@ from improc.tools import sigma_clipping
 
 from util.config import Config
 from util.util import listify
-
+from util.logger import SCLogger
 
 class ParsCoadd(Parameters):
     def __init__(self, **kwargs):
@@ -70,6 +70,16 @@ class ParsCoadd(Parameters):
             'Multiplicative factor for the PSF FWHM (in pixels) to use for dilating the flag maps. ',
             critical=True,
         )
+
+        self.cleanup_alignment = self.add_par(
+            'cleanup_alignemnt',
+            True,
+            bool,
+            ( 'Try to clean up aligned images from the Coadder object after running the coadd. '
+              'This should save memory, but you might want to set this to False for testing purposes.' ),
+            critical=False
+        )
+
 
         self._enforce_no_new_attrs = True
         self.override( kwargs )
@@ -251,6 +261,9 @@ class Coadder:
     def _coadd_zogy(
             self,
             images,
+            bgs=None,
+            impsfs=None,
+            zps=None,
             weights=None,
             flags=None,
             psf_clips=None,
@@ -265,33 +278,56 @@ class Coadder:
         given to each frequency in Fourier space, such that it preserves information
         even when using images with different PSFs.
 
+        There are two different calling semantics:
+
+        (1) images is a list of Image objects
+
+        In this case, you must also pass bgs, impsfs, and zps, but you
+        do not pass weights, flags, psf_clips, psf_fwhms, flux_zps,
+        bkg_means, or bkg_sigmas.
+
+        (2) iamges is a list of 2D ndnarrays
+
+        In this case, you do not pass bgs, impsfs or zps, but you must
+        pass weights, flags, psfs_clips, psf_fwhms, flux_zps, bkg_means,
+        and bkg_sigmas.
+
+        TODO QUESTION : does this implicitly assume that all the images have a lot of
+        overlap?  (It must, since it does inpainting.  What about images that don't
+        have a lot of overlap?  That's a legitimate thing to want to coadd sometimes.)
+
         Parameters
         ----------
         images: list of Image or list of 2D ndarrays
             Images that have been aligned to each other.
-            Each image must also have a PSF and a background object attached.
-        weights: list of 2D ndarrays
+
+        bgs: list of Background objects, or None
+
+        impsfs: list of PSF objects, or None
+
+        zps: list of ZeroPoint objects, or None
+
+        weights: list of 2D ndarrays, or None
             The weights to use for each image.
-            If images is given as Image objects, can be left as None.
-        flags: list of 2D ndarrays
+
+        flags: list of 2D ndarrays, or None
             The bit flags to use for each image.
-            If images is given as Image objects, can be left as None.
-        psf_clips: list of 2D ndarrays
+
+        psf_clips: list of 2D ndarrays or None
             The PSF images to use for each image.
-            If images is given as Image objects, can be left as None.
-        psf_fwhms: list of floats
+
+        psf_fwhms: list of floats, or None
             The FWHM of the PSF for each image.
-            If images is given as Image objects, can be left as None.
-        flux_zps: list of floats
+
+        flux_zps: list of floats, or None
             The flux zero points for each image.
-            If images is given as Image objects, can be left as None.
-        bkg_means: list of floats
+
+        bkg_means: list of floats, or None
             The mean background for each image.
-            If images is given as Image objects, can be left as None.
             If images are already background subtracted, set these to zeros.
+
         bkg_sigmas: list of floats
             The RMS of the background for each image.
-            If images is given as Image objects, can be left as None.
 
         Returns
         -------
@@ -305,6 +341,7 @@ class Coadder:
             An array with the PSF of the output image.
         score: ndarray
             A matched-filtered score image of the coadded image.
+
         """
         if not all(type(image) == type(images[0]) for image in images):
             raise ValueError('Not all images are of the same type. ')
@@ -316,14 +353,18 @@ class Coadder:
             psf_clips = []
             psf_fwhms = []
             flux_zps = []
-            
-            for image in images:
+            bkg_means = []
+            bkg_sigmas = []
+
+            for image, bg, psf, zp in zip( images, bgs, impsfs, zps ):
                 data.append(image.data)
                 flags.append(image.flags)
                 weights.append(image.weight)
-                psf_clips.append(image.psf.get_clip())
-                psf_fwhms.append(image.psf.fwhm_pixels)
-                flux_zps.append(10 ** (0.4 * image.zp.zp))
+                psf_clips.append(psf.get_clip())
+                psf_fwhms.append(psf.fwhm_pixels)
+                flux_zps.append(10 ** (0.4 * zp.zp))
+                bkg_means.append(bg.value)
+                bkg_sigmas.append(bg.noise)
 
         elif isinstance(images[0], np.ndarray):
             data = images
@@ -343,10 +384,7 @@ class Coadder:
 
         # estimate the background if not given
         if bkg_means is None or bkg_sigmas is None:
-            if not isinstance(images[0], Image):
-                raise ValueError('Background must be given if images are not Image objects. ')
-            bkg_means = [im.bg.value for im in images]
-            bkg_sigmas = [im.bg.noise for im in images]
+            raise ValueError('Background must be given if images are not Image objects. ')
 
         imcube = np.array(data)
         flcube = np.array(flags)
@@ -385,7 +423,106 @@ class Coadder:
 
         return outim, outwt, outfl, psf, score
 
-    def run(self, images, aligned_images=None):
+    def run_alignment( self, data_store_list, index ):
+        """Run the alignment.
+
+        Creates self.aligned_datastores with the aligned images, sources, bgs, wcses, and zps.
+
+        Parameters
+        ----------
+        data_store_list: list of DataStore
+            data stores holding the images to be coadded.  Each
+            DataStore should have its image field filled, and the
+            databse should hold enough information that sources, bg,
+            psf, wcs, and zp will all return something.
+
+        index: int
+            Index into data_store_list that is the alignment
+            target. TODO: we need a way to specify an alignment image
+            that may not be one of the images being summed!
+
+        """
+
+        aligner = ImageAligner( **self.pars.alignment )
+        self.aligned_datastores = []
+        parentwcs = data_store_list[index].wcs.copy()
+        parentwcs.load()
+        parentwcs.filepath = None
+        parentwcs.sources_id = None
+        parentwcs.md5sum = None
+        for ds in data_store_list:
+            wrpim, wrpsrc, wrpbg, wrppsf = aligner.run( ds.image, ds.sources, ds.bg, ds.psf, ds.wcs, ds.zp,
+                                                        data_store_list[index].image,
+                                                        data_store_list[index].sources )
+            alds = DataStore( wrpim )
+            alds.sources = wrpsrc
+            alds.sources.image_id= alds.image.id
+            alds.bg = wrpbg
+            alds.bg.sources_id = alds.sources.id
+            alds.psf = wrppsf
+            alds.psf.sources_id = alds.sources.id
+
+            alds.wcs = parentwcs.copy()
+            alds.wcs.wcs = parentwcs.wcs           # reference not copy... should not be changed in practice, so OK
+            alds.wcs.sources_id = alds.sources.id
+
+            # Alignment doesn't change the zeropoint -- BUT WAIT, it could,
+            #  because it could change the aperture corrections!  Issue #353.
+            alds.zp = ds.zp.copy()
+            alds.sources_id = alds.sources.id
+
+            self.aligned_datastores.append( alds )
+
+        ImageAligner.cleanup_temp_images()
+
+    def get_coadd_prov( self, data_store_list, upstream_provs=None, code_version_id=None ):
+        """Figure out the Provenance and CodeVersion of the coadded image.
+
+        Also adds the coadd provenance to the database if necessary.
+
+        Parameters
+        ----------
+          data_store_list: list of DataStore or None
+            DataStore objects for all the images to be summed.  Must
+            have image and sources properties available.  Ignored if
+            upstream_provs is not None.
+
+          upstream_provs: list of Provenance or None
+            upstream provenances for the coadd provenance.  Can specify
+            this instead of data_store_list.
+
+          code_version_id: str or None
+            If None, the code version will be dtermined automatically
+            using Provenance.get_code_version()
+
+        """
+
+        # Figure out all upstream provenances
+        if upstream_provs is None:
+            provids = [ d.image.provenance_id for d in data_store_list ]
+            provids.extend( [ d.sources.provenance_id for d in data_store_list ] )
+            provids = set( provids )
+            upstream_provs = Provenance.get_batch( provids )
+            if len( upstream_provs ) != len( provids ):
+                raise RuntimeError( "Coadder didn't find all the expected upstream provenances!" )
+
+        if code_version_id is None:
+            code_version = Provenance.get_code_version()
+        else:
+            code_version = CodeVersion.get_by_id( code_version_id )
+
+        coadd_provenance = Provenance(
+            code_version_id=code_version.id,
+            parameters=self.pars.get_critical_pars(),
+            upstreams=upstream_provs,
+            process='coaddition',
+        )
+        coadd_provenance.insert_if_needed()
+
+        return coadd_provenance, code_version
+
+
+    def run( self, data_store_list, aligned_datastores=None, coadd_provenance=None ):
         """Run coaddition on the given list of images, and return the coadded image.
 
         The images should have at least a set of SourceList and WorldCoordinates loaded, so they can be aligned.
@@ -393,51 +530,80 @@ class Coadder:
 
         Parameters
         ----------
-        images: list of Image objects
-            The input Image objects that will be used as the upstream_images for the new, coadded image.
-        aligned_images: list of Image objects (optional)
-            A list of images that correspond to the images list,
-            but already aligned to each other, so it can be put into the output image's aligned_images attribute.
-            The aligned images must have the same alignment parameters as in the output image's provenance
-            (i.e., the "alignment" dictionary should be the same as in the coadder object's pars).
-            If not given, the output Image object will generate the aligned images by itself,
-            using the input images and its provenance's alignment parameters.
+        data_store_list: list of DataStore
+            data stores holding the images to be coadded.  Each
+            DataStore should have its image field filled, and the
+            databse should hold enough information that sources, bg,
+            psf, wcs, and zp will all return something.
+
+        aligned_datastores: list of DataStore (optional)
+            Usually you don't want to give this.  If you don't, all
+            images will be aligned according to the parameters.  This is
+            here for efficiency (e.g. it's used in tests, where the
+            results of alignment are cached).  If for some reason you
+            already have the aligned images, pass in DataStores here
+            with the images, source lists, backgrounds, psfs, wcses, and
+            zeropoints all loaded.  The code will assume that they're
+            right, i.e. that they correspond to the list of images in
+            data_store_list (in the same order), and that they were
+            created with the proper alignment parameters.
+
+        coadd_provenance: Provenance (optional)
+            (for efficiency)
 
         Returns
         -------
         output: Image object
             The coadded image.
+
         """
-        images.sort(key=lambda image: image.mjd)
+
+        # Sort images by mjd
+        dexen = list( range( 0, len(data_store_list) ) )
+        dexen.sort( key=lambda i: data_store_list[i].image.mjd )
+        data_store_list = [ data_store_list[i] for i in dexen ]
+
         if self.pars.alignment['to_index'] == 'last':
-            index = len(images) - 1
+            index = len(data_store_list) - 1
         elif self.pars.alignment['to_index'] == 'first':
             index = 0
-        else:  # TODO: consider allowing a specific index as integer?
+        else:
+            # TODO: consider allowing a specific index as integer?
+            # Also TODO : need to be able to manually provide an alignment
+            #  target that may or may not be one of the images in the sum.
             raise ValueError(f"Unknown alignment reference index: {self.pars.alignment['to_index']}")
-        output = Image.from_images(images, index=index)
-        output.provenance = Provenance(
-            code_version=images[0].provenance.code_version,
-            parameters=self.pars.get_critical_pars(),
-            upstreams=output.get_upstream_provenances(),
-            process='coaddition',
-        )
-        output.provenance_id = output.provenance.id
 
+        if aligned_datastores is not None:
+            SCLogger.debug( "Coadder using passed aligned datastores" )
+            aligned_datastores = [ aligned_datastores[i] for i in dexen ]
+            self.aligned_datastores = aligned_datastores
+        else:
+            SCLogger.debug( "Coadder aligning all images" )
+            self.run_alignment( data_store_list, index )
+
+        if coadd_provenance is None:
+            coadd_provenance, _ = self.get_coadd_prov( data_store_list )
+
+        output = Image.from_images( [ d.image for d in data_store_list ], index=index )
+        output.provenance_id = coadd_provenance.id
         output.is_coadd = True
 
-        # note: output is a newly formed image, that has upstream_images
-        # and also a Provenance that contains "alignment" parameters...
-        # it can create its own aligned_images, but if you already have them,
-        # you can pass them in to save time re-calculating them here:
-        if aligned_images is not None:
-            output.aligned_images = aligned_images
-            output.info['alignment_parameters'] = self.pars.alignment
+        # actually coadd
+
+        aligned_images = [ d.image for d in self.aligned_datastores ]
+        aligned_bgs = [ d.bg for d in self.aligned_datastores ]
+        aligned_psfs = [ d.psf for d in self.aligned_datastores ]
+        aligned_zps = [ d.zp for d in self.aligned_datastores ]
 
         if self.pars.method == 'naive':
-            outim, outwt, outfl = self._coadd_naive(output.aligned_images)
+            SCLogger.debug( "Coadder doing naive addition" )
+            outim, outwt, outfl = self._coadd_naive( aligned_images )
         elif self.pars.method == 'zogy':
-            outim, outwt, outfl, outpsf, outscore = self._coadd_zogy(output.aligned_images)
+            SCLogger.debug( "Coadder doing zogy addition" )
+            outim, outwt, outfl, outpsf, outscore = self._coadd_zogy( aligned_images,
+                                                                      aligned_bgs,
+                                                                      aligned_psfs,
+                                                                      aligned_zps )
         else:
             raise ValueError(f'Unknown coaddition method: {self.pars.method}. Use "naive" or "zogy".')
 
@@ -445,10 +611,15 @@ class Coadder:
         output.weight = outwt
         output.flags = outfl
 
+        # Issue #350 -- where to put these?  Look at how subtraction or other things use them!!!
+        # (See also comment in test_coaddition.py::test_coaddition_pipeline_outputs)
         if 'outpsf' in locals():
             output.zogy_psf = outpsf  # TODO: do we have a better place to put this?
         if 'outscore' in locals():
             output.zogy_score = outscore
+
+        if self.pars.cleanup_alignment:
+            self.aligned_datastores = None
 
         return output
 
@@ -468,6 +639,7 @@ class ParsCoaddPipeline(Parameters):
 
 class CoaddPipeline:
     """A pipeline that runs coaddition and other tasks like source extraction on the coadd image. """
+
     def __init__(self, **kwargs):
         self.config = Config.get()
 
@@ -524,170 +696,99 @@ class CoaddPipeline:
 
         self.datastore = None  # use this datastore to save the coadd image and all the products
 
-        self.images = None  # use this to store the input images
-        self.aligned_images = None  # use this to pass in already aligned images
 
-    def parse_inputs(self, *args, **kwargs):
-        """Parse the possible inputs to the run method.
+    def run( self, data_store_list, aligned_datastores=None ):
+        """Run the CoaddPipeline
 
-        The possible input types are:
-        - unnamed arguments that are all Image objects, to be treated as self.images
-        - a list of Image objects, assigned into self.images
-        - two lists of Image objects, the second one is a list of aligned images matching the first list,
-          such that the two lists are assigned to self.images and self.aligned_images
-        - start_time + end_time + instrument + filter + section_id + provenance_id + RA + Dec (or target)
+        Parameters
+        ----------
+          data_store_list: list of DataStore
+            data stores holding the images to be coadded.  Each
+            DataStore should have its image field filled, and the
+            databse should hold enough information that sources, bg,
+            psf, wcs, and zp will all return something.
 
-        To pass the latter option, must use named parameters.
-        An optional session can be given, either as one of the named
-        or unnamed args, and it will be used throughout the pipeline
-        (and left open at the end).
+         aligned_datastores: list of DataStore (optional)
+            Usually you don't want to give this.  If you don't, all
+            images will be aligned according to the parameters.  This is
+            here for efficiency (e.g. it's used in tests, where the
+            results of alignment are cached).  If for some reason you
+            already have the aligned images, pass in DataStores here
+            with the images, source lists, backgrounds, psfs, wcses, and
+            zeropoints all loaded.  The code will assume that they're
+            right, i.e. that they correspond to the list of images in
+            data_store_list (in the same order), and that they were
+            created with the proper alignment parameters.
 
-        The start_time and end_time can be floats (interpreted as MJD)
-        or strings (interpreted by astropy.time.Time(...)), or None.
-        If end_time is not given, will use current time.
-        If start_time is not given, will use end_time minus the
-        coaddition pipeline parameter date_range.
-        The provenance_ids can be None, which will use the most recent "preprocessing" provenance.
-        Can also provide a list of provenance_ids or a single string.
-        The coordinates can be given as either float (decimal degrees) or strings
-        (sexagesimal hours for RA and degrees for Dec).
-        Can leave coordinates empty and provide a "target" instead (i.e., target
-        will be used as the "field identifier" in the survey).
+        Returns
+        -------
+          A DataStore with the coadded image and other data products.
 
-        In either case, the output is a list of Image objects.
-        Each image is checked to see if it has the related products
-        (SourceList, PSF, WorldCoordinates, ZeroPoint).
-        If not, it will raise an exception. If giving these images directly
-        (i.e., not letting the pipeline load them from DB) the calling scope
-        must make sure to load those products first.
         """
-        # first parse the session from args and kwargs
-        args, kwargs, session = parse_session(*args, **kwargs)
-        self.images = None
-        self.aligned_images = None
-        if len(args) == 0:
-            pass  # there are not args, we can skip them quietly
-        elif len(args) == 1 and isinstance(args[0], list):
-            if not all([isinstance(a, Image) for a in args[0]]):
-                raise TypeError('When supplying a list, all elements must be Image objects. ')
-            self.images = args[0]  # in case we are given a list of images
-        elif len(args) == 2 and isinstance(args[0], list) and isinstance(args[1], list):
-            if not all([isinstance(im, Image) for im in args[0] + args[1]]):
-                raise TypeError('When supplying two lists, both must be lists of Image objects. ')
-            self.images = args[0]
-            self.aligned_images = args[1]
-        elif all([isinstance(a, Image) for a in args]):
-            self.images = args
-        else:
-            raise ValueError('All unnamed arguments must be Image objects. ')
 
-        if self.images is None:  # get the images from the DB
-            # if no images were given, parse the named parameters
-            ra = kwargs.get('ra', None)
-            dec = kwargs.get('dec', None)
-            target = kwargs.get('target', None)
-            if target is None and (ra is None or dec is None):
-                raise ValueError('Must give either target or RA and Dec. ')
-
-            start_time = kwargs.get('start_time', None)
-            end_time = kwargs.get('end_time', None)
-            if end_time is None:
-                end_time = Time.now().mjd
-            if start_time is None:
-                start_time = end_time - self.pars.date_range
-
-            instrument = kwargs.get('instrument', None)
-            filter = kwargs.get('filter', None)
-            section_id = str(kwargs.get('section_id', None))
-
-            provenance_ids = kwargs.get('provenance_ids', None)
-            if provenance_ids is None:
-                prov = get_latest_provenance('preprocessing', session=session)
-                provenance_ids = [prov.id]
-            provenance_ids = listify(provenance_ids)
-
-            with SmartSession(session) as dbsession:
-                stmt = Image.query_images(
-                    ra=ra,
-                    dec=dec,
-                    target=target,
-                    section_id=section_id,
-                    instrument=instrument,
-                    filter=filter,
-                    min_dateobs=start_time,
-                    max_dateobs=end_time,
-                    provenance_ids=provenance_ids
-                )
-                self.images = dbsession.scalars(stmt.order_by(Image.mjd.asc())).all()
-
-        return session
-
-    def run(self, *args, **kwargs):
-        session = self.parse_inputs(*args, **kwargs)
-        if self.images is None or len(self.images) == 0:
-            raise ValueError('No images found matching the given parameters. ')
-
-        # use the images and their source lists to get a list of provenances and code versions
-        coadd_upstreams = set()
-        code_versions = set()
-        # assumes each image given to the coaddition pipline has sources loaded
-        for im in self.images:
-            coadd_upstreams.add(im.provenance)
-            coadd_upstreams.add(im.sources.provenance)
-            code_versions.add(im.provenance.code_version)
-            code_versions.add(im.sources.provenance.code_version)
-
-        code_versions = list(code_versions)
-        code_versions.sort(key=lambda x: x.id)
-        code_version = code_versions[-1]  # choose the most recent ID if there are multiple code versions
-        coadd_upstreams = list(coadd_upstreams)
+        if ( ( not isinstance( data_store_list, list ) ) or
+             ( not all( [ isinstance( d, DataStore ) for d in data_store_list ] ) )
+            ):
+            raise TypeError( "Must pass a list of DataStore objects to CoaddPipeline.run" )
 
         self.datastore = DataStore()
-        self.datastore.prov_tree = self.make_provenance_tree(coadd_upstreams, code_version, session=session)
+        self.datastore.prov_tree = self.make_provenance_tree( data_store_list )
 
         # check if this exact coadd image already exists in the DB
-        with SmartSession(session) as dbsession:
+        with SmartSession() as dbsession:
             coadd_prov = self.datastore.prov_tree['coaddition']
-            coadd_image = Image.get_image_from_upstreams(self.images, coadd_prov, session=dbsession)
+            coadd_image = Image.get_image_from_upstreams( [ d.image for d in data_store_list ],
+                                                          coadd_prov, session=dbsession)
 
         if coadd_image is not None:
             self.datastore.image = coadd_image
+            self.aligned_datastores = aligned_datastores
         else:
-            # the self.aligned_images is None unless you explicitly pass in the pre-aligned images to save time
-            self.datastore.image = self.coadder.run(self.images, self.aligned_images)
+            # the self.aligned_datastores is None unless you explicitly pass in the pre-aligned images to save time
+            self.datastore.image = self.coadder.run( data_store_list,
+                                                     aligned_datastores=aligned_datastores,
+                                                     coadd_provenance=self.datastore.prov_tree['coaddition'] )
+            self.aligned_datastores = self.coadder.aligned_datastores
+
+
+        # Get sources, background, wcs, and zp of the coadded image
 
         # TODO: add the warnings/exception capturing, runtime/memory tracking (and Report making) as in top_level.py
+
         self.datastore = self.extractor.run(self.datastore)
+        if self.datastore.sources is None:
+            raise RuntimeError( "CoaddPipeline failed to extract sources from coadded image." )
         self.datastore = self.backgrounder.run(self.datastore)
+        if self.datastore.bg is None:
+            raise RuntimeError( "CoaddPipeline failed to measure background of coadded image." )
         self.datastore = self.astrometor.run(self.datastore)
+        if self.datastore.wcs is None:
+            raise RuntimeError( "CoaddPipline failed to solve for WCS of coadded image." )
         self.datastore = self.photometor.run(self.datastore)
+        if self.datastore.zp is None:
+            raise RuntimeError( "CoaddPipeline failed to solve for zeropoint of coadded image." )
 
-        return self.datastore.image
 
-    def make_provenance_tree(self, coadd_upstreams, code_version, session=None):
+        return self.datastore
+
+    def make_provenance_tree( self, data_store_list, upstream_provs=None, code_version_id=None ):
         """Make a (short) provenance tree to use when fetching the provenances of upstreams. """
-        with SmartSession(session) as session:
 
-            pars_dict = self.coadder.pars.get_critical_pars()
-            coadd_prov = Provenance(
-                code_version=code_version,
-                process='coaddition',
-                upstreams=coadd_upstreams,
-                parameters=pars_dict,
-                is_testing="test_parameter" in pars_dict,  # this is a flag for testing purposes
-            )
-            coadd_prov = coadd_prov.merge_concurrent(session=session, commit=True)
+        # NOTE I'm not handling the "test_parameter" thing here, may need to.
+        coadd_prov, code_version = self.coadder.get_coadd_prov( data_store_list, upstream_provs=upstream_provs,
+                                                                code_version_id=code_version_id )
+        coadd_prov.insert_if_needed()
 
-            # the extraction pipeline
-            pars_dict = self.extractor.pars.get_critical_pars()
-            extract_prov = Provenance(
-                code_version=code_version,
-                process='extraction',
-                upstreams=[coadd_prov],
-                parameters=pars_dict,
-                is_testing="test_parameter" in pars_dict['sources'],  # this is a flag for testing purposes
-            )
-            extract_prov = extract_prov.merge_concurrent(session=session, commit=True)
+        # the extraction pipeline
+        pars_dict = self.extractor.pars.get_critical_pars()
+        extract_prov = Provenance(
+            code_version_id=code_version.id,
+            process='extraction',
+            upstreams=[ coadd_prov ],
+            parameters=pars_dict,
+            is_testing="test_parameter" in pars_dict['sources'],  # this is a flag for testing purposes
+        )
+        extract_prov.insert_if_needed()
 
         return {'coaddition': coadd_prov, 'extraction': extract_prov}
 

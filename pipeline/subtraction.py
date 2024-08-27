@@ -127,7 +127,9 @@ class Subtractor:
 
         return dict(outim=outim, outwt=outwt, outfl=outfl)
 
-    def _subtract_zogy(self, new_image, ref_image):
+    def _subtract_zogy(self,
+                       new_image, new_bg, new_psf, new_zp,
+                       ref_image, ref_bg, ref_psf, ref_zp ):
         """Use ZOGY to subtract the two images.
 
         This applies PSF matching and uses the ZOGY algorithm to subtract the two images.
@@ -137,11 +139,28 @@ class Subtractor:
         ----------
         new_image : Image
             The Image containing the new data, including the data array, weight, and flags.
-            Image must also have the PSF and ZeroPoint objects loaded.
+
+        new_bg : Background
+            Sky background for new_image
+
+        new_psf : PSF
+            PSF for new_image
+
+        new_zp: ZeroPoint
+            ZeroPoint for new_image
+
         ref_image : Image
             The Image containing the reference data, including the data array, weight, and flags
-            Image must also have the PSF and ZeroPoint objects loaded.
             The reference image must already be aligned to the new image!
+
+        ref_bg : Background
+            Sky background for ref_image
+
+        ref_psf: PSF
+            PSF for the aligned ref image
+
+        ref_zp: ZeroPoint
+            ZeroPoint for the aligned ref image
 
         Returns
         -------
@@ -171,14 +190,14 @@ class Subtractor:
             translient_corr_sigma: numpy.ndarray
                 The corrected translient score, converted to S/N units assuming a chi2 distribution.
         """
-        new_image_data = new_image.data
-        ref_image_data = ref_image.data
-        new_image_psf = new_image.psf.get_clip()
-        ref_image_psf = ref_image.psf.get_clip()
+        new_image_data = new_image.data - new_bg.counts
+        ref_image_data = ref_image.data - ref_bg.counts
+        new_image_psf = new_psf.get_clip()
+        ref_image_psf = ref_psf.get_clip()
         new_image_noise = new_image.bkg_rms_estimate
         ref_image_noise = ref_image.bkg_rms_estimate
-        new_image_flux_zp = 10 ** (0.4 * new_image.zp.zp)
-        ref_image_flux_zp = 10 ** (0.4 * ref_image.zp.zp)
+        new_image_flux_zp = 10 ** (0.4 * new_zp.zp)
+        ref_image_flux_zp = 10 ** (0.4 * ref_zp.zp)
         # TODO: consider adding an estimate for the astrometric uncertainty dx, dy
 
         new_image_data = self.inpainter.run(new_image_data, new_image.flags, new_image.weight)
@@ -204,8 +223,8 @@ class Subtractor:
             new_image.weight,
             ref_image.flags,
             new_image.flags,
-            ref_image.psf.fwhm_pixels,
-            new_image.psf.fwhm_pixels
+            ref_psf.fwhm_pixels,
+            new_psf.fwhm_pixels
         )
         output['outwt'] = outwt
         output['outfl'] = outfl
@@ -243,8 +262,8 @@ class Subtractor:
         raise NotImplementedError('Not implemented Hotpants subtraction yet')
 
     def run(self, *args, **kwargs):
-        """
-        Get a reference image and subtract it from the new image.
+        """Get a reference image and subtract it from the new image.
+
         Arguments are parsed by the DataStore.parse_args() method.
 
         Returns a DataStore object with the products of the processing.
@@ -281,9 +300,8 @@ class Subtractor:
                     )
 
                 prov = ds.get_provenance('subtraction', self.pars.get_critical_pars(), session=session)
-                sub_image = ds.get_subtraction(prov, session=session)
 
-                if sub_image is None:
+                if ds.get_subtraction( prov, session=session ) is None:
                     self.has_recalculated = True
                     # use the latest image in the data store,
                     # or load using the provenance given in the
@@ -295,66 +313,129 @@ class Subtractor:
                                          f'{ds.get_inputs()}')
 
                     SCLogger.debug( f"Making new subtraction from image {image.id} path {image.filepath} , "
-                                    f"reference {ref.image.id} path {ref.image.filepath}" )
-                    sub_image = Image.from_ref_and_new(ref.image, image)
+                                    f"reference {ds.ref_image.id} path {ds.ref_image.filepath}" )
+                    sub_image = Image.from_ref_and_new(ds.ref_image, image)
                     sub_image.is_sub = True
-                    sub_image.provenance = prov
                     sub_image.provenance_id = prov.id
-                    sub_image.coordinates_to_alignment_target()  # make sure the WCS is aligned to the correct image
-
-                    # Need to make sure the upstream images are loaded into this session before
-                    # we disconnect it from the database.  (We don't want to hold the database
-                    # connection open through all the slow processes below.)
-                    upstream_images = sub_image.upstream_images
+                    sub_image.set_coordinates_to_match_target( image )
 
             if self.has_recalculated:
-                # make sure to grab the correct aligned images
-                new_image = [im for im in sub_image.aligned_images if im.mjd == sub_image.new_image.mjd]
-                if len(new_image) != 1:
-                    raise ValueError('Cannot find the new image in the aligned images')
-                new_image = new_image[0]
 
-                ref_image = [im for im in sub_image.aligned_images if im.mjd == sub_image.ref_image.mjd]
-                if len(ref_image) != 1:
-                    raise ValueError('Cannot find the reference image in the aligned images')
-                ref_image = ref_image[0]
+                # Align the images
+                to_index = self.aligner.pars.to_index
+                if to_index == 'ref':
+                    SCLogger.error( "Aligning new to ref will violate assumptions in detection.py and measuring.py" )
+                    raise RuntimeError( "Aligning new to ref not supported; align ref to new instead" )
+
+                    for needed in [ ds.image, ds.sources, ds.bg, ds.wcs, ds.zp, ds.ref_image, ds.ref_sources ]:
+                        if needed is None:
+                            raise RuntimeError( "Not all data products needed for alignment to ref "
+                                                "are present in the DataStore" )
+                    ( aligned_image, aligned_sources,
+                      aligned_bg, aligned_psf ) = self.aligner.run( ds.image, ds.sources, ds.bg, ds.psf, ds.wcs, ds.zp,
+                                                                    ds.ref_image, ds.ref_sources )
+                    ds.aligned_new_image = aligned_image
+                    ds.aligned_new_sources = aligned_sources
+                    ds.aligned_new_bg = aligned_bg
+                    ds.aligned_new_psf = aligned_psf
+                    ds.aligned_new_zp = ds.zp
+                    ds.aligned_ref_image = ds.ref_image
+                    ds.aligned_ref_sources = ds.ref_sources
+                    ds.aligned_ref_bg = ds.ref_bg
+                    ds.aligned_ref_psf = ds.ref_psf
+                    ds.aligned_ref_zp = ds.ref_zp
+                    ds.aligned_wcs = ds.ref_wcs
+
+                elif to_index == 'new':
+                    SCLogger.debug( "Aligning ref to new" )
+
+                    for needed in [ ds.ref_image, ds.ref_sources, ds.ref_bg, ds.ref_wcs, ds.ref_zp,
+                                    ds.image, ds.sources ]:
+                        if needed is None:
+                            raise RuntimeError( "Not all data products needed for alignment to new "
+                                                "are present in the DataStore" )
+                    ( aligned_image, aligned_sources,
+                      aligned_bg, aligned_psf ) = self.aligner.run( ds.ref_image, ds.ref_sources, ds.ref_bg,
+                                                                    ds.ref_psf, ds.ref_wcs, ds.ref_zp,
+                                                                    ds.image, ds.sources )
+                    ds.aligned_new_image = ds.image
+                    ds.aligned_new_sources = ds.sources
+                    ds.aligned_new_bg = ds.bg
+                    ds.aligned_new_psf = ds.psf
+                    ds.aligned_new_zp = ds.zp
+                    ds.aligned_ref_image = aligned_image
+                    ds.aligned_ref_sources = aligned_sources
+                    ds.aligned_ref_bg = aligned_bg
+                    ds.aligned_ref_psf = aligned_psf
+                    ds.aligned_ref_zp = ds.ref_zp
+                    ds.aligned_wcs = ds.wcs
+
+                else:
+                    raise ValueError( f"aligner to_index must be ref or new, not {to_index}" )
+
+                ImageAligner.cleanup_temp_images()
+
+                SCLogger.debug( "Alignment complete" )
 
                 if self.pars.method == 'naive':
                     SCLogger.debug( "Subtracting with naive" )
-                    outdict = self._subtract_naive(new_image, ref_image)
+                    outdict = self._subtract_naive( ds.aligned_new_image, ds.aligned_ref_image )
+
                 elif self.pars.method == 'hotpants':
                     SCLogger.debug( "Subtracting with hotpants" )
-                    outdict = self._subtract_hotpants(new_image, ref_image)
+                    outdict = self._subtract_hotpants() # FIGURE OUT ARGUMENTS
+
                 elif self.pars.method == 'zogy':
                     SCLogger.debug( "Subtracting with zogy" )
-                    outdict = self._subtract_zogy(new_image, ref_image)
+                    outdict = self._subtract_zogy( ds.aligned_new_image, ds.aligned_new_bg,
+                                                   ds.aligned_new_psf, ds.aligned_new_zp,
+                                                   ds.aligned_ref_image, ds.aligned_ref_bg,
+                                                   ds.aligned_ref_psf, ds.aligned_ref_zp )
+
+                    # Renormalize the difference image back to the zeropoint of the new image.
+                    # Not going to renormalize score; I'd have to think harder
+                    #   about whether that's the right thing to do, and it
+                    #   gets renormalized to its σ in detection.py anyway.
+
+                    normfac = 10 ** ( 0.4 * ( ds.aligned_new_zp.zp - outdict['zero_point'] ) )
+                    outdict['outim'] *= normfac
+                    outdict['outwt'] /= normfac*normfac
+                    outdict['alpha'] *= normfac
+                    outdict['alpha_err'] *= normfac
+                    if 'bkg_mean' in outdict:
+                        outdict['bkg_mean'] *= normfac
+                    if 'bkg_rms' in outdict:
+                        outdict['bkg_rms'] *= normfac
+
                 else:
                     raise ValueError(f'Unknown subtraction method {self.pars.method}')
+
                 SCLogger.debug( "Subtraction complete" )
 
                 sub_image.data = outdict['outim']
                 sub_image.weight = outdict['outwt']
                 sub_image.flags = outdict['outfl']
                 if 'score' in outdict:
-                    sub_image.score = outdict['score']
+                    ds.zogy_score = outdict['score']
+                    # sub_image.score = outdict['score']
                 if 'alpha' in outdict:
-                    sub_image.psfflux = outdict['alpha']
+                    # sub_image.psfflux = outdict['alpha']
+                    ds.zogy_alpha = outdict['alpha']
                 if 'alpha_err' in outdict:
-                    sub_image.psffluxerr = outdict['alpha_err']
+                    # sub_image.psffluxerr = outdict['alpha_err']
+                    ds.zogy_alpha_err = outdict['alpha_err']
                 if 'psf' in outdict:
-                    # TODO: clip the array to be a cutout around the PSF, right now it is same shape as image!
-                    sub_image.zogy_psf = outdict['psf']  # not saved, can be useful for testing / source detection
-                    if 'alpha' in outdict and 'alpha_err' in outdict:
-                        sub_image.psfflux = outdict['alpha']
-                        sub_image.psffluxerr = outdict['alpha_err']
+                    ds.zogy_psf = outdict['psf']
 
-                sub_image.subtraction_output = outdict  # save the full output for debugging
+                ds.subtraction_output = outdict  # save the full output for debugging
 
                 # TODO: can we get better estimates from our subtraction outdict? Issue #312
-                sub_image.fwhm_estimate = new_image.fwhm_estimate
-                # if the subtraction does not provide an estimate of the ZP, use the one from the new image
-                sub_image.zero_point_estimate = outdict.get('zero_point', new_image.zp.zp)
-                sub_image.lim_mag_estimate = new_image.lim_mag_estimate
+                sub_image.fwhm_estimate = ds.image.fwhm_estimate
+                # We (I THINK) renormalized the sub_image to new_image above, so its zeropoint is the new's zeropoint
+                sub_image.zero_point_estimate = ds.zp.zp
+                # TODO: this implicitly assumes that the ref is much deeper than the new.
+                #  If it's not, this is going to be too generous.
+                sub_image.lim_mag_estimate = ds.image.lim_mag_estimate
 
                 # if the subtraction does not provide an estimate of the background, use sigma clipping
                 if 'bkg_mean' not in outdict or 'bkg_rms' not in outdict:
@@ -362,18 +443,18 @@ class Subtractor:
                     sub_image.bkg_mean_estimate = outdict.get('bkg_mean', mu)
                     sub_image.bkg_rms_estimate = outdict.get('bkg_rms', sig)
 
-            sub_image._upstream_bitflag = 0
-            sub_image._upstream_bitflag |= ds.image.bitflag
-            sub_image._upstream_bitflag |= ds.sources.bitflag
-            sub_image._upstream_bitflag |= ds.psf.bitflag
-            sub_image._upstream_bitflag |= ds.bg.bitflag
-            sub_image._upstream_bitflag |= ds.wcs.bitflag
-            sub_image._upstream_bitflag |= ds.zp.bitflag
+                sub_image._upstream_bitflag = 0
+                if ( ds.exposure is not None ):
+                    sub_image._upstream_bitflag |= ds.exposure.bitflag
+                sub_image._upstream_bitflag |= ds.image.bitflag
+                sub_image._upstream_bitflag |= ds.sources.bitflag
+                sub_image._upstream_bitflag |= ds.psf.bitflag
+                sub_image._upstream_bitflag |= ds.bg.bitflag
+                sub_image._upstream_bitflag |= ds.wcs.bitflag
+                sub_image._upstream_bitflag |= ds.zp.bitflag
+                sub_image._upstream_bitflag |= ds.ref_image.bitflag
 
-            if 'ref_image' in locals():
-                sub_image._upstream_bitflag |= ref_image.bitflag
-
-            ds.sub_image = sub_image
+                ds.sub_image = sub_image
 
             ds.runtimes['subtraction'] = time.perf_counter() - t_start
             if env_as_bool('SEECHANGE_TRACEMALLOC'):

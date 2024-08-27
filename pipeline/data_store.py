@@ -2,8 +2,10 @@ import io
 import warnings
 import datetime
 import sqlalchemy as sa
+import uuid
+import traceback
 
-from util.util import parse_session, listify
+from util.util import parse_session, listify, asUUID
 from util.logger import SCLogger
 
 from models.base import SmartSession, FileOnDiskMixin, FourCorners
@@ -24,6 +26,7 @@ UPSTREAM_STEPS = {
     'exposure': [],  # no upstreams
     'preprocessing': ['exposure'],
     'extraction': ['preprocessing'],
+    'referencing': [],               # This is a special case; it *does* have upstreams, but outside the main pipeline
     'subtraction': ['referencing', 'preprocessing', 'extraction'],
     'detection': ['subtraction'],
     'cutting': ['detection'],
@@ -46,10 +49,32 @@ PROCESS_PRODUCTS = {
 
 
 class DataStore:
-    """
-    Create this object to parse user inputs and identify which data products need
-    to be fetched from the database, and keep a cached version of the products for
-    use downstream in the pipeline.
+    """An object that stores all of the data products from a run through a pipeline.
+
+    Can be created in a few ways.  Standard is to initialize it either
+    with an Exposure and a (string) section_id, or with an Image.  You
+    can also initilize it by passing another DataStore, in which case
+    the it will copy all the attributes (shallow copy) of the passed
+    DataStore.  (It copies the __dict__ atribute.)
+
+    Most pipeline tasks take a DataStore as an argument, and return
+    another DataStore with updated products.  (Usually it's the same
+    DataStore object, modified, that is returned.)
+
+    To work best, you want the DataStore's provenance tree to be loaded
+    with provenances consistent with the parmeters that you will be
+    using in the various pipeline tasks.  The easiest way to do this is
+    to have a fully initilized Pipeline object (see
+    pipeline/top_level.py) and run
+
+      ds.prov_tree = pipeline.make_provenance_tree()
+
+    You can get the provenances from a DataStore with get_provenance;
+    that will try to load a default if there isn't one already in the
+    tree.  You can also use that function to update the provenances
+    stored in the provenance tree.  You can manually update the
+    provenances stored in the provenance tree with set_prov_tree.
+
     """
     # the products_to_save are also getting cleared along with products_to_clear
     products_to_save = [
@@ -68,26 +93,400 @@ class DataStore:
 
     # these get cleared but not saved
     products_to_clear = [
-        'ref_image',
-        'sub_image',
+        'reference',
+        '_ref_image',
+        '_ref_sources'
+        '_ref_bg',
+        '_ref_psf',
+        '_ref_wcs',
+        '_ref_zp',
+        'aligned_ref_image',
+        'aligned_ref_sources'
+        'aligned_ref_bg',
+        'aligned_ref_psf',
+        'aligned_ref_zp',
+        'aligned_new_image',
+        'aligned_new_sources'
+        'aligned_new_bg',
+        'aligned_new_psf',
+        'aligned_new_zp'
+        'aligned_wcs',
+        '_sub_image',
         'reference',
         'exposure_id',
         'section_id',
         'image_id',
         'session',
+        # Things specific to the zogy subtraction method
+        'zogy_score',
+        'zogy_alpha',
+        'zogy_alpha_err',
+        'zogy_psf'
     ]
+
+    # These are the various data products that the DataStore can hold
+    # These getters and setters make sure that the relationship IDs
+    # between them are all set, and that if something is set to None,
+    # everything downstream is also set to None.
+
+    @property
+    def exposure_id( self ):
+        return self._exposure_id
+
+    @exposure_id.setter
+    def exposure_id( self, val ):
+        if val is None:
+            self._exposure_id = None
+        else:
+            if isinstance( val, uuid.UUID ):
+                self._exposure_id = val
+            else:
+                # This will raise an exception if it's not a well-formed UUID string
+                self._exposure_id = asUUID( val )
+            if self._exposure is not None:
+                self._exposure.id = self._exposure_id
+
+    @property
+    def image_id( self ):
+        return self._image_id
+
+    @image_id.setter
+    def image_id( self, val ):
+        if val is None:
+            self._image_id = None
+        else:
+            if isinstance( val, uuid.UUID ):
+                self._image_id = val
+            else:
+                # This will raise an execption if it's not a well-formed UUID string
+                self._image_id = asUUID( val )
+            if self._image is not None:
+                self._image.id = self.image_id
+
+    @property
+    def exposure( self ):
+        if self._exposure is None:
+            if self.exposure_id is not None:
+                self._exposure = self.get_raw_exposure( session=self.session )
+        return self._exposure
+
+    @exposure.setter
+    def exposure( self, value ):
+        self._exposure = value
+        if self._exposure is not None:
+            self._exposure.id
+            self.exposure_id = self._exposure.id
+
+    @property
+    def section( self ):
+        if self._section is None:
+            if self.section_id is not None:
+                if self.exposure is not None:
+                    self.exposure.instrument_object.fetch_sections()
+                    self._section = self.exposure.instrument_object.get_section( self.section_id )
+        return self._section
+
+    @section.setter
+    def section( self, val ):
+        raise NotImplementedError( "Don't set DataStore section, set section_id" )
+
+    @property
+    def image( self ):
+        return self._image
+
+    @image.setter
+    def image( self, val ):
+        if val is None:
+            self._image = None
+            self.sources = None
+        else:
+            if not isinstance( val, Image ):
+                raise TypeError( f"DataStore.image must be an Image, not a {type(val)}" )
+            if ( self._sources is not None ) and ( self._sources.image_id != val.id ):
+                raise ValueError( "Can't set a DataStore image inconsistent with sources" )
+            if self._exposure is not None:
+                if ( val.exposure_id is not None ) and ( val.exposure_id != self._exposure.id ):
+                    raise ValueError( "Setting an image whose exposure_id doesn't match DataStore's exposure's id" )
+                val.exposure_id = self._exposure.id
+            elif self.exposure_id is not None:
+                if ( val.exposure_id is not None ) and ( val.exposure_id != self.exposure_id ):
+                    raise ValueError( "Setting an image whose exposure_id doesn't match Datastore's exposure_id" )
+                val.exposure_id = self.exposure_id
+
+            if ( self.image_id is not None ) and ( val.id != self.image_id ):
+                raise ValueError( "Setting an image whose id doesn't match DataStore's image_id" )
+
+            self.image_id = val.id
+            self._image = val
+
+
+    @property
+    def sources( self ):
+        return self._sources
+
+    @sources.setter
+    def sources( self, val ):
+        if val is None:
+            self._sources = None
+            self._bg = None
+            self._psf = None
+            self._wcs = None
+            self._zp = None
+            self.sub_image = None
+        else:
+            if self._image is None:
+                raise RuntimeError( "Can't set DataStore sources until it has an image." )
+            if not isinstance( val, SourceList ):
+                raise TypeError( f"DatatStore.sources must be a SourceList, not a {type(val)}" )
+            if ( ( ( self._bg is not None ) and ( self._bg.sources_id != val.id ) ) or
+                 ( ( self._psf is not None ) and ( self._psf.sources_id != val.id ) ) or
+                 ( ( self._wcs is not None ) and ( self._wcs.sources_id != val.id ) ) or
+                 ( ( self._zp is not None ) and ( self._zp.sources_id != val.id ) ) ):
+                raise ValueError( "Can't set a DataStore sources inconsistent with other data products" )
+            self._sources = val
+            self._sources.image_id = self._image.id
+
+    @property
+    def bg( self ):
+        return self._bg
+
+    @bg.setter
+    def bg( self, val ):
+        if val is None:
+            self._bg = None
+            self.sub_image = None
+        else:
+            if self._sources is None:
+                raise RuntimeError( "Can't set DataStore bg until it has a sources." )
+            if not isinstance( val, Background ):
+                raise TypeError( f"DataStore.bg must be a Background, not a {type(val)}" )
+            self._bg = val
+            self._bg.sources_id = self._sources.id
+
+    @property
+    def psf( self ):
+        return self._psf
+
+    @psf.setter
+    def psf( self, val ):
+        if val is None:
+            self._psf = None
+            self.sub_image = None
+        else:
+            if self._sources is None:
+                raise RuntimeError( "Can't set DataStore psf until it has a sources." )
+            if not isinstance( val, PSF ):
+                raise TypeError( f"DataStore.psf must be a PSF, not a {type(val)}" )
+            self._psf = val
+            self._psf.sources_id = self._sources.id
+
+    @property
+    def wcs( self ):
+        return self._wcs
+
+    @wcs.setter
+    def wcs( self, val ):
+        if val is None:
+            self._wcs = None
+            self.sub_image = None
+        else:
+            if self._sources is None:
+                raise RuntimeError( "Can't set DataStore wcs until it has a sources." )
+            if not isinstance( val, WorldCoordinates ):
+                raise TypeError( f"DataStore.wcs must be a WorldCoordinates, not a {type(val)}" )
+            self._wcs = val
+            self._wcs.sources_id = self._sources.id
+
+    @property
+    def zp( self ):
+        return self._zp
+
+    @zp.setter
+    def zp( self, val ):
+        if val is None:
+            self._zp = None
+            self.sub_image = None
+        else:
+            if self._sources is None:
+                raise RuntimeError( "Can't set DataStore zp until it has a sources." )
+            if not isinstance( val, ZeroPoint ):
+                raise TypeError( f"DataStore.zp must be a ZeroPoint, not a {type(val)}" )
+            self._zp = val
+            self._zp.sources_id = self._sources.id
+
+    @property
+    def ref_image( self ):
+        if self._ref_image is None:
+            if self.reference is not None:
+                self._ref_image = Image.get_by_id( self.reference.image_id )
+        return self._ref_image
+
+    @ref_image.setter
+    def ref_image( self, val ):
+        raise RuntimeError( "Don't directly set ref_image, call get_reference" )
+
+    @property
+    def ref_sources( self ):
+        if self._ref_sources is None:
+            if self.reference is not None:
+                ( self._ref_sources, self._ref_bg, self._ref_psf,
+                  self._ref_wcs, self._ref_zp ) = self.reference.get_ref_data_products()
+        return self._ref_sources
+
+    @ref_sources.setter
+    def ref_sources( self, val ):
+        raise RuntimeError( "Don't directly set ref_sources, call get_reference" )
+
+    @property
+    def ref_bg( self ):
+        if self._ref_bg is None:
+            if self.reference is not None:
+                ( self._ref_sources, self._ref_bg, self._ref_psf,
+                  self._ref_wcs, self._ref_zp ) = self.reference.get_ref_data_products()
+        return self._ref_bg
+
+    @ref_bg.setter
+    def ref_bg( self, val ):
+        raise RuntimeError( "Don't directly set ref_bg, call get_reference" )
+
+    @property
+    def ref_psf( self ):
+        if self._ref_psf is None:
+            if self.reference is not None:
+                ( self._ref_sources, self._ref_bg, self._ref_psf,
+                  self._ref_wcs, self._ref_zp ) = self.reference.get_ref_data_products()
+        return self._ref_psf
+
+    @ref_psf.setter
+    def ref_psf( self, val ):
+        raise RuntimeError( "Don't directly set ref_psf, call get_reference" )
+
+    @property
+    def ref_wcs( self ):
+        if self._ref_wcs is None:
+            if self.reference is not None:
+                ( self._ref_sources, self._ref_bg, self._ref_psf,
+                  self._ref_wcs, self._ref_zp ) = self.reference.get_ref_data_products()
+        return self._ref_wcs
+
+    @ref_wcs.setter
+    def ref_wcs( self, val ):
+        raise RuntimeError( "Don't directly set ref_wcs, call get_reference" )
+
+    @property
+    def ref_zp( self ):
+        if self._ref_zp is None:
+            if self.reference is not None:
+                ( self._ref_sources, self._ref_bg, self._ref_psf,
+                  self._ref_wcs, self._ref_zp ) = self.reference.get_ref_data_products()
+        return self._ref_zp
+
+    @ref_zp.setter
+    def ref_zp( self, val ):
+        raise RuntimeError( "Don't directly set ref_zp, call get_reference" )
+
+    @property
+    def sub_image( self ):
+        return self._sub_image
+
+    @sub_image.setter
+    def sub_image( self, val ):
+        if val is None:
+            self._sub_image = None
+            self.detections = None
+        else:
+            if ( self._zp is None ) or ( self.ref_image is None ):
+                raise RuntimeError( "Can't set DataStore sub_image until it has a zp and a ref_image" )
+            if not isinstance( val, Image ):
+                raise TypeError( f"DataStore.sub_image must be an Image, not a {type(val)}" )
+            if not val.is_sub:
+                raise ValueError( f"DataStore.sub_image must have is_sub set" )
+            if ( ( self._detections is not None ) and ( self._detections.image_id != val.id ) ):
+                raise ValueError( "Can't set a sub_image inconsistent with detections" )
+            if val.ref_image_id != self.ref_image.id:
+                raise ValueError( "Can't set a sub_image inconsistent with ref image" )
+            if val.new_image_id != self.image.id:
+                raise ValueError( "Can't set a sub image inconsistent with image" )
+            # TODO : check provenance upstream of sub_image to make sure it's consistent
+            #   with ds.sources?
+            self._sub_image = val
+
+    @property
+    def detections( self ):
+        return self._detections
+
+    @detections.setter
+    def detections( self, val ):
+        if val is None:
+            self._detections = None
+            self.cutouts = None
+        else:
+            if self.sub_image is None:
+                raise RuntimeError( "Can't set DataStore detections until it has a sub_image" )
+            if not isinstance( val, SourceList ):
+                raise TypeError( f"DataStore.detections must be a SourceList, not a {type(val)}" )
+            if ( ( self._cutouts is not None ) and ( self._cutouts.sources_id != val.id ) ):
+                raise ValueError( "Can't set a cutouts inconsistent with detections" )
+            self._detections = val
+            self._detections.image_id = self._sub_image.id
+
+    @property
+    def cutouts( self ):
+        return self._cutouts
+
+    @cutouts.setter
+    def cutouts( self, val ):
+        if val is None:
+            self._cutouts = None
+            self.measurements = None
+        else:
+            if self._detections is None:
+                raise RuntimeError( "Can't set DataStore cutouts until it has a detections" )
+            if not isinstance( val, Cutouts ):
+                raise TypeError( f"DataStore.cutouts must be a Cutouts, not a {type(val)}" )
+            if ( ( self._measurements is not None ) and
+                 ( any( [ m.cutouts_id != val.id for m in self.measurements ] ) )
+                ):
+                raise ValueError( "Can't set a cutouts inconsistent with measurements" )
+            self._cutouts = val
+            self._cutouts.detections_id = self._detections.id
+
+    @property
+    def measurements( self ):
+        return self._measurements
+
+    @measurements.setter
+    def measurements( self, val ):
+        if val is None:
+            self._measurements = None
+        else:
+            if self._cutouts is None:
+                raise RuntimeError( "Can't set DataStore measurements until it has a cutouts" )
+            if not isinstance( val, list ):
+                raise TypeError( f"Datastore.measurements must be a list of Measurements, not a {type(val)}" )
+            wrongtypes = set( [ type(m) for m in val if not isinstance( m, Measurements ) ] )
+            if len(wrongtypes) > 0:
+                raise TypeError( f"Datastore.measurements must be a list of Measurements, but the passed list "
+                                 f"included {wrongtypes}" )
+            self._measurements = val
+            for m in self._measurements:
+                m.cutouts_id = self._cutouts.id
+
 
     @staticmethod
     def from_args(*args, **kwargs):
-        """
-        Create a DataStore object from the given arguments.
+        """Create a DataStore object from the given arguments.
+
         See the parse_args method for details on the different input parameters.
 
         Returns
         -------
         ds: DataStore
             The DataStore object.
+
         session: sqlalchemy.orm.session.Session or SmartSession or None
+            Never use this.
+
         """
         if len(args) == 0:
             raise ValueError('No arguments given to DataStore constructor!')
@@ -97,11 +496,18 @@ class DataStore:
                 len(args) == 2 and isinstance(args[0], DataStore) and
                 (isinstance(args[1], sa.orm.session.Session) or args[1] is None)
         ):
+            if isinstance( args[1], sa.orm.session.Session ):
+                SCLogger.error( "You passed a session to a DataStore constructor.  This is usually a bad idea." )
+                raise RuntimeError( "Don't pass a session to the DataStore constructor." )
             return args[0], args[1]
         else:
             ds = DataStore()
             session = ds.parse_args(*args, **kwargs)
+            if session is not None:
+                SCLogger.error( "You passed a session to a DataStore constructor.  This is usually a bad idea." )
+                raise RuntimeError( "Don't pass a session to the DataStore constructor." )
             return ds, session
+
 
     def parse_args(self, *args, **kwargs):
         """
@@ -135,8 +541,7 @@ class DataStore:
         Additional things that can get automatically parsed,
         either by keyword or by the content of one of the args:
             - provenances / prov_tree: a dictionary of provenances for each process.
-            - session: a sqlalchemy session object to use.
-            -
+            - session: a sqlalchemy session object to use.  (Usually you do not want to give this!)
 
         Returns
         -------
@@ -145,6 +550,7 @@ class DataStore:
             that called "parse_args" so it can be used locally by
             the function that received the session as one of the arguments.
             If no session is given, will return None.
+
         """
         if len(args) == 1 and isinstance(args[0], DataStore):
             # if the only argument is a DataStore, copy it
@@ -152,21 +558,21 @@ class DataStore:
             return
 
         args, kwargs, output_session = parse_session(*args, **kwargs)
+        if output_session is not None:
+            raise RuntimeError( "You passed a session to DataStore.  Don't." )
 
         self.session = output_session
 
         # look for a user-given provenance tree
-        provs = [
-            arg for arg in args
-            if isinstance(arg, dict) and all([isinstance(value, Provenance) for value in arg.values()])
-        ]
+        provs = [ arg for arg in args
+                  if isinstance(arg, dict) and all([isinstance(value, Provenance) for value in arg.values()])
+                 ]
         if len(provs) > 0:
             self.prov_tree = provs[0]
             # also remove the provenances from the args list
-            args = [
-                arg for arg in args
-                if not isinstance(arg, dict) or not all([isinstance(value, Provenance) for value in arg.values()])
-            ]
+            args = [ arg for arg in args
+                     if not isinstance(arg, dict) or not all([isinstance(value, Provenance) for value in arg.values()])
+                    ]
         found_keys = []
         for key, value in kwargs.items():
             if key in ['prov', 'provs', 'provenances', 'prov_tree', 'provs_tree', 'provenance_tree']:
@@ -180,49 +586,33 @@ class DataStore:
 
         # parse the args list
         arg_types = [type(arg) for arg in args]
-        if arg_types == []:  # no arguments, quietly skip
+        if arg_types == []:   # no arguments, quietly skip
             pass
-        elif arg_types == [int, int] or arg_types == [int, str]:  # exposure_id, section_id
+        elif ( ( arg_types == [ uuid.UUID, int ] ) or
+               ( arg_types == [ uuid.UUID, str ] ) or
+               ( arg_types == [ str, int ] ) or
+               ( arg_types == [ str, str ] ) ):  #exposure_id, section_id
             self.exposure_id, self.section_id = args
-        elif arg_types == [Exposure, int] or arg_types == [Exposure, str]:
+        elif arg_types == [ Exposure, int ] or arg_types == [ Exposure, str ]:
             self.exposure, self.section_id = args
-            self.exposure_id = self.exposure.id
-        elif arg_types == [int]:
+        elif ( arg_types == [ uuid.UUID ] ) or ( arg_types == [ str ] ):     # image_id
             self.image_id = args[0]
-        elif arg_types == [Image]:
+        elif arg_types == [ Image ]:
             self.image = args[0]
-        # TODO: add more options here
+        # TODO: add more options here?
         #  example: get a string filename to parse a specific file on disk
         else:
-            raise ValueError(
-                'Invalid arguments to DataStore constructor, '
-                f'got {arg_types}. '
-                f'Expected [int, int] or [int], or [<image>] or [<exposure>, <section id>]. '
-            )
+            raise ValueError( f'Invalid arguments to DataStore constructor, got {arg_types}. '
+                              f'Expected [<image_id>], or [<image>], or [<exposure id>, <section id>], '
+                              f'or [<exposure>, <section id>]. ' )
 
         # parse the kwargs dict
         for key, val in kwargs.items():
-            # override these attributes explicitly
-            if key in ['exposure_id', 'section_id', 'image_id']:
-                if not isinstance(val, int):
-                    raise ValueError(f'{key} must be an integer, got {type(val)}')
-                setattr(self, key, val)
+            # The various setters will do type checking
+            setattr( self, key, val )
 
-            if key == 'exposure':
-                if not isinstance(val, Exposure):
-                    raise ValueError(f'exposure must be an Exposure object, got {type(val)}')
-                self.exposure = val
-
-            if key == 'image':
-                if not isinstance(val, Image):
-                    raise ValueError(f'image must be an Image object, got {type(val)}')
-                self.image = val
-
-        if self.image is not None:
-            for att in ['sources', 'psf', 'bg', 'wcs', 'zp', 'detections', 'cutouts', 'measurements']:
-                if getattr(self.image, att, None) is not None:
-                    setattr(self, att, getattr(self.image, att))
-
+        if output_session is not None:
+            raise RuntimeError( "DataStore parse_args found a session.  Don't pass sessions to DataStore constructors." )
         return output_session
 
     @staticmethod
@@ -231,6 +621,7 @@ class DataStore:
         It is gaurenteed to return a DataStore object,
         and will set the error attribute to the exception message.
         """
+
         datastores = [a for a in args if isinstance(a, DataStore)]
         if len(datastores) > 0:
             ds = datastores[0]
@@ -243,6 +634,11 @@ class DataStore:
 
     def catch_exception(self, exception):
         """Store the exception into the datastore for later use. """
+
+        strio = io.StringIO( "DataStore catching exception:\n ")
+        traceback.print_exception( exception, file=strio )
+        SCLogger.error( strio.getvalue() )
+
         self.exception = exception
         # This is a trivial function now, but we may want to do more complicated stuff down the road
 
@@ -271,26 +667,43 @@ class DataStore:
         self.prov_tree = None  # provenance dictionary keyed on the process name
 
         # these all need to be added to the products_to_save list
-        self.image = None  # single image from one sensor section
-        self.sources = None  # extracted sources (a SourceList object, basically a catalog)
-        self.psf = None  # psf determined from the extracted sources
-        self.bg = None  # background from the extraction phase
-        self.wcs = None  # astrometric solution
-        self.zp = None  # photometric calibration
-        self.reference = None  # the Reference object needed to make subtractions
-        self.sub_image = None  # subtracted image
-        self.detections = None  # a SourceList object for sources detected in the subtraction image
-        self.cutouts = None  # cutouts around sources
-        self.measurements = None  # photometry and other measurements for each source
-        self.objects = None  # a list of Object associations of Measurements
+        self._image = None  # single image from one sensor section
+        self._sources = None  # extracted sources (a SourceList object, basically a catalog)
+        self._psf = None  # psf determined from the extracted sources
+        self._bg = None  # background from the extraction phase
+        self._wcs = None  # astrometric solution
+        self._zp = None  # photometric calibration
+        self._reference = None  # the Reference object needed to make subtractions
+        self._sub_image = None  # subtracted image
+        self._detections = None  # a SourceList object for sources detected in the subtraction image
+        self._cutouts = None  # cutouts around sources
+        self._measurements = None  # photometry and other measurements for each source
+        self._objects = None  # a list of Object associations of Measurements
 
         # these need to be added to the products_to_clear list
-        self.ref_image = None  # to be used to make subtractions
-        self.sub_image = None  # subtracted image
-        self.reference = None  # the Reference object needed to make subtractions
-        self.exposure_id = None  # use this and section_id to find the raw image
+        self.reference = None
+        self._ref_image = None
+        self._ref_sources = None
+        self._ref_bg = None
+        self._ref_psf = None
+        self._ref_wcs = None
+        self._ref_zp = None
+        self.aligned_ref_image = None
+        self.aligned_ref_sources = None
+        self.aligned_ref_bg = None
+        self.aligned_ref_psf = None
+        self.aligned_ref_zp = None
+        self.aligned_new_image = None
+        self.aligned_new_sources = None
+        self.aligned_new_bg = None
+        self.aligned_new_psf = None
+        self.aligned_new_zp = None
+        self.aligned_wcs = None
+        self._sub_image = None  # subtracted image
+        self._reference = None  # the Reference object needed to make subtractions
+        self._exposure_id = None  # use this and section_id to find the raw image
         self.section_id = None  # corresponds to SensorSection.identifier (*not* .id)
-        self.image_id = None  # use this to specify an image already in the database
+        self._image_id = None  # use this to specify an image already in the database
 
         self.warnings_list = None  # will be replaced by a list of warning objects in top_level.Pipeline.run()
         self.exception = None  # the exception object (so we can re-raise it if needed)
@@ -303,38 +716,6 @@ class DataStore:
         self.session = None
         self.parse_args(*args, **kwargs)
 
-    @property
-    def exposure( self ):
-        if self._exposure is None:
-            if self.exposure_id is not None:
-                self._exposure = self.get_raw_exposure( session=self.session )
-        return self._exposure
-
-    @exposure.setter
-    def exposure( self, value ):
-        self._exposure = value
-        self.exposure_id = value.id if value is not None else None
-
-    @property
-    def section( self ):
-        if self._section is None:
-            if self.section_id is not None:
-                if self.exposure is not None:
-                    self.exposure.instrument_object.fetch_sections()
-                    self._section = self.exposure.instrument_object.get_section( self.section_id )
-        return self._section
-
-    @property
-    def ref_image( self ):
-        if self.reference is not None:
-            return self.reference.image
-        return None
-
-    @ref_image.setter
-    def ref_image( self, value ):
-        if self.reference is None:
-            self.reference = Reference()
-        self.reference.image = value
 
     def __getattribute__(self, key):
         # if this datastore has a pending error, will raise it as soon as any other data is used
@@ -342,91 +723,63 @@ class DataStore:
                 key not in ['exception', 'read_exception', 'update_report', 'reraise', 'report'] and
                 not key.startswith('__') and hasattr(self, 'exception') and self.exception is not None
         ):
-            SCLogger.warning('DataStore has a pending exception. Call read_exception() to get it, or reraise() to raise it.')
+            SCLogger.warning('DataStore has a pending exception. Call read_exception() to get it, '
+                             'or reraise() to raise it.')
             SCLogger.warning(f'Exception was triggered by trying to access attribute {key}.')
             raise self.exception
 
         value = super().__getattribute__(key)
-        if key == 'image' and value is not None:
-            self.append_image_products(value)
 
         return value
 
     def __setattr__(self, key, value):
+        """Check some of the inputs before saving them.
+
+        TODO : since we're only checking a couple of them, it might make sense to
+        write specific handlers just for those instead of having every single attribute
+        access of a DataStore have to make this function call.
+
         """
-        Check some of the inputs before saving them.
-        """
+
         if value is not None:
-            if key in ['exposure_id', 'image_id'] and not isinstance(value, int):
-                raise ValueError(f'{key} must be an integer, got {type(value)}')
-
             if key in ['section_id'] and not isinstance(value, (int, str)):
-                raise ValueError(f'{key} must be an integer or a string, got {type(value)}')
+                raise TypeError(f'{key} must be an integer or a string, got {type(value)}')
 
-            if key == 'image' and not isinstance(value, Image):
-                raise ValueError(f'image must be an Image object, got {type(value)}')
+            # This is a tortured condition
+            elif ( ( key == 'prov_tree' ) and
+                 ( ( not isinstance(value, dict) ) or
+                   ( not all( [ isinstance(v, Provenance) or
+                                ( ( k == 'referencing' ) and
+                                  ( isinstance( v, list ) and
+                                    ( [ all( isinstance(i, Provenance) for i in v ) ] )
+                                   )
+                                 )
+                                for k, v in value.items() ] )
+                    )
+                  )
+                ):
+                raise TypeError(f'prov_tree must be a dict of Provenance objects, got {value}')
 
-            if key == 'sources' and not isinstance(value, SourceList):
-                raise ValueError(f'sources must be a SourceList object, got {type(value)}')
-
-            if key == 'psf' and not isinstance(value, PSF):
-                raise ValueError(f'psf must be a PSF object, got {type(value)}')
-
-            if key == 'bg' and not isinstance(value, Background):
-                raise ValueError(f'bg must be a Background object, got {type(value)}')
-
-            if key == 'wcs' and not isinstance(value, WorldCoordinates):
-                raise ValueError(f'WCS must be a WorldCoordinates object, got {type(value)}')
-
-            if key == 'zp' and not isinstance(value, ZeroPoint):
-                raise ValueError(f'ZP must be a ZeroPoint object, got {type(value)}')
-
-            if key == 'ref_image' and not isinstance(value, Image):
-                raise ValueError(f'ref_image must be an Image object, got {type(value)}')
-
-            if key == 'sub_image' and not isinstance(value, Image):
-                raise ValueError(f'sub_image must be a Image object, got {type(value)}')
-
-            if key == 'detections' and not isinstance(value, SourceList):
-                raise ValueError(f'detections must be a SourceList object, got {type(value)}')
-
-            if key == 'cutouts' and not isinstance(value, Cutouts):
-                raise ValueError(f'cutouts must be a Cutouts object, got {type(value)}')
-
-            if key == 'measurements' and not isinstance(value, list):
-                raise ValueError(f'measurements must be a list of Measurements objects, got {type(value)}')
-
-            if key == 'measurements' and not all([isinstance(m, Measurements) for m in value]):
-                raise ValueError(
-                    f'measurements must be a list of Measurement objects, got list with {[type(m) for m in value]}'
-                )
-
-            if (
-                key == 'prov_tree' and not isinstance(value, dict) and
-                not all([isinstance(v, Provenance) for v in value.values()])
-            ):
-                raise ValueError(f'prov_tree must be a list of Provenance objects, got {value}')
-
-            if key == 'session' and not isinstance(value, sa.orm.session.Session):
+            elif key == 'session' and not isinstance(value, sa.orm.session.Session):
                 raise ValueError(f'Session must be a SQLAlchemy session or SmartSession, got {type(value)}')
 
         super().__setattr__(key, value)
 
     def update_report(self, process_step, session=None):
         """Update the report object with the latest results from a processing step that just finished. """
-        self.report = self.report.scan_datastore(self, process_step=process_step, session=session)
+        self.report.scan_datastore( self, process_step=process_step )
 
-    def finalize_report(self, session=None):
+    def finalize_report( self ):
         """Mark the report as successful and set the finish time."""
         self.report.success = True
         self.report.finish_time = datetime.datetime.utcnow()
-        with SmartSession(session) as session:
-            new_report = session.merge(self.report)
-            session.commit()
-        self.report = new_report
+        self.report.upsert()
+
 
     def get_inputs(self):
         """Get a string with the relevant inputs. """
+
+        # Think about whether the order here actually makes sense given refactoring.  (Issue #349.)
 
         if self.image_id is not None:
             return f'image_id={self.image_id}'
@@ -439,8 +792,70 @@ class DataStore:
         else:
             raise ValueError('Could not get inputs for DataStore.')
 
-    def get_provenance(self, process, pars_dict, session=None):
+    def set_prov_tree( self, provdict, wipe_tree=False ):
+        """Update the DataStore's provenance tree.
+
+        Assumes that the passed provdict is self-consistent (i.e. the
+        upstreams of downstream processes are the actual upstream
+        processes in provdict).  Don't pass a provdict that doesn't fit
+        this.  (NOTE: UPSTREAM_STEPS is a little deceptive when it comes
+        to referencing and subtraction.  While 'referencing' is listed
+        as an upstream to subtraction, in reality the subtraction
+        provenance upstreams are supposed to be the upstreams of the
+        referencing provenance (plus the preprocessing and extraction
+        provenances), not the referencing provenance itself.)
+
+        Will set any provenances downstream of provenances in provdict
+        to None (to keep the prov_tree self-consistent).  (Of course, if
+        there are multiple provenances in provdict, and one is
+        downstream of another, the first one will not not be None after
+        this function runs, it will be what was passed in provdict.
+
+        Parameters
+        ----------
+           provdict: dictionary of process: Provenance
+              Each key of the dictionary must be one of the keys in
+              UPSTREAM_STEPS ('exposure', 'preprocessing','extractin',
+              'referencing', 'subtraction', 'detection', 'cutting').
+
+           wipe_tree: bool, default False
+              If True, will wipe out the provenance tree before setting
+              the provenances for the processes in provdict.
+              Otherwisel, will only wipe out provenances downstream from
+              the provenances in provdict.
+
+        """
+
+        if wipe_tree:
+            self.prov_tree = None
+
+        givenkeys = list( provdict.keys() )
+        # Sort according to UPSTREAM_STEPS
+        givenkeys.sort( key=lambda x: list( UPSTREAM_STEPS.keys() ).index( x ) )
+
+        for process in givenkeys:
+            if self.prov_tree is None:
+                self.prov_tree = { process: provdict[ process ] }
+            else:
+                self.prov_tree[ process ] = provdict[ process ]
+                # Have to wipe out all downstream provenances, because
+                # they will change!  (There will be a bunch of redundant
+                # work here if multiple provenances are passed in
+                # provdict, but, whatever, it's quick enough, and this
+                # will never be called in an inner loop.)
+                mustwipe = set( [ k for k,v in UPSTREAM_STEPS.items() if process in v ] )
+                while len( mustwipe ) > 0:
+                    for towipe in mustwipe:
+                        if towipe in self.prov_tree:
+                            del self.prov_tree[ towipe ]
+                    mustwipe = set( [ k for k,v in UPSTREAM_STEPS.items() if towipe in v ] )
+
+
+    def get_provenance(self, process, pars_dict, session=None,
+                       pars_not_match_prov_tree_pars=False,
+                       replace_tree=False ):
         """Get the provenance for a given process.
+
         Will try to find a provenance that matches the current code version
         and the parameter dictionary, and if it doesn't find it,
         it will create a new Provenance object.
@@ -471,15 +886,38 @@ class DataStore:
         ----------
         process: str
             The name of the process, e.g., "preprocess", "extraction", "subtraction".
+
         pars_dict: dict
-            A dictionary of parameters used for the process.
-            These include the critical parameters for this process.
-            Use a Parameter object's get_critical_pars().
+            A dictionary of parameters used for the process.  These
+            include the critical parameters for this process.  Use a
+            Parameter object's get_critical_pars() if you are setting
+            this; otherwise, the provenance will be wrong, as it may
+            include things in parameters that aren't supposed to be
+            there.
+
+            WARNING : be careful creating an extraction provenance.
+            The pars_dict there is more complicated because of
+            siblings.
+
         session: sqlalchemy.orm.session.Session
             An optional session to use for the database query.
             If not given, will use the session stored inside the
-            DataStore object; if there is none, will open a new session
-            and close it at the end of the function.
+            DataStore object; if there is none, new sessions
+            will be opened and closed as necessary.
+
+        pars_not_match_prov_tree_pars: bool, default False
+            If you're consciously asking for a provenance with
+            parameters that you know won't match the provenance in the
+            DataStore's provenance tree, set this to True.  Otherwise,
+            an exception will be raised if you ask for a provenance
+            that's inconsistent with one in the prov_tree.
+
+        replace_tree: bool, default False
+            Replace whatever's in the provenance tree with the newly
+            generated provenance.  This requires upstream provenances to
+            exist-- either in the prov tree, or in upstream objects
+            already saved to the data store.  It (effectively) implies
+            pars_not_match_prov_tree_pars.
 
         Returns
         -------
@@ -487,53 +925,73 @@ class DataStore:
             The provenance for the given process.
 
         """
-        with SmartSession(session, self.session) as session:
-            code_version = Provenance.get_code_version(session=session)
-            if code_version is None:
-                # this "null" version should never be used in production
-                code_version = CodeVersion(version='v0.0.0')
-                code_version.update()  # try to add current git hash to version object
 
-            # check if we can find the upstream provenances
-            upstreams = []
-            for name in UPSTREAM_STEPS[process]:
-                prov = None
+        # First, check the provenance tree:
+        prov_found_in_tree = None
+        if ( not replace_tree ) and ( self.prov_tree is not None ) and ( process in self.prov_tree ):
+            if self.prov_tree[ process ].parameters != pars_dict:
+                if not pars_not_match_prov_tree_pars:
+                    raise ValueError( f"DataStore getting provenance for {process} whose parameters "
+                                      f"don't match the parameters of the same process in the prov_tree" )
+            else:
+                prov_found_in_tree = self.prov_tree[ process ]
+
+        if prov_found_in_tree is not None:
+            return prov_found_in_tree
+
+        # If that fails, see if we can make one
+
+        session = self.session if session is None else session
+
+        code_version = Provenance.get_code_version(session=session)
+        if code_version is None:
+            raise RuntimeError( f"No code_version in the database, can't make a Provenance" )
+
+        # check if we can find the upstream provenances
+        upstreams = []
+        for name in UPSTREAM_STEPS[process]:
+            prov = None
+            if ( self.prov_tree is not None ) and ( name in self.prov_tree ):
                 # first try to load an upstream that was given explicitly:
-                if self.prov_tree is not None and name in self.prov_tree:
-                    prov = self.prov_tree[name]
+                prov = self.prov_tree[name]
+            else:
+                # if that fails, see if the correct object exists in memory
+                obj_names = PROCESS_PRODUCTS[name]
+                if isinstance(obj_names, str):
+                    obj_names = [obj_names]
+                obj = getattr(self, obj_names[0], None)  # only need one object to get the provenance
+                if isinstance(obj, list):
+                    obj = obj[0]  # for cutouts or measurements just use the first one
+                if ( obj is not None ) and ( obj.provenance_id is not None ):
+                    prov = Provenance.get( obj.provenance_id, session=session )
 
-                if prov is None:  # if that fails, see if the correct object exists in memory
-                    obj_names = PROCESS_PRODUCTS[name]
-                    if isinstance(obj_names, str):
-                        obj_names = [obj_names]
-                    obj = getattr(self, obj_names[0], None)  # only need one object to get the provenance
-                    if isinstance(obj, list):
-                        obj = obj[0]  # for cutouts or measurements just use the first one
+            if prov is not None:  # if we don't find one of the upstreams, it will raise an exception
+                upstreams.append(prov)
 
-                    if obj is not None and hasattr(obj, 'provenance') and obj.provenance is not None:
-                        prov = obj.provenance
+        if len(upstreams) != len(UPSTREAM_STEPS[process]):
+            raise ValueError(f'Could not find all upstream provenances for process {process}.')
 
-                if prov is not None:  # if we don't find one of the upstreams, it will raise an exception
-                    upstreams.append(prov)
+        # check if "referencing" is in the list, if so, replace it with its upstreams
+        # (Reason: referencing is upstream of subtractions, but subtraction upstreams
+        # are *not* the Reference entry, but rather the images that went into the subtractions.)
+        for u in upstreams:
+            if u.process == 'referencing':
+                upstreams.remove(u)
+                for up in u.upstreams:
+                    upstreams.append(up)
 
-            if len(upstreams) != len(UPSTREAM_STEPS[process]):
-                raise ValueError(f'Could not find all upstream provenances for process {process}.')
+        # we have a code version object and upstreams, we can make a provenance
+        prov = Provenance(
+            process=process,
+            code_version_id=code_version.id,
+            parameters=pars_dict,
+            upstreams=upstreams,
+            is_testing="test_parameter" in pars_dict,  # this is a flag for testing purposes
+        )
+        prov.insert_if_needed( session=session )
 
-            for u in upstreams:  # check if "referencing" is in the list, if so, replace it with its upstreams
-                if u.process == 'referencing':
-                    upstreams.remove(u)
-                    for up in u.upstreams:
-                        upstreams.append(up)
-
-            # we have a code version object and upstreams, we can make a provenance
-            prov = Provenance(
-                process=process,
-                code_version=code_version,
-                parameters=pars_dict,
-                upstreams=upstreams,
-                is_testing="test_parameter" in pars_dict,  # this is a flag for testing purposes
-            )
-            prov = prov.merge_concurrent(session=session, commit=True)
+        if replace_tree:
+            self.set_prov_tree( { process: prov }, wipe_tree=False )
 
         return prov
 
@@ -550,61 +1008,66 @@ class DataStore:
 
         Will raise if no provenance can be found.
         """
-        # see if it is in the prov_tree
-        if self.prov_tree is not None:
-            if process in self.prov_tree:
-                return self.prov_tree[process]
-            else:
-                raise ValueError(f'No provenance found for process "{process}" in prov_tree!')
+        raise RuntimeError( "Deprecated; just look in prov_tree" )
 
-        return None  # if not found in prov_tree, just return None
+        # # see if it is in the prov_tree
+        # if self.prov_tree is not None:
+        #     if process in self.prov_tree:
+        #         return self.prov_tree[process]
+        #     else:
+        #         raise ValueError(f'No provenance found for process "{process}" in prov_tree!')
+
+        # return None  # if not found in prov_tree, just return None
 
     def get_raw_exposure(self, session=None):
-        """
-        Get the raw exposure from the database.
+        """Get the raw exposure from the database.
         """
         if self._exposure is None:
             if self.exposure_id is None:
                 raise ValueError('Cannot get raw exposure without an exposure_id!')
 
             with SmartSession(session, self.session) as session:
-                self._exposure = session.scalars(sa.select(Exposure).where(Exposure.id == self.exposure_id)).first()
+                self.exposure = session.scalars(sa.select(Exposure).where(Exposure._id == self.exposure_id)).first()
 
         return self._exposure
 
-    def get_image(self, provenance=None, session=None):
-        """
-        Get the pre-processed (or coadded) image, either from
-        memory or from the database.
-        If the store is initialized with an image_id,
-        that image is returned, no matter the
-        provenances or the local parameters.
-        This is the only way to ask for a coadd image.
-        If an image with such an id is not found,
-        in memory or in the database, will raise a ValueError.
-        If exposure_id and section_id are given, will
-        load an image that is consistent with
-        that exposure and section ids, and also with
-        the code version and critical parameters
-        (using a matching of provenances).
-        In this case we will only load a regular image, not a coadd.
-        If no matching image is found, will return None.
+    def get_image( self, provenance=None, reload=False, session=None ):
+        """Get the pre-processed (or coadded) image, either from memory or from the database.
+
+        If the store is initialized with an image or an image_id, that
+        image is returned, no matter the provenances or the local
+        parameters.  This is the only way to ask for a coadd image.  If
+        an image with such an id is not found, in memory or in the
+        database, will raise a ValueError.
+
+        If exposure_id and section_id are given, will load an image that
+        is consistent with that exposure and section ids, futher qualified by:
+          * with provenance matching the passed provenance, if provided, else:
+          * with provenance matching the 'preprocessing' provenance in self.prov.tree,
+            or an exception if there is no suchy thing in prov_tree.
+        Will return None if there is no match.
 
         Note that this also updates self.image with the found image (or None).
 
         Parameters
         ----------
-        provenance: Provenance object
-            The provenance to use for the image.
-            This provenance should be consistent with
-            the current code version and critical parameters.
-            If none is given, will use the prov_tree and if that is None,
-            will use the latest provenance for the "preprocessing" process.
+        provenance: Provenance object, or None
+            The provenance to use for the image.  This provenance should
+            be consistent with the current code version and critical
+            parameters.  If None, will get the 'preprocessing' provenance
+            from self.prov_tree.
+
+        reload: bool, default False
+            If True, ignore the image saved in the Datastore and reload
+            the image from the databse using either the image_id (if one
+            is available) or the exposure, section_id, and
+            'preprocessing' provenance.
+
         session: sqlalchemy.orm.session.Session
             An optional session to use for the database query.
             If not given, will use the session stored inside the
             DataStore object; if there is none, will open a new session
-            and close it at the end of the function.
+            and close it when done with it.
 
         Returns
         -------
@@ -614,96 +1077,189 @@ class DataStore:
         """
         session = self.session if session is None else session
 
-        if (
-                (self.exposure is None or self.section is None) and
-                (self.exposure_id is None or self.section_id is None) and
-                self.image is None and self.image_id is None
-        ):
-            raise ValueError('Cannot get image without one of (exposure_id, section_id), '
-                             '(exposure, section), image, or image_id!')
+        # See if we have the image
 
-        if self.image_id is not None:  # we were explicitly asked for a specific image id:
-            if isinstance(self.image, Image) and self.image.id == self.image_id:
-                pass  # return self.image at the end of function...
-            else:  # not found in local memory, get from DB
-                with SmartSession(session) as session:
-                    self.image = session.scalars(sa.select(Image).where(Image.id == self.image_id)).first()
+        if reload:
+            self.image = None
 
-            # we asked for a specific image, it should exist!
+        if self.image is not None:
+            return self.image
+
+        if self.image_id is not None:
+            self.image = Image.get_by_id( self.image_id, session=session )
             if self.image is None:
-                raise ValueError(f'Cannot find image with id {self.image_id}!')
+                raise RuntimeError( f"Failed to load image {self.image_id}" )
+            return self.image
 
-        else:  # try to get the image based on exposure_id and section_id
-            process = 'preprocessing'
-            if self.image is not None and self.image.provenance is not None:
-                process = self.image.provenance.process  # this will be "coaddition" sometimes!
-            if provenance is None:  # try to get the provenance from the prov_tree
-                provenance = self._get_provenance_for_an_upstream(process, session=session)
+        if ( self.exposure is None ) or ( self.section is None ):
+            raise ValueError( "Cannot get image without either (exposure, section) or (image) or (image_id )" )
 
-            if self.image is not None:
-                # If an image already exists and image_id is none, we may be
-                # working with a datastore that hasn't been committed to the
-                # database; do a quick check for mismatches.
-                # (If all the ids are None, it'll match even if the actual
-                # objects are wrong, but, oh well.)
-                if (
-                    self.exposure_id is not None and self.section_id is not None and
-                    (self.exposure_id != self.image.exposure_id or self.section_id != self.image.section_id)
-                ):
-                    self.image = None
-                if self.exposure is not None and self.image.exposure_id != self.exposure.id:
-                    self.image = None
-                if ( self.section is not None and self.image is not None and
-                        str(self.image.section_id) != self.section.identifier ):
-                    self.image = None
-                if self.image is not None and provenance is not None and self.image.provenance.id != provenance.id:
-                    self.image = None
+        # We don't have the image yet, try to get it based on exposure and section
 
-                # If we get here, self.image is presumed to be good
+        if provenance is None:
+            if 'preprocessing' not in self.prov_tree:
+                raise RuntimeError( "Can't get an image without a provenance; there is no preprocessing "
+                                    "provenance in the DataStore's provenance tree." )
+            provenance = self.prov_tree[ 'preprocessing' ]
 
-            if self.image is None:  # load from DB
-                # this happens when the image is required as an upstream for another process (but isn't in memory)
-                if provenance is not None:
-                    with SmartSession(session) as session:
-                        self.image = session.scalars(
-                            sa.select(Image).where(
-                                Image.exposure_id == self.exposure_id,
-                                Image.section_id == str(self.section_id),
-                                Image.provenance_id == provenance.id,
-                            )
-                        ).first()
+        with SmartSession( session ) as sess:
+            self.image = ( sess.query( Image )
+                           .filter( Image.exposure_id == self.exposure_id )
+                           .filter( Image.section_id == str(self.section_id) )
+                           .filter( Image.provenance_id == provenance._id )
+                          ).first()
 
-        return self.image  # can return none if no image was found
+        # Will return None if no image was found in the search
+        return self.image
 
-    def append_image_products(self, image):
-        """Append the image products to the image and sources objects.
-        This is a convenience function to be used by the
-        pipeline applications, to make sure the image
-        object has all the data products it needs.
+    def _get_data_product( self,
+                           att,
+                           cls,
+                           upstream_att,
+                           cls_upstream_id_att,
+                           process,
+                           is_list=False,
+                           match_prov=True,
+                           provenance=None,
+                           reload=False,
+                           session=None ):
+        """Get a data product (e.g. sources, detections, etc.).
+
+        First sees if the data product is already in the DataStore.  If
+        so, returns it, without worrying about provenance.
+
+        If it's not there, gets the upstream data product first.
+        Searches the database for an object whose upstream matches, and
+        whose provenance matches.  Provenance is set from the provenance
+        tree for the appropriate process if it is not passed explicitly.
+
+        Returns an object or None (if is_list is False), or a
+        (potentially empty) list of objects if is_list is True.
+
+        Also updates the self.{att} property.
+
+        Parameters
+        ----------
+          att: str
+            The attribute of the DataStore we're trying to get (sources, psf, wcs, bg, cutouts, etc.)
+
+          cls: class
+            The class associated with att (Sources, PSF, WorldCoordinates, etc.)
+
+          upstream_att: str
+            The name of the attribute of the DataStore that represents the upstream product.
+
+          cls_upstream_id_att: THING The actual attribute from the
+            class that holds the id of the upstream. E.g., if
+            att="sources" and cls=SourceList, then
+            upstream_att="image_id" and att=SourceList.image_id
+
+          process: str
+            The name of the process that produces this data product ('extraction', 'detection', ';measuring', etc.)
+
+          is_list: bool, default False
+            True if a list is expected (which currently is only for measurements).
+
+          match_prov: bool, default True
+            True if the provenance must match.  (For some things,
+            i.e. the SourceList siblings, it's a 1:1 relationship, so
+            there's no need to match provenance.)
+
+          provenance: Provenance or None
+            The provenance of the data product.  If this isn't passed,
+            will look in the provenance tree for a provenance of the
+            indicated process.  If there's nothing there, and the data
+            product isn't already in the DataStore, it's an error.
+
+          reload: bool, default False
+            Igonore an existing data product if one is already in the
+            DataStore, and always reload it from the database using the
+            parent products and the provenance.
+
+          session: SQLAlchemy session or None
+            If not passed, may make and close a sesion.
+
         """
-        for att in ['sources', 'psf', 'bg', 'wcs', 'zp', 'detections', 'cutouts', 'measurements']:
-            if getattr(self, att, None) is not None:
-                setattr(image, att, getattr(self, att))
-        if image.sources is not None:
-            for att in ['wcs', 'zp']:
-                if getattr(self, att, None) is not None:
-                    setattr(image.sources, att, getattr(self, att))
+        # First, see if we already have one
+        if hasattr( self, att ):
+            if reload:
+                setattr( self, att, None )
+            else:
+                obj = getattr( self, att )
+                if obj is not None:
+                    return obj
+        else:
+            raise RuntimeError( f"DataStore has no {att} attribute." )
 
-    def get_sources(self, provenance=None, session=None):
+        # If not, find it in the database
+
+        if match_prov and ( provenance is None ):
+            if ( self.prov_tree is None ) or ( process not in self.prov_tree ):
+                raise RuntimeError( f"DataStore: can't get {att}, no provenance, and provenance not in prov_tree" )
+            provenance = self.prov_tree[ process ]
+
+        upstreamobj = getattr( self, upstream_att )
+        if upstreamobj is None:
+            getattr( self, f'get_{upstream_att}' )( session=session )
+            upstreamobj = getattr( self, upstream_att )
+        if upstreamobj is None:
+            # It's not obvious to me if we should return None, or if we should
+            #  be raising an exception here.  Some places in the code assume
+            #  it will just be None, so that's what it is.
+            # raise RuntimeError( f"Datastore can't get a {att}, it isn't able to get the parent {upstream_att}" )
+            setattr( self, att, None )
+            return None
+
+        with SmartSession( session ) as sess:
+            obj = sess.query( cls ).filter( cls_upstream_id_att == upstreamobj._id )
+            if ( match_prov ):
+                obj = obj.filter( cls.provenance_id == provenance._id )
+            obj = obj.all()
+
+        if is_list:
+            setattr( self, att, None if len(obj)==0 else list(obj) )
+        else:
+            if len( obj ) > 1:
+                raise RuntimeError( f"DataStore found multiple matching {cls.__name__} and shouldn't have" )
+            elif len( obj ) == 0:
+                setattr( self, att, None )
+            else:
+                setattr( self, att, obj[0] )
+
+        return getattr( self, att )
+
+
+
+    def get_sources(self, provenance=None, reload=False, session=None):
         """Get the source list, either from memory or from database.
+
+        If there is already a sources will return that one, or raise an
+        error if its provenance doesn't match what's expected.
+        (Expected provenance is defined by the provenance parameter if
+        its passed, otherwise the 'extraction' provenance in
+        self.prov_tree, otherwise anything with the image provenance in
+        its upstreams.)
+
+        Otherwise, will try to get the image (with get_image), and will
+        Try to use the image_id and the provenance to find one in the
+        database.  Returns None if none is found.
+
+        Updates self.sources and self.sources_id as it loads new things.
 
         Parameters
         ----------
         provenance: Provenance object
-            The provenance to use to get the source list.
-            This provenance should be consistent with
-            the current code version and critical parameters.
-            If none is given, uses the appropriate provenance
-            from the prov_tree dictionary.
-            If prov_tree is None, will use the latest provenance
-            for the "extraction" process.
-            Usually the provenance is not given when sources are loaded
-            in order to be used as an upstream of the current process.
+            The provenance to use to get the source list.  This
+            provenance should be consistent with the current code
+            version and critical parameters.  If none is given, uses the
+            appropriate provenance from the prov_tree dictionary.  If
+            prov_tree is None, then that's an error.
+
+        reload: bool, default False
+            If True, ignore any .sources already present and reload the
+            sources from the databse using the image and the
+            'extraction' provenance.
+
         session: sqlalchemy.orm.session.Session
             An optional session to use for the database query.
             If not given, will use the session stored inside the
@@ -717,280 +1273,93 @@ class DataStore:
             or None if no matching source list is found.
 
         """
-        process_name = 'extraction'
-        if provenance is None:  # try to get the provenance from the prov_tree
-            provenance = self._get_provenance_for_an_upstream(process_name, session)
 
-        # if sources exists in memory, check the provenance is ok
-        if self.sources is not None:
-            # make sure the sources object has the correct provenance
-            if self.sources.provenance is None:
-                raise ValueError('SourceList has no provenance!')
-            if provenance is not None and provenance.id != self.sources.provenance.id:
-                self.sources = None
+        return self._get_data_product( "sources", SourceList, "image", SourceList.image_id, "extraction",
+                                       provenance=provenance, reload=reload, session=session )
 
-        # TODO: do we need to test the SourceList Provenance has upstreams consistent with self.image.provenance?
+    def get_psf(self, session=None, reload=False, provenance=None):
+        """Get a PSF, either from memory or from the database."""
+        return self._get_data_product( 'psf', PSF, 'sources', PSF.sources_id, 'extraction',
+                                       match_prov=False, provenance=provenance, reload=reload, session=session )
 
-        # not in memory, look for it on the DB
-        if self.sources is None:
-            with SmartSession(session, self.session) as session:
-                image = self.get_image(session=session)
-                if image is not None and provenance is not None:
-                    self.sources = session.scalars(
-                        sa.select(SourceList).where(
-                            SourceList.image_id == image.id,
-                            SourceList.is_sub.is_(False),
-                            SourceList.provenance_id == provenance.id,
-                        )
-                    ).first()
+    def get_background(self, session=None, reload=False, provenance=None):
+        """Get a Background object, either from memory or from the database."""
+        return self._get_data_product( 'bg', Background, 'sources', Background.sources_id, 'extraction',
+                                       match_prov=False, provenance=provenance, reload=reload, session=session )
 
-        return self.sources
+    def get_wcs(self, session=None, reload=False, provenance=None):
+        """Get an astrometric solution in the form of a WorldCoordinates object, from memory or from the database."""
+        return self._get_data_product( 'wcs', WorldCoordinates, 'sources', WorldCoordinates.sources_id, 'extraction',
+                                       match_prov=False, provenance=provenance, reload=reload, session=session )
 
-    def get_psf(self, provenance=None, session=None):
-        """Get a PSF, either from memory or from the database.
+    def get_zp(self, session=None, reload=False, provenance=None):
+        """Get a zeropoint as a ZeroPoint object, from memory or from the database."""
+        return self._get_data_product( 'zp', ZeroPoint, 'sources', ZeroPoint.sources_id, 'extraction',
+                                       match_prov=False, provenance=provenance, reload=reload, session=session )
 
-        Parameters
-        ----------
-        provenance: Provenance object
-            The provenance to use for the PSF.
-            This provenance should be consistent with
-            the current code version and critical parameters.
-            If none is given, uses the appropriate provenance
-            from the prov_tree dictionary.
-            Usually the provenance is not given when the psf is loaded
-            in order to be used as an upstream of the current process.
-        session: sqlalchemy.orm.session.Session
-            An optional session to use for the database query.
-            If not given, will use the session stored inside the
-            DataStore object; if there is none, will open a new session
-            and close it at the end of the function.
 
-        Returns
-        -------
-        psf: PSF object
-            The point spread function object for this image,
-            or None if no matching PSF is found.
-
-        """
-        process_name = 'extraction'
-        if provenance is None:  # try to get the provenance from the prov_tree
-            provenance = self._get_provenance_for_an_upstream(process_name, session)
-
-        # if psf exists in memory, check the provenance is ok
-        if self.psf is not None:
-            # make sure the psf object has the correct provenance
-            if self.psf.provenance is None:
-                raise ValueError('PSF has no provenance!')
-            if provenance is not None and provenance.id != self.psf.provenance.id:
-                self.psf = None
-
-        # TODO: do we need to test the PSF Provenance has upstreams consistent with self.image.provenance?
-
-        # not in memory, look for it on the DB
-        if self.psf is None:
-            with SmartSession(session, self.session) as session:
-                image = self.get_image(session=session)
-                if image is not None:
-                    self.psf = session.scalars(
-                        sa.select(PSF).where(PSF.image_id == image.id, PSF.provenance_id == provenance.id)
-                    ).first()
-
-        return self.psf
-
-    def get_background(self, provenance=None, session=None):
-        """Get a Background object, either from memory or from the database.
-
-        Parameters
-        ----------
-        provenance: Provenance object
-            The provenance to use for the background.
-            This provenance should be consistent with
-            the current code version and critical parameters.
-            If none is given, uses the appropriate provenance
-            from the prov_tree dictionary.
-            Usually the provenance is not given when the background is loaded
-            in order to be used as an upstream of the current process.
-        session: sqlalchemy.orm.session.Session
-            An optional session to use for the database query.
-            If not given, will use the session stored inside the
-            DataStore object; if there is none, will open a new session
-            and close it at the end of the function.
-
-        Returns
-        -------
-        bg: Background object
-            The background object for this image,
-            or None if no matching background is found.
-
-        """
-        process_name = 'extraction'
-        if provenance is None:  # try to get the provenance from the prov_tree
-            provenance = self._get_provenance_for_an_upstream(process_name, session)
-
-        # if background exists in memory, check the provenance is ok
-        if self.bg is not None:
-            # make sure the background object has the correct provenance
-            if self.bg.provenance is None:
-                raise ValueError('Background has no provenance!')
-            if provenance is not None and provenance.id != self.bg.provenance.id:
-                self.bg = None
-
-        # TODO: do we need to test the b/g Provenance has upstreams consistent with self.image.provenance?
-
-        # not in memory, look for it on the DB
-        if self.bg is None:
-            with SmartSession(session, self.session) as session:
-                image = self.get_image(session=session)
-                if image is not None:
-                    self.bg = session.scalars(
-                        sa.select(Background).where(
-                            Background.image_id == image.id,
-                            Background.provenance_id == provenance.id,
-                        )
-                    ).first()
-
-        return self.bg
-
-    def get_wcs(self, provenance=None, session=None):
-        """Get an astrometric solution in the form of a WorldCoordinates object, from memory or from the database.
-
-        Parameters
-        ----------
-        provenance: Provenance object
-            The provenance to use for the WCS.
-            This provenance should be consistent with
-            the current code version and critical parameters.
-            If none is given, uses the appropriate provenance
-            from the prov_tree dictionary.
-            If prov_tree is None, will use the latest provenance
-            for the "extraction" process.
-            Usually the provenance is not given when the wcs is loaded
-            in order to be used as an upstream of the current process.
-        session: sqlalchemy.orm.session.Session
-            An optional session to use for the database query.
-            If not given, will use the session stored inside the
-            DataStore object; if there is none, will open a new session
-            and close it at the end of the function.
-
-        Returns
-        -------
-        wcs: WorldCoordinates object
-            The world coordinates object for this image,
-            or None if no matching WCS is found.
-
-        """
-        process_name = 'extraction'
-        if provenance is None:  # try to get the provenance from the prov_tree
-            provenance = self._get_provenance_for_an_upstream(process_name, session)
-
-        # if psf exists in memory, check the provenance is ok
-        if self.wcs is not None:
-            # make sure the psf object has the correct provenance
-            if self.wcs.provenance is None:
-                raise ValueError('WorldCoordinates has no provenance!')
-            if provenance is not None and provenance.id != self.wcs.provenance.id:
-                self.wcs = None
-
-        # TODO: do we need to test the WCS Provenance has upstreams consistent with self.sources.provenance?
-
-        # not in memory, look for it on the DB
-        if self.wcs is None:
-            with SmartSession(session, self.session) as session:
-                sources = self.get_sources(session=session)
-                if sources is not None and sources.id is not None:
-                    self.wcs = session.scalars(
-                        sa.select(WorldCoordinates).where(
-                            WorldCoordinates.sources_id == sources.id, WorldCoordinates.provenance_id == provenance.id
-                        )
-                    ).first()
-
-        return self.wcs
-
-    def get_zp(self, provenance=None, session=None):
-        """Get a photometric solution in the form of a ZeroPoint object, from memory or from the database.
-
-        Parameters
-        ----------
-        provenance: Provenance object
-            The provenance to use for the ZP.
-            This provenance should be consistent with
-            the current code version and critical parameters.
-            If none is given, uses the appropriate provenance
-            from the prov_tree dictionary.
-            If prov_tree is None, will use the latest provenance
-            for the "extraction" process.
-            Usually the provenance is not given when the zp is loaded
-            in order to be used as an upstream of the current process.
-        session: sqlalchemy.orm.session.Session
-            An optional session to use for the database query.
-            If not given, will use the session stored inside the
-            DataStore object; if there is none, will open a new session
-            and close it at the end of the function.
-
-        Returns
-        -------
-        zp: ZeroPoint object
-            The zero point object for this image,
-            or None if no matching ZP is found.
-
-        """
-        process_name = 'extraction'
-        if provenance is None:  # try to get the provenance from the prov_tree
-            provenance = self._get_provenance_for_an_upstream(process_name, session)
-
-        # if psf exists in memory, check the provenance is ok
-        if self.zp is not None:
-            # make sure the psf object has the correct provenance
-            if self.zp.provenance is None:
-                raise ValueError('ZeroPoint has no provenance!')
-            if provenance is not None and provenance.id != self.zp.provenance.id:
-                self.zp = None
-
-        # TODO: do we need to test the ZP Provenance has upstreams consistent with self.sources.provenance?
-
-        # not in memory, look for it on the DB
-        if self.zp is None:
-            with SmartSession(session, self.session) as session:
-                sources = self.get_sources(session=session)
-                if sources is not None and sources.id is not None:
-                    self.zp = session.scalars(
-                        sa.select(ZeroPoint).where(
-                            ZeroPoint.sources_id == sources.id, ZeroPoint.provenance_id == provenance.id
-                        )
-                    ).first()
-
-        return self.zp
-
-    def get_reference(self, provenances=None, min_overlap=0.85, match_filter=True,
-                      ignore_target_and_section=False, skip_bad=True, session=None ):
+    def get_reference(self,
+                      provenances=None,
+                      min_overlap=0.85,
+                      ignore_ra_dec=False,
+                      match_filter=True,
+                      match_target=False,
+                      match_instrument=True,
+                      match_section=True,
+                      skip_bad=True,
+                      reload=False,
+                      session=None ):
         """Get the reference for this image.
 
+        Also sets the self.reference property.
+
         Parameters
         ----------
-        provenances: list of provenance objects
-            A list of provenances to use to identify a reference.
-            Will check for existing references for each one of these provenances,
-            and will apply any additional criteria to each resulting reference, in turn,
-            until the first one qualifies and is the one returned
-            (i.e, it is possible to take the reference matching the first provenance
-            and never load the others).
-            If not given, will try to get the provenances from the prov_tree attribute.
-            If those are not given, or if no qualifying reference is found, will return None.
+        provenances: list of Provenance objects, or None
+            A list of provenances to use to identify a reference.  Any
+            found references must have one of these provenances.  If not
+            given, will try to get the provenances from the prov_tree
+            attribute.  If it can't find them there and provenance isn't
+            given, raise an exception.
+
         min_overlap: float, default 0.85
             Area of overlap region must be at least this fraction of the
             area of the search image for the reference to be good.
             (Warning: calculation implicitly assumes that images are
             aligned N/S and E/W.)  Make this <= 0 to not consider
             overlap fraction when finding a reference.
+
+        ignore_ra_dec: bool, default False
+            If True, search for references based on the target and
+            section_id of the Datastore's image, instead of on the
+            Datastore's ra and dec.  match_target must be True if this
+            is True.
+
         match_filter: bool, default True
             If True, only find a reference whose filter matches the
-            DataStore's images' filter.
-        ignore_target_and_section: bool, default False
-            If False, will try to match based on the datastore image's target and
-            section_id parameters (if they are not None) and only use RA/dec to match
-            if they are missing. If True, will only use RA/dec to match.
+            DataStore's image's filter.
+
+        match_target: bool, default False
+            If True, only find a reference whose target matches the
+            Datatstore's image's target.
+
+        match_instrument: bool, default True
+            If True, only find a refernce whose instrument matches the
+            Datastore's images' instrument.
+
+        match_section: bool, default True
+            If True, only find a reference whose section_id matches the
+            Datastore's imag's section_id.  It doesn't make sense for
+            this to be True if match_instrument isn't True.
+
         skip_bad: bool, default True
             If True, will skip references that are marked as bad.
+
+        reload: bool, default False
+            If True, set the self.reference property (as well as derived
+            things like ref_image, ref_sources, etc.) to None and try to
+            re-acquire the reference from the databse.
+
         session: sqlalchemy.orm.session.Session or SmartSession
             An optional session to use for the database query.
             If not given, will use the session stored inside the
@@ -1010,42 +1379,65 @@ class DataStore:
         single valid reference image for a given instrument/filter/date
         that has an appreciable overlap with any possible image from
         that instrument.  The software does not enforce this, however.)
+
         """
+
+        if reload:
+            self.reference = None
+            self._ref_image = None
+            self._ref_sources = None
+            self._ref_bg = None
+            self._ref_psf = None
+            self._ref_wcs = None
+            self._ref_zp = None
+            self.sub_image = None
+
         image = self.get_image(session=session)
         if image is None:
             return None  # cannot find a reference without a new image to match
 
         if provenances is None:  # try to get it from the prov_tree
-            provenances = self._get_provenance_for_an_upstream('referencing')
+            if ( self.prov_tree is not None ) and ( 'referencing' in self.prov_tree ):
+                provenances = self.prov_tree[ 'referencing' ]
 
         provenances = listify(provenances)
 
-        if provenances is None:
-            self.reference = None  # cannot get a reference without any associated provenances
+        if ( provenances is None ) or ( len(provenances) == 0 ):
+            raise RuntimeError( f"DataStore can't get a reference, no provenances to search" )
+            # self.reference = None  # cannot get a reference without any associated provenances
+
+        provenance_ids = [ p.id for p in provenances ]
 
         # first, some checks to see if existing reference is ok
-        if self.reference is not None and provenances is not None:  # check for a mismatch of reference to provenances
-            if self.reference.provenance_id not in [p.id for p in provenances]:
-                self.reference = None
+        if ( self.reference is not None ) and ( self.reference.provenance_id not in provenance_ids ):
+            self.reference = None
 
-        if self.reference is not None and min_overlap is not None and min_overlap > 0:
-            ovfrac = FourCorners.get_overlap_frac(image, self.reference.image)
+        if ( ( self.reference is not None ) and
+             ( min_overlap is not None ) and ( min_overlap > 0 )
+            ):
+            refimg = Image.get_by_id( self.reference.image_id )
+            ovfrac = FourCorners.get_overlap_frac(image, refimg)
             if ovfrac < min_overlap:
                 self.reference = None
 
-        if self.reference is not None and skip_bad:
+        if ( self.reference is not None ) and skip_bad:
             if self.reference.is_bad:
                 self.reference = None
 
-        if self.reference is not None and match_filter:
+        if ( self.reference is not None ) and match_filter:
             if self.reference.filter != image.filter:
                 self.reference = None
 
-        if (
-                self.reference is not None and not ignore_target_and_section and
-                image.target is not None and image.section_id is not None
-        ):
-            if self.reference.target != image.target or self.reference.section_id != image.section_id:
+        if ( self.reference is not None ) and match_target:
+            if self.reference.target != image.target:
+                self.reference = None
+
+        if ( self.reference is not None ) and match_instrument:
+            if self.reference.instrument != image.instrument:
+                self.reference = None
+
+        if ( self.reference is not None ) and match_section:
+            if self.reference.section_id != image.section_id:
                 self.reference = None
 
         # if we have survived this long without losing the reference, can return it here:
@@ -1053,48 +1445,96 @@ class DataStore:
             return self.reference
 
         # No reference was found (or it didn't match other parameters) must find a new one
-        with SmartSession(session, self.session) as session:
-            if ignore_target_and_section or image.target is None or image.section_id is None:
-                arguments = dict(ra=image.ra, dec=image.dec)
-            else:
-                arguments = dict(target=image.target, section_id=image.section_id)
+        # First, clear out all data products that are downstream of reference.
+        # (Setting sub_image will cascade to detections, cutouts, measurements.)
 
-            if match_filter:
-                arguments['filter'] = image.filter
-            else:
-                arguments['filter'] = None
+        self._ref_image = None
+        self._ref_sources = None
+        self._ref_bg = None
+        self._ref_psf = None
+        self._ref_wcs = None
+        self._ref_zp = None
+        self.sub_image = None
 
-            arguments['skip_bad'] = skip_bad
-            arguments['provenance_ids'] = provenances
-            references = Reference.get_references(**arguments, session=session)
+        arguments = {}
+        if ignore_ra_dec:
+            if ( not match_target ) or ( not match_section ):
+                raise ValueError( "DataStore.get_reference: ignore_ra_dec requires "
+                                  "match_target=True and match_section=True" )
+        else:
+            arguments['ra'] = image.ra
+            arguments['dec'] = image.dec
 
+        if match_filter:
+            arguments['filter'] = image.filter
+
+        if match_target:
+            arguments['target'] = image.target
+
+        if match_instrument:
+            arguments['instrument'] = image.instrument
+
+        if match_section:
+            arguments['section_id'] = image.section_id
+
+        if skip_bad:
+            arguments['skip_bad'] = True
+
+        arguments['provenance_ids'] = provenance_ids
+
+        # SCLogger.debug( f"DataStore calling Reference.get_references with arguments={arguments}" )
+
+        refs, imgs = Reference.get_references( **arguments, session=session )
+        if len(refs) == 0:
+            # SCLogger.debug( f"DataStore: Reference.get_references returned nothing." )
             self.reference = None
-            for ref in references:
-                if min_overlap is not None and min_overlap > 0:
-                    ovfrac = FourCorners.get_overlap_frac(image, ref.image)
-                    # print(
-                    #     f'ref.id= {ref.id}, ra_left= {ref.image.ra_corner_00:.2f}, '
-                    #     f'ra_right= {ref.image.ra_corner_11:.2f}, ovfrac= {ovfrac}'
-                    # )
-                    if ovfrac >= min_overlap:
-                        self.reference = ref
-                        break
+            return None
+
+        # SCLogger.debug( f"DataStore: Reference.get_reference returned {len(refs)} possible references" )
+        if ( min_overlap is not None ) and ( min_overlap > 0 ):
+            okrefs = []
+            for ref, img in zip( refs, imgs ):
+                ovfrac = FourCorners.get_overlap_frac( image, img )
+                if ovfrac >= min_overlap:
+                    okrefs.append( ref )
+            refs = okrefs
+            # SCLogger.debug( f"DataStore: after min_overlap {min_overlap}, {len(refs)} refs remain" )
+
+        if len(refs) > 1:
+            # Perhaps this should be an error?  Somebody may not be as
+            # anal as they ought to be about references, though, so
+            # leave it a warning.
+            SCLogger.warning( "DataStore.get_reference: more than one reference matched the criteria! "
+                              "This is scary.  Randomly picking one.  Which is also scary." )
+
+        self.reference = None if len(refs)==0 else refs[0]
 
         return self.reference
 
-    def get_subtraction(self, provenance=None, session=None):
+
+    def get_subtraction(self, provenance=None, reload=False, session=None):
         """Get a subtraction Image, either from memory or from database.
+
+        If sub_image is not None, return that.  Otherwise, if
+        self.reference is None, raise an exception.  Otherwise, use
+        self.get_image() to get the image, and find the subtraction
+        image that has the self.image as its new, self.ref_image as its
+        ref, and the right provenance.
+
+        Updates sub_image.
 
         Parameters
         ----------
         provenance: Provenance object
-            The provenance to use for the subtraction.
-            This provenance should be consistent with
-            the current code version and critical parameters.
-            If none is given, will use the latest provenance
-            for the "subtraction" process.
-            Usually the provenance is not given when the subtraction is loaded
-            in order to be used as an upstream of the current process.
+            The provenance to use for the subtraction.  This provenance
+            should be consistent with the current code version and
+            critical parameters.  If None, then gets the "subtraction"
+            provenance from the provenance tree, raising an exception if
+            one isn't found.
+
+        reload: bool, default False
+            Set .sub_image to None, and always try to reload from the database.
+
         session: sqlalchemy.orm.session.Session
             An optional session to use for the database query.
             If not given, will use the session stored inside the
@@ -1108,218 +1548,79 @@ class DataStore:
             or None if no matching subtraction image is found.
 
         """
-        process_name = 'subtraction'
-        # make sure the subtraction has the correct provenance
-        if provenance is None:  # try to get the provenance from the prov_tree
-            provenance = self._get_provenance_for_an_upstream(process_name, session)
 
-        # if subtraction exists in memory, check the provenance is ok
+        # This one has a more complicated query, so
+        #  we can't just use _get_data_product
+
+        if reload:
+            self.sub_image = None
+
+        # First see if we already have one
         if self.sub_image is not None:
-            # make sure the sub_image object has the correct provenance
-            if self.sub_image.provenance is None:
-                raise ValueError('Subtraction Image has no provenance!')
-            if provenance is not None and provenance.id != self.sub_image.provenance.id:
+            return self.sub_image
+
+        # If not, look for it in the database
+
+        if provenance is None:
+            if 'subtraction' not in self.prov_tree:
+                raise RuntimeError( "Can't get a subtraction without a provenance; there's no subtraction "
+                                    "provenance in the DataStore's provenance tree." )
+            provenance = self.prov_tree[ 'subtraction' ]
+
+        if self.reference is None:
+            # We could do the call here, but there are so many configurable parameters to
+            #   get_reference() that it's safer to make the user do it
+            raise RuntimeError( "Can't get a subtraction without a reference; call get_reference" )
+
+        # Really, sources and its siblings ought to be loaded too, but we don't strictly need it
+        #   for the search.
+
+        with SmartSession( session ) as sess:
+            if self.image_id is None:
+                self.get_image( session=sess )
+            if self.image_id is None:
+                raise RuntimeError( f"Can't get sub_image, don't have an image_id" )
+
+            imgs = ( sess.query( Image )
+                     .join( image_upstreams_association_table,
+                            image_upstreams_association_table.c.downstream_id==Image._id )
+                     .filter( image_upstreams_association_table.c.upstream_id==self.image.id )
+                     .filter( Image.provenance_id==provenance.id )
+                     .filter( Image.ref_image_id==self.reference.image_id )
+                     .filter( Image.is_sub ) ).all()
+            if len(imgs) > 1:
+                raise RuntimeError( "Found more than one matching sub_image in the database!  This shouldn't happen!" )
+            if len(imgs) == 0:
                 self.sub_image = None
-
-        # TODO: do we need to test the subtraction Provenance has upstreams consistent with upstream provenances?
-
-        # not in memory, look for it on the DB
-        if self.sub_image is None:
-            with SmartSession(session, self.session) as session:
-                image = self.get_image(session=session)
-                ref = self.get_reference(session=session)
-
-                aliased_table = sa.orm.aliased(image_upstreams_association_table)
-                self.sub_image = session.scalars(
-                    sa.select(Image).join(
-                        image_upstreams_association_table,
-                        sa.and_(
-                            image_upstreams_association_table.c.upstream_id == ref.image_id,
-                            image_upstreams_association_table.c.downstream_id == Image.id,
-                        )
-                    ).join(
-                        aliased_table,
-                        sa.and_(
-                            aliased_table.c.upstream_id == image.id,
-                            aliased_table.c.downstream_id == Image.id,
-                        )
-                    ).where(Image.provenance_id == provenance.id)
-                ).first()
-
-        if self.sub_image is not None:
-            self.sub_image.load_upstream_products()
-            self.sub_image.coordinates_to_alignment_target()
+            else:
+                self.sub_image = imgs[0]
 
         return self.sub_image
 
-    def get_detections(self, provenance=None, session=None):
-        """Get a SourceList for sources from the subtraction image, from memory or from database.
+    def get_detections(self, provenance=None, reload=False, session=None):
+        """Get a SourceList for sources from the subtraction image, from memory or from database."""
+        return self._get_data_product( "detections", SourceList, "sub_image", SourceList.image_id, "detection",
+                                       provenance=provenance, reload=reload, session=session )
 
-        Parameters
-        ----------
-        provenance: Provenance object
-            The provenance to use for the source list.
-            This provenance should be consistent with
-            the current code version and critical parameters.
-            If none is given, will use the latest provenance
-            for the "detection" process.
-            Usually the provenance is not given when the subtraction is loaded
-            in order to be used as an upstream of the current process.
-        session: sqlalchemy.orm.session.Session
-            An optional session to use for the database query.
-            If not given, will use the session stored inside the
-            DataStore object; if there is none, will open a new session
-            and close it at the end of the function.
+    def get_cutouts(self, provenance=None, reload=False, session=None):
+        """Get a list of Cutouts, either from memory or from database."""
+        return self._get_data_product( "cutouts", Cutouts, "detections", Cutouts.sources_id, "cutting",
+                                       provenance=provenance, reload=reload, session=session )
 
-        Returns
-        -------
-        sl: SourceList object
-            The list of sources for this subtraction image (the catalog),
-            or None if no matching source list is found.
 
-        """
-        process_name = 'detection'
-        if provenance is None:  # try to get the provenance from the prov_tree
-            provenance = self._get_provenance_for_an_upstream(process_name, session)
+    def get_measurements(self, provenance=None, reload=False, session=None):
+        """Get a list of Measurements, either from memory or from database."""
+        return self._get_data_product( "measurements", Measurements, "cutouts", Measurements.cutouts_id, "measuring",
+                                       is_list=True, provenance=provenance, reload=reload, session=session )
 
-        # not in memory, look for it on the DB
-        if self.detections is not None:
-            # make sure the detections have the correct provenance
-            if self.detections.provenance is None:
-                raise ValueError('SourceList has no provenance!')
-            if provenance is not None and provenance.id != self.detections.provenance.id:
-                self.detections = None
 
-        if self.detections is None:
-            with SmartSession(session, self.session) as session:
-                sub_image = self.get_subtraction(session=session)
-
-                self.detections = session.scalars(
-                    sa.select(SourceList).where(
-                        SourceList.image_id == sub_image.id,
-                        SourceList.is_sub.is_(True),
-                        SourceList.provenance_id == provenance.id,
-                    )
-                ).first()
-
-        return self.detections
-
-    def get_cutouts(self, provenance=None, session=None):
-        """Get a list of Cutouts, either from memory or from database.
-
-        Parameters
-        ----------
-        provenance: Provenance object
-            The provenance to use for the cutouts.
-            This provenance should be consistent with
-            the current code version and critical parameters.
-            If none is given, will use the latest provenance
-            for the "cutting" process.
-            Usually the provenance is not given when the subtraction is loaded
-            in order to be used as an upstream of the current process.
-        session: sqlalchemy.orm.session.Session
-            An optional session to use for the database query.
-            If not given, will use the session stored inside the
-            DataStore object; if there is none, will open a new session
-            and close it at the end of the function.
-
-        Returns
-        -------
-        cutouts: list of Cutouts objects
-            The list of cutouts, that will be empty if no matching cutouts are found.
-
-        """
-        process_name = 'cutting'
-        if provenance is None:  # try to get the provenance from the prov_tree
-            provenance = self._get_provenance_for_an_upstream(process_name, session)
-
-        if self.cutouts is not None:
-            self.cutouts.load_all_co_data()
-            if len(self.cutouts.co_dict) == 0:
-                self.cutouts = None  # TODO: what about images that actually don't have any detections?
-
-            # make sure the cutouts have the correct provenance
-            if self.cutouts is not None:
-                if self.cutouts.provenance is None:
-                    raise ValueError('Cutouts have no provenance!')
-                if provenance is not None and provenance.id != self.cutouts.provenance.id:
-                    self.cutouts = None
-
-        # not in memory, look for it on the DB
-        if self.cutouts is None:
-            with SmartSession(session, self.session) as session:
-                sub_image = self.get_subtraction(session=session)
-
-                if sub_image is None:
-                    return None
-
-                if sub_image.sources is None:
-                    sub_image.sources = self.get_detections(session=session)
-
-                if sub_image.sources is None:
-                    return None
-
-                self.cutouts = session.scalars(
-                    sa.select(Cutouts).where(
-                        Cutouts.sources_id == sub_image.sources.id,
-                        Cutouts.provenance_id == provenance.id,
-                    )
-                ).first()
-
-        return self.cutouts
-
-    def get_measurements(self, provenance=None, session=None):
-        """Get a list of Measurements, either from memory or from database.
-
-        Parameters
-        ----------
-        provenance: Provenance object
-            The provenance to use for the measurements.
-            This provenance should be consistent with
-            the current code version and critical parameters.
-            If none is given, will use the latest provenance
-            for the "measurement" process.
-            Usually the provenance is not given when the subtraction is loaded
-            in order to be used as an upstream of the current process.
-        session: sqlalchemy.orm.session.Session
-            An optional session to use for the database query.
-            If not given, will use the session stored inside the
-            DataStore object; if there is none, will open a new session
-            and close it at the end of the function.
-
-        Returns
-        -------
-        measurements: list of Measurement objects
-            The list of measurements, that will be empty if no matching measurements are found.
-
-        """
-        process_name = 'measurement'
-        if provenance is None:  # try to get the provenance from the prov_tree
-            provenance = self._get_provenance_for_an_upstream(process_name, session)
-
-        # make sure the measurements have the correct provenance
-        if self.measurements is not None:
-            if any([m.provenance is None for m in self.measurements]):
-                raise ValueError('One of the Measurements has no provenance!')
-            if provenance is not None and any([m.provenance.id != provenance.id for m in self.measurements]):
-                self.measurements = None
-
-        # not in memory, look for it on the DB
-        if self.measurements is None:
-            with SmartSession(session, self.session) as session:
-                cutouts = self.get_cutouts(session=session)
-
-                self.measurements = session.scalars(
-                    sa.select(Measurements).where(
-                        Measurements.cutouts_id == cutouts.id,
-                        Measurements.provenance_id == provenance.id,
-                    )
-                ).all()
-
-        return self.measurements
 
     def get_all_data_products(self, output='dict', omit_exposure=False):
         """Get all the data products associated with this Exposure.
+
+        Does *not* try to load missing ones from the databse.  Just
+        returns what the DataStore already knows about.  (Use
+        load_all_data_products to load missing ones from the database.)
 
         By default, this returns a dict with named entries.
         If using output='list', will return a list of all
@@ -1332,6 +1633,7 @@ class DataStore:
         output: str, optional
             The output format. Can be 'dict' or 'list'.
             Default is 'dict'.
+
         omit_exposure: bool, default False
             If True, does not include the exposure in the list of data products
 
@@ -1341,9 +1643,10 @@ class DataStore:
             A dict with named entries, or a flattened list of all
             objects, including lists (e.g., Cutouts will be concatenated,
             no nested). Any None values will be removed.
+
         """
         attributes = [] if omit_exposure else [ '_exposure' ]
-        attributes.extend( [ 'image', 'wcs', 'sources', 'psf', 'bg', 'zp', 'sub_image',
+        attributes.extend( [ 'image', 'sources', 'psf', 'bg', 'wcs', 'zp', 'sub_image',
                              'detections', 'cutouts', 'measurements' ] )
         result = {att: getattr(self, att) for att in attributes}
         if output == 'dict':
@@ -1353,12 +1656,51 @@ class DataStore:
         else:
             raise ValueError(f'Unknown output format: {output}')
 
-    def save_and_commit(self, exists_ok=False, overwrite=True, no_archive=False,
-                        update_image_header=False, force_save_everything=True, session=None):
-        """Go over all the data products and add them to the session.
+    def load_all_data_products( self, reload=False, omit_exposure=False ):
+        """Load all of the data products that exist on the database into DataStore attributes.
 
-        If any of the data products are associated with a file on disk,
-        that would be saved as well.
+        Will return existing ones, or try to load them from the database
+        using the provenance in self.prov_tree and the parent objects.
+        If reload is True, will set the attribute to None and always try
+        to reload from the database.
+
+        If omit_exposure is True, will not touch the self.exposure
+        attribute.  Otherwise, will try to load it based on
+        self.exposure_id.
+
+        """
+
+        if not omit_exposure:
+            if reload:
+                self.exposure = None
+            if self.exposure is None:
+                if self.exposure_id is not None:
+                    if self.section_id is None:
+                        raise RuntimeError( "DataStore has exposure_id but not section_id, I am surprised." )
+                    self.exposure = Exposure.get_by_id( self.exposure_id )
+
+        self.get_image( reload=reload )
+        self.get_sources( reload=reload )
+        self.get_psf( reload=reload )
+        self.get_background( reload=reload )
+        self.get_wcs( reload=reload )
+        self.get_zp( reload=reload )
+        self.get_reference( reload=reload )
+        self.get_subtraction( reload=reload )
+        self.get_detections( reload=reload )
+        self.get_cutouts( reload=reload )
+        self.get_measurements( reload=reload )
+
+
+    def save_and_commit(self,
+                        exists_ok=False,
+                        overwrite=True,
+                        no_archive=False,
+                        update_image_header=False,
+                        update_image_record=True,
+                        force_save_everything=False,
+                        session=None):
+        """Go over all the data products, saving them to disk if necessary, saving them to the database as necessary.
 
         In general, it will *not* save data products that have a
         non-null md5sum (or md5sum_extensions) line in the database.
@@ -1380,8 +1722,17 @@ class DataStore:
         True), as the image headers get "first-look" values, not
         necessarily the latest and greatest if we tune either process.
 
-        DEVELOPER NOTE: this code has to stay synced properly with
-        models/image.py::Image.merge_all
+        It will run an upsert on the database record for all data
+        products.  This means that if the object is not in the databse,
+        it will get added.  (In this case, the object is then reloaded
+        back from the database, so that the database-default fields will
+        be filled.)  If it already is in the database, its fields will
+        be updated with what's in the objects in the DataStore.  Most of
+        the time, this should be a null operation, as if we're not
+        inserting, we have all the fields that were already loaded.
+        However, it does matter for self.image, as some fields (such as
+        background level, fwhm, zp) get set during processes that happen
+        after the image's record in the database is first created.
 
         Parameters
         ----------
@@ -1393,7 +1744,9 @@ class DataStore:
             if the file has already been saved, I/O won't be wasted
             saving it again and pushing it to the archive again.  If
             exists_ok is False, raise an exception if the file exists
-            (and overwrite is False)
+            (and overwrite is False).  This parameter is ignored for
+            data products that already have a md5sum unless
+            force_save_everything is True.
 
         overwrite: bool, default True
             If True, will overwrite any existing files on disk.
@@ -1440,10 +1793,8 @@ class DataStore:
             if isinstance( obj, FileOnDiskMixin ):
                 strio.write( f" with filepath {obj.filepath}" )
             elif isinstance( obj, list ):
-                strio.write( f" of types {[type(i) for i in obj]}" )
+                strio.write( f" including types {set([type(i) for i in obj])}" )
             SCLogger.debug( strio.getvalue() )
-            # SCLogger.debug( f'save_and_commit of {att} considering a {obj.__class__.__name__} with filepath '
-            #                 f'{obj.filepath if isinstance(obj,FileOnDiskMixin) else "<none>"}' )
 
             if isinstance(obj, FileOnDiskMixin):
                 mustsave = True
@@ -1473,79 +1824,107 @@ class DataStore:
 
                 elif mustsave:
                     try:
-                        obj.save( overwrite=overwrite, exists_ok=exists_ok, no_archive=no_archive )
+                        SCLogger.debug( f"save_and_commit saving a {obj.__class__.__name__}" )
+                        SCLogger.debug( f"self.image={self.image}" )
+                        SCLogger.debug( f"self.sources={self.sources}" )
+                        basicargs = { 'overwrite': overwrite, 'exists_ok': exists_ok, 'no_archive': no_archive }
+                        # Various things need other things to invent their filepath
+                        if att == "sources":
+                            obj.save( image=self.image, **basicargs )
+                        elif att in [ "psf", "bg", "wcs" ]:
+                            obj.save( image=self.image, sources=self.sources, **basicargs )
+                        elif att == "detections":
+                            obj.save( image=self.sub_image, **basicargs )
+                        elif att == "cutouts":
+                            obj.save( image=self.sub_image, sources=self.detections, **basicargs )
+                        else:
+                            obj.save( overwrite=overwrite, exists_ok=exists_ok, no_archive=no_archive )
                     except Exception as ex:
                         SCLogger.error( f"Failed to save a {obj.__class__.__name__}: {ex}" )
                         raise ex
 
                 else:
                     SCLogger.debug( f'Not saving the {obj.__class__.__name__} because it already has '
-                                   f'a md5sum in the database' )
+                                    f'a md5sum in the database' )
 
-        # carefully merge all the objects including the products
-        with SmartSession(session, self.session) as session:
+        # Save all the data products.  Cascade our way down so that we can
+        #   set upstream ids as necessary.  (Many of these will already have been
+        #   set/saved before.)
+
+        commits = []
+
+        # Exposure
+        # THINK.  Should we actually upsert this?
+        # Almost certainly it hasn't changed, and
+        # it was probably already in the database
+        # anyway.
+        if self.exposure is not None:
+            SCLogger.debug( "save_and_commit upserting exposure" )
+            self.exposure.upsert( load_defaults=True )
+            # commits.append( 'exposure' )
+            # exposure isn't in the commit bitflag
+
+        # Image
+        if self.image is not None:
+            if self.exposure is not None:
+                self.image.exposure_id = self.exposure.id
+            SCLogger.debug( "save_and_commit upserting image" )
+            self.image.upsert( load_defaults=True )
+            commits.append( 'image' )
+
+        # SourceList
+        if self.sources is not None:
             if self.image is not None:
-                self.image = self.image.merge_all(session)
-                for att in ['sources', 'psf', 'bg', 'wcs', 'zp']:
-                    setattr(self, att, None)  # avoid automatically appending to the image self's non-merged products
-                for att in ['exposure', 'sources', 'psf', 'bg', 'wcs', 'zp']:
-                    if getattr(self.image, att, None) is not None:
-                        setattr(self, att, getattr(self.image, att))
+                self.sources.image_id = self.image.id
+            SCLogger.debug( "save_and_commit upserting sources" )
+            self.sources.upsert( load_defaults=True )
+            commits.append( 'sources' )
 
-            # This may well have updated some ids, as objects got added to the database
-            if self.exposure_id is None and self._exposure is not None:
-                self.exposure_id = self._exposure.id
-            if self.image_id is None and self.image is not None:
-                self.image_id = self.image.id
+        # SourceList siblings
+        for att in [ 'psf', 'bg', 'wcs', 'zp' ]:
+            if getattr( self, att ) is not None:
+                if self.sources is not None:
+                    setattr( getattr( self, att ), 'sources_id', self.sources.id )
+                SCLogger.debug( f"save_and_commit upserting {att}" )
+                getattr( self, att ).upsert( load_defaults=True )
+                commits.append( att )
 
-            self.sources = self.image.sources
-            self.psf = self.image.psf
-            self.bg = self.image.bg
-            self.wcs = self.image.wcs
-            self.zp = self.image.zp
+        # subtraction Image
+        if self.sub_image is not None:
+            self.sub_image.upsert( load_defaults=True )
+            SCLogger.debug( "save_and_commit upserting sub_image" )
+            commits.append( 'sub_image' )
 
-            session.commit()
-            self.products_committed = 'image, sources, psf, wcs, zp, bg'
-
+        # detections
+        if self.detections is not None:
             if self.sub_image is not None:
-                if self.reference is not None:
-                    self.reference = self.reference.merge_all(session)
-                    self.sub_image.ref_image = self.reference.image
-                self.sub_image.new_image = self.image  # update with the now-merged image
-                # Make sure that the sub_image's image upstreams are the things that are now properly
-                #  merged with the session.  (OMG sqlalchemy is a nightmare)
-                if ( self.sub_image.new_image.mjd < self.sub_image.ref_image.mjd ):
-                    self.sub_image.upstreams = [ self.sub_image.new_image, self.sub_image.ref_image ]
-                else:
-                    self.sub_image.upstreams = [ self.sub_image.ref_image, self.sub_image.new_image ]
-                self.sub_image = self.sub_image.merge_all(session)  # merges the upstream_images and downstream products
-                self.sub_image.ref_image.id = self.sub_image.ref_image_id
-                self.detections = self.sub_image.sources
+                self.detections.sources_id = self.sub_image.id
+            SCLogger.debug( "save_and_commit detections" )
+            self.detections.upsert( load_defaults=True )
+            commits.append( 'detections' )
 
-                session.commit()
-                self.products_committed += ', sub_image'
-
+        # cutouts
+        if self.cutouts is not None:
             if self.detections is not None:
-                more_products = 'detections'
-                if self.cutouts is not None:
-                    self.cutouts.sources = self.detections
-                    self.cutouts = session.merge(self.cutouts)
-                    more_products += ', cutouts'
+                self.cutouts.detections_id = self.detections.id
+            SCLogger.debug( "save_and_commit upserting cutouts" )
+            self.cutouts.upsert( load_defaults=True )
+            commits.append( 'cutouts' )
 
-                if self.measurements is not None:
-                    for i, m in enumerate(self.measurements):
-                        # use the new, merged cutouts
-                        self.measurements[i].cutouts = self.cutouts
-                        self.measurements[i].associate_object(session)
-                        self.measurements[i] = session.merge(self.measurements[i])
-                        self.measurements[i].object.measurements.append(self.measurements[i])
-                    more_products += ', measurements'
+        # measurements
+        if ( self.measurements is not None ) and ( len(self.measurements) > 0 ):
+            if self.cutouts is not None:
+                for m in self.measurements:
+                    m.cutouts_id = self.cutouts.id
+            Measurements.upsert_list( self.measurements, load_defaults=True )
+            SCLogger.debug( "save_and_commit measurements" )
+            commits.append( 'measurements' )
 
-                session.commit()
-                self.products_committed += ', ' + more_products
+        self.products_committed = ",".join( commits )
 
-    def delete_everything(self, session=None, commit=True):
-        """Delete everything associated with this sub-image.
+
+    def delete_everything(self):
+        """Delete everything associated with this DataStore.
 
         All data products in the data store are removed from the DB,
         and all files on disk and in the archive are deleted.
@@ -1553,98 +1932,31 @@ class DataStore:
         NOTE: does *not* delete the exposure.  (There may well be other
         data stores out there with different images from the same
         exposure.)
-        This does not delete the reference either.
 
-        Parameters
-        ----------
-        session: sqlalchemy.orm.session.Session or SmartSession
-            An optional session to use for the database query.
-            If not given, will use the session stored inside the
-            DataStore object; if there is none, will open a new session
-            and close it at the end of the function.
-            Note that this method calls session.commit()
-        commit: bool, default True
-            If True, will commit the transaction.  If False, will not
-            commit the transaction, so the caller can do more work
-            before committing.
-            If session is None, commit must also be True.
+        For similar reasons, does not delete the reference either.
+
+        Clears out all data product fields in the datastore.
+
         """
-        if session is None and not commit:
-            raise ValueError('If session is None, commit must be True')
 
-        with SmartSession( session, self.session ) as session, warnings.catch_warnings():
-            warnings.filterwarnings(
-                action='ignore',
-                message=r'.*DELETE statement on table .* expected to delete \d* row\(s\).*',
-            )
-            autoflush_state = session.autoflush
-            try:
-                # no flush to prevent some foreign keys from being voided before all objects are deleted
-                session.autoflush = False
-                obj_list = self.get_all_data_products(output='list', omit_exposure=True)
-                for i, obj in enumerate(obj_list):  # first make sure all are merged
-                    if isinstance(obj, list):
-                        for j, o in enumerate(obj):
-                            if o.id is not None:
-                                for att in ['image', 'sources']:
-                                    try:
-                                        setattr(o, att, None)  # clear any back references before merging
-                                    except AttributeError:
-                                        pass  # ignore when the object doesn't have attribute, or it has no setter
-                                obj_list[i][j] = session.merge(o)
-                        continue
-                    if sa.inspect(obj).transient:  # don't merge new objects, as that just "adds" them to DB!
-                        obj_list[i] = session.merge(obj)
+        # Not just deleting the image and allowing it to recurse through its
+        #   downstreams because it's possible that the data products weren't
+        #   all added to the databse, so the downstreams wouldn't be found.
+        # Go in reverse order so that things that reference other things will
+        #   be deleted before the things they reference.
 
-                for obj in obj_list:  # now do the deleting without flushing
-                    # call the special delete method for list-arranged objects (e.g., cutouts, measurements)
-                    if isinstance(obj, list):
-                        if len(obj) > 0:
-                            if hasattr(obj[0], 'delete_list'):
-                                obj[0].delete_list(obj, session=session, commit=False)
-                        continue
-                    if isinstance(obj, FileOnDiskMixin):
-                        obj.delete_from_disk_and_database(session=session, commit=False, archive=True)
-                    if obj in session and sa.inspect(obj).pending:
-                        session.expunge(obj)
-                    if obj in session and sa.inspect(obj).persistent:
-                        session.delete(obj)
+        del_list = [ getattr( self, i ) for i in self.products_to_save if i != 'exposure' ]
+        del_list.reverse()
+        for obj in del_list:
+            if obj is not None:
+                if isinstance( obj, list ):
+                    for o in obj:
+                        o.delete_from_disk_and_database()
+                else:
+                    obj.delete_from_disk_and_database()
 
-                    if (
-                            not sa.inspect(obj).detached and
-                            hasattr(obj, 'provenance') and
-                            obj.provenance is not None
-                            and obj.provenance in session
-                    ):
-                        session.expunge(obj.provenance)
+        self.clear_products()
 
-                session.flush()  # flush to finalize deletion of objects before we delete the Image
-
-                # verify that the objects are in fact deleted by deleting the image at the root of the datastore
-                if self.image is not None and self.image.id is not None:
-                    session.execute(sa.delete(Image).where(Image.id == self.image.id))
-                    # also make sure aligned images are deleted from disk and archive
-
-                if self.sub_image is not None and self.sub_image._aligned_images is not None:
-                    for im in self.sub_image._aligned_images:  # do not autoload, which happens if using aligned_images
-                        im.remove_data_from_disk()
-
-                # verify that no objects were accidentally added to the session's "new" set
-                for obj in obj_list:
-                    if isinstance(obj, list):
-                        continue  # skip cutouts and measurements, as they could be slow to check
-
-                    for new_obj in session.new:
-                        if type(obj) is type(new_obj) and obj.id is not None and obj.id == new_obj.id:
-                            session.expunge(new_obj)  # remove this object
-
-                session.commit()
-
-            finally:
-                session.flush()
-                session.autoflush = autoflush_state
-
-        self.products_committed = ''  # TODO: maybe not critical, but what happens if we fail to delete some of them?
 
     def clear_products(self):
         """ Make sure all data products are None so that they aren't used again. """

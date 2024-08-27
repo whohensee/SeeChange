@@ -46,6 +46,12 @@ def test_exposure_launcher( conductor_connector,
     assert idtodo is not None
     res = conductor_connector.send( f"holdexposures/", { 'knownexposure_ids': tohold } )
 
+    # Make sure the right things got held
+    with SmartSession() as session:
+        kes = session.query( KnownExposure ).all()
+    assert all( [ ke.hold for ke in kes if str(ke.id) != idtodo ] )
+    assert all( [ not ke.hold for ke in kes if str(ke.id) == idtodo ] )
+
     elaunch = ExposureLauncher( 'testcluster', 'testnode', numprocs=2, onlychips=['S3', 'N16'], verify=False,
                                 worker_log_level=logging.DEBUG )
     elaunch.register_worker()
@@ -66,7 +72,7 @@ def test_exposure_launcher( conductor_connector,
 
         # Find the exposure that got processed
         with SmartSession() as session:
-            expq = session.query( Exposure ).join( KnownExposure ).filter( KnownExposure.exposure_id==Exposure.id )
+            expq = session.query( Exposure ).join( KnownExposure ).filter( KnownExposure.exposure_id==Exposure._id )
             assert expq.count() == 1
             exposure = expq.first()
             imgq = session.query( Image ).filter( Image.exposure_id==exposure.id ).order_by( Image.section_id )
@@ -76,83 +82,59 @@ def test_exposure_launcher( conductor_connector,
             #  using the relationship, but searching for a bit didn't
             #  find anything that worked, so just do it manually
             subq = ( session.query( Image ).join( image_upstreams_association_table,
-                                                  Image.id==image_upstreams_association_table.c.downstream_id ) )
+                                                  Image._id==image_upstreams_association_table.c.downstream_id ) )
             sub0 = subq.filter( image_upstreams_association_table.c.upstream_id==images[0].id ).first()
             sub1 = subq.filter( image_upstreams_association_table.c.upstream_id==images[1].id ).first()
             assert sub0 is not None
             assert sub1 is not None
 
             measq = session.query( Measurements ).join( Cutouts ).join( SourceList ).join( Image )
-            meas0 = measq.filter( Image.id==sub0.id ).all()
-            meas1 = measq.filter( Image.id==sub1.id ).all()
+            meas0 = measq.filter( Image._id==sub0.id ).all()
+            meas1 = measq.filter( Image._id==sub1.id ).all()
             assert len(meas0) == 2
-            assert len(meas1) == 6
+            assert len(meas1) == 8    # This used to be 6, not sure why it changed...
 
     finally:
         # Try to clean up everything.  If we delete the exposure, the two images and two subtraction images,
         #   that should cascade to most everything else.
         with SmartSession() as session:
             exposure = ( session.query( Exposure ).join( KnownExposure )
-                         .filter( KnownExposure.exposure_id==Exposure.id ) ).first()
+                         .filter( KnownExposure.exposure_id==Exposure._id ) ).first()
             images = session.query( Image ).filter( Image.exposure_id==exposure.id ).all()
             imgids = [ i.id for i in images ]
             subs = ( session.query( Image ).join( image_upstreams_association_table,
-                                                  Image.id==image_upstreams_association_table.c.downstream_id )
+                                                  Image._id==image_upstreams_association_table.c.downstream_id )
                      .filter( image_upstreams_association_table.c.upstream_id.in_( imgids ) ) ).all()
-            for sub in subs:
-                sub.delete_from_disk_and_database( session=session, commit=True, remove_folders=True,
-                                                   remove_downstreams=True, archive=True )
-            for img in images:
-                img.delete_from_disk_and_database( session=session, commit=True, remove_folders=True,
-                                                   remove_downstreams=True, archive=True )
-            # Before deleting the exposure, we have to make sure it's not referenced in the
-            #  knownexposures table
+        for sub in subs:
+            sub.delete_from_disk_and_database( remove_folders=True, remove_downstreams=True, archive=True )
+        for img in images:
+            img.delete_from_disk_and_database( remove_folders=True, remove_downstreams=True, archive=True )
+        # Before deleting the exposure, we have to make sure it's not referenced in the
+        #  knownexposures table
+        with SmartSession() as session:
             kes = session.query( KnownExposure ).filter( KnownExposure.exposure_id==exposure.id ).all()
-            for ke in kes:
-                ke.exposure_id = None
-                session.merge( ke )
-            session.commit()
-            exposure.delete_from_disk_and_database( session=session, commit=True, remove_folders=True,
-                                                    remove_downstreams=True, archive=True )
+        for ke in kes:
+            ke.exposure_id = None
+            ke.upsert()
 
-            # There will also have been a whole bunch of calibrator files
+        # WORRY -- I think this is deleting something that shouldn't get deleted until
+        #  the decam_exposure session fixture cleans up.  Because this test tends to be
+        #  one of the last ones that runs, this hasn't bitten us, but it could.
+        exposure.delete_from_disk_and_database( remove_folders=True, remove_downstreams=True, archive=True )
 
-            # PROBLEM : the fixtures/decam.py:decam_default_calibrator
-            #   fixture is a scope-session fixture that loads these
-            #   things!  So, don't delete them here, that would
-            #   undermine the fixture.  (I wanted to not have this test
-            #   depend on that fixture so that running this test by
-            #   itself tested two processes downloading those at the
-            #   same time-- and indeed, in so doing found some problems
-            #   that needed to be fixed.)  This means that if you run
-            #   this test by itself, the fixture teardown will complain
-            #   about stuff left over in the database.  But, if you run
-            #   all the tests, that other fixture will end up having
-            #   been run and will have loaded anything we would have
-            #   loaded here.
-            #
-            #   Leave the code commented out so one can uncomment it
-            #   when running just this test, if one wishes.
-
-            # deleted_images = set()
-            # deleted_datafiles = set()
-            # cfs = session.query( CalibratorFile ).filter( CalibratorFile.instrument=='DECam' )
-            # for cf in cfs:
-            #     if cf.image_id is not None:
-            #         if cf.image_id not in deleted_images:
-            #             cf.image.delete_from_disk_and_database( session=session, commit=True, remove_folders=True,
-            #                                                     remove_downstreams=True, archive=True )
-            #             # Just in case more than one CalibratorFile entry refers to the same image
-            #             deleted_images.add( cf.image_id )
-            #             session.delete( cf )
-            #     elif cf.datafile_id is not None:
-            #         if cf.datafile_id not in deleted_datafiles:
-            #             cf.datafile.delete_from_disk_and_database( session=session, commit=True, remove_folders=True,
-            #                                                        remove_downstreams=True, archive=True )
-            #             # Just in case more than one CalibratorFile entry refers to the same datafile
-            #             deleted_datafiles.add( cf.datafile_id )
-            #             session.delete( cf )
-            #     # don't need to delete the cf, because it will have cascaded from above
+        # There will also have been a whole bunch of calibrator files.
+        # Don't delete those, because the decam_default_calibrators
+        # fixture will clean them up, and is a session-scope fixture;
+        # deleting them here would undermine that fixture.  (I wanted
+        # not to have that as a fixture for this test so that running
+        # this test by itself tested two processes downloading those at
+        # the same time-- and, indeed, in so doing found some problems
+        # that needed to be fixed.)  That means that if you run this
+        # test by itself, the fixture teardown will complain about stuff
+        # left over in the database.  However, if you run all the tests,
+        # it'll be fine, because the decam_default_calibrators fixture
+        # will have been run and its teardown does the necessary
+        # cleanup.
 
         # Finally, remove the pipelineworker that got created
         # (Don't bother cleaning up knownexposures, the fixture will do that)

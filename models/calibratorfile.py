@@ -6,21 +6,21 @@ import sqlalchemy as sa
 from sqlalchemy import orm
 from sqlalchemy.ext.hybrid import hybrid_property
 
-from models.base import Base, AutoIDMixin, SmartSession
+from models.base import Base, UUIDMixin, SmartSession
 from models.image import Image
 from models.datafile import DataFile
 from models.enums_and_bitflags import CalibratorTypeConverter, CalibratorSetConverter, FlatTypeConverter
 
 from util.logger import SCLogger
 
-class CalibratorFile(Base, AutoIDMixin):
+class CalibratorFile(Base, UUIDMixin):
     __tablename__ = 'calibrator_files'
 
     _type = sa.Column(
         sa.SMALLINT,
         nullable=False,
         index=True,
-        default=CalibratorTypeConverter.convert( 'unknown' ),
+        server_default=sa.sql.elements.TextClause(str(CalibratorTypeConverter.convert( 'unknown' )) ) ,
         doc="Type of calibrator (Dark, Flat, Linearity, etc.)"
     )
 
@@ -40,7 +40,7 @@ class CalibratorFile(Base, AutoIDMixin):
         sa.SMALLINT,
         nullable=False,
         index=True,
-        default=CalibratorTypeConverter.convert('unknown'),
+        server_default=sa.sql.elements.TextClause( str(CalibratorTypeConverter.convert('unknown')) ),
         doc="Calibrator set for instrument (unknown, externally_supplied, general, nightly)"
     )
 
@@ -91,29 +91,17 @@ class CalibratorFile(Base, AutoIDMixin):
     )
 
     image_id = sa.Column(
-        sa.ForeignKey( 'images.id', ondelete='CASCADE', name='calibrator_files_image_id_fkey' ),
+        sa.ForeignKey( 'images._id', ondelete='CASCADE', name='calibrator_files_image_id_fkey' ),
         nullable=True,
         index=True,
         doc='ID of the image (if any) that is this calibrator'
     )
 
-    image = orm.relationship(
-        'Image',
-        cascade='save-update, merge, refresh-expire, expunge',  # ROB REVIEW THIS
-        doc='Image for this CalibratorImage (if any)'
-    )
-
     datafile_id = sa.Column(
-        sa.ForeignKey( 'data_files.id', ondelete='CASCADE', name='calibrator_files_data_file_id_fkey' ),
+        sa.ForeignKey( 'data_files._id', ondelete='CASCADE', name='calibrator_files_data_file_id_fkey' ),
         nullable=True,
         index=True,
         doc='ID of the miscellaneous data file (if any) that is this calibrator'
-    )
-
-    datafile = orm.relationship(
-        'DataFile',
-        cascade='save-update, merge, refresh-expire, expunge', # ROB REVIEW THIS
-        doc='DataFile for this CalibratorFile (if any)'
     )
 
     validity_start = sa.Column(
@@ -149,14 +137,14 @@ class CalibratorFile(Base, AutoIDMixin):
 # This next table is kind of an ugly hack put in place
 #   to deal with race conditions; see Instrument.preprocessing_calibrator_files
 
-class CalibratorFileDownloadLock(Base, AutoIDMixin):
+class CalibratorFileDownloadLock(Base, UUIDMixin):
     __tablename__ = 'calibfile_downloadlock'
 
     _type = sa.Column(
         sa.SMALLINT,
         nullable=False,
         index=True,
-        default=CalibratorTypeConverter.convert( 'unknown' ),
+        server_default=sa.sql.elements.TextClause( str(CalibratorTypeConverter.convert( 'unknown' )) ),
         doc="Type of calibrator (Dark, Flat, Linearity, etc.)"
     )
 
@@ -178,7 +166,7 @@ class CalibratorFileDownloadLock(Base, AutoIDMixin):
         sa.SMALLINT,
         nullable=False,
         index=True,
-        default=CalibratorTypeConverter.convert('unknown'),
+        server_default=sa.sql.elements.TextClause( str(CalibratorTypeConverter.convert('unknown')) ),
         doc="Calibrator set for instrument (unknown, externally_supplied, general, nightly)"
     )
 
@@ -288,58 +276,66 @@ class CalibratorFileDownloadLock(Base, AutoIDMixin):
         sleeptime = 0.1
         while lockid is None:
             with SmartSession(session) as sess:
-                # Lock the calibfile_downloadlock table to avoid a race condition
-                sess.connection().execute( sa.text( 'LOCK TABLE calibfile_downloadlock' ) )
+                try:
+                    # Lock the calibfile_downloadlock table to avoid a race condition
+                    cls._get_table_lock( sess )
 
-                # Check to see if there's a lock now
-                lockq = ( sess.query( CalibratorFileDownloadLock )
-                          .filter( CalibratorFileDownloadLock.calibrator_set == calibset )
-                          .filter( CalibratorFileDownloadLock.instrument == instrument )
-                          .filter( CalibratorFileDownloadLock.type == calibtype )
-                          .filter( CalibratorFileDownloadLock.sensor_section == section ) )
-                if calibtype == 'flat':
-                    lockq = lockq.filter( CalibratorFileDownloadLock.flat_type == flattype )
-                if lockq.count() == 0:
-                    # There isn't, so create the lock
-                    caliblock = CalibratorFileDownloadLock( calibrator_set=calibset,
-                                                            instrument=instrument,
-                                                            type=calibtype,
-                                                            sensor_section=section,
-                                                            flat_type=flattype )
-                    sess.add( caliblock )
-                    sess.commit()
-                    sess.refresh( caliblock )   # is this necessary?
-                    lockid = caliblock.id
-                    # SCLogger.debug( f"Created calibfile_downloadlock {lockid}" )
-                else:
-                    if lockq.count() > 1:
-                        raise RuntimeError( f"Database corruption: multiple CalibratorFileDownloadLock for "
-                                            f"{instrument} {section} {calibset} {calibtype} {flattype}" )
-                    lockid = lockq.first().id
-                    sess.rollback()
-                    if ( ( lockid in cls._locks.keys() ) and ( cls._locks[lockid] == sess ) ):
-                        # The lock already exists, and is owned by this
-                        # session, so just return it.  Return not yield;
-                        # if the lock already exists, then there should
-                        # be an outer with block that grabbed the lock,
-                        # and we don't want to delete it prematurely.
-                        # (Note that above, we compare
-                        # cls._locks[lockid] to sess, not to session.
-                        # if cls._locks[lockid] is None, it means that
-                        # it's a global lock owned by nobody; if session
-                        # is None, it means no session was passed.  A
-                        # lack of a sesson doesn't own a lock owned by
-                        # nobody.)
-                        return lockid
+                    # Check to see if there's a lock now
+                    lockq = ( sess.query( CalibratorFileDownloadLock )
+                              .filter( CalibratorFileDownloadLock.calibrator_set == calibset )
+                              .filter( CalibratorFileDownloadLock.instrument == instrument )
+                              .filter( CalibratorFileDownloadLock.type == calibtype )
+                              .filter( CalibratorFileDownloadLock.sensor_section == section ) )
+                    if calibtype == 'flat':
+                        lockq = lockq.filter( CalibratorFileDownloadLock.flat_type == flattype )
+                    if lockq.count() == 0:
+                        # There isn't, so create the lock
+                        caliblock = CalibratorFileDownloadLock( calibrator_set=calibset,
+                                                                instrument=instrument,
+                                                                type=calibtype,
+                                                                sensor_section=section,
+                                                                flat_type=flattype )
+                        sess.add( caliblock )
+                        # SCLogger.debug( "CalibratorFileDownloadLock comitting" )
+                        sess.commit()
+                        sess.refresh( caliblock )   # is this necessary?
+                        lockid = caliblock.id
+                        # SCLogger.debug( f"Created calibfile_downloadlock {lockid}" )
                     else:
-                        # Either the lock doesn't exist, or belongs to another session,
-                        # so wait a bit and try again.
-                        lockid = None
-                        if sleeptime > maxsleep:
-                            lockid = -1
+                        if lockq.count() > 1:
+                            raise RuntimeError( f"Database corruption: multiple CalibratorFileDownloadLock for "
+                                                f"{instrument} {section} {calibset} {calibtype} {flattype}" )
+                        lockid = lockq.first().id
+                        # SCLogger.debug( "CalibratorFileDownloadLock rolling back" )
+                        sess.rollback()
+                        if ( ( lockid in cls._locks.keys() ) and ( cls._locks[lockid] == sess ) ):
+                            # The lock already exists, and is owned by this
+                            # session, so just return it.  Return not yield;
+                            # if the lock already exists, then there should
+                            # be an outer with block that grabbed the lock,
+                            # and we don't want to delete it prematurely.
+                            # (Note that above, we compare
+                            # cls._locks[lockid] to sess, not to session.
+                            # if cls._locks[lockid] is None, it means that
+                            # it's a global lock owned by nobody; if session
+                            # is None, it means no session was passed.  A
+                            # lack of a sesson doesn't own a lock owned by
+                            # nobody.)
+                            return lockid
                         else:
-                            time.sleep( sleeptime )
-                            sleeptime *= 2
+                            # Either the lock doesn't exist, or belongs to another session,
+                            # so wait a bit and try again.
+                            lockid = None
+                            if sleeptime > maxsleep:
+                                lockid = -1
+                            else:
+                                time.sleep( sleeptime )
+                                sleeptime *= 2
+                finally:
+                    # Make sure any dangling table locks are released
+                    # SCLogger.debug( "CalibratorFileDownloadLock rolling back" )
+                    sess.rollback()
+
         if lockid == -1:
             raise RuntimeError( f"Couldn't get CalibratorFileDownloadLock for "
                                 f"{instrument} {section} {calibset} {calibtype} after many tries." )
@@ -351,7 +347,7 @@ class CalibratorFileDownloadLock(Base, AutoIDMixin):
 
         with SmartSession(session) as sess:
             # SCLogger.debug( f"Deleting calibfile_downloadlock {lockid}" )
-            sess.connection().execute( sa.text( 'DELETE FROM calibfile_downloadlock WHERE id=:id' ),
+            sess.connection().execute( sa.text( 'DELETE FROM calibfile_downloadlock WHERE _id=:id' ),
                                        { 'id': lockid } )
             sess.commit()
             try:
@@ -370,3 +366,24 @@ class CalibratorFileDownloadLock(Base, AutoIDMixin):
             for oldlock in oldlocks:
                 sess.delete( oldlock )
             sess.commit()
+
+    # ======================================================================
+    # The fields below are things that we've deprecated; these definitions
+    #   are here to catch cases in the code where they're still used
+
+    @property
+    def image( self ):
+        raise RuntimeError( f"Don't use CalibratorFile.image, use image_id" )
+
+    @image.setter
+    def image( self, val ):
+        raise RuntimeError( f"Don't use CalibratorFile.image, use image_id" )
+
+    @property
+    def datafile( self ):
+        raise RuntimeError( f"Don't use CalibratorFile.datafile, use datafile_id" )
+
+    @datafile.setter
+    def datafile( self, val ):
+        raise RuntimeError( f"Don't use CalibratorFile.datafile, use datafile_id" )
+

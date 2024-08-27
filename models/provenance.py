@@ -1,67 +1,147 @@
 import time
+import re
 import json
 import base64
 import hashlib
+import uuid
 from collections import defaultdict
 import sqlalchemy as sa
 import sqlalchemy.orm as orm
 from sqlalchemy import event
-from sqlalchemy.orm import relationship
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.declarative import declared_attr
 from sqlalchemy.schema import UniqueConstraint
 
 from util.util import get_git_hash
+from util.logger import SCLogger
 
 import models.base
-from models.base import Base, AutoIDMixin, SeeChangeBase, SmartSession, safe_merge
+from models.base import Base, UUIDMixin, SeeChangeBase, SmartSession
 
 
 class CodeHash(Base):
     __tablename__ = "code_hashes"
 
-    def __init__(self, git_hash):
-        self.id = git_hash
+    _id = sa.Column(sa.String, primary_key=True)
 
-    id = sa.Column(sa.String, primary_key=True)
+    @property
+    def id( self ):
+        return self._id
 
-    code_version_id = sa.Column(sa.String, sa.ForeignKey("code_versions.id",
+    @id.setter
+    def id( self, val ):
+        self._id = val
+
+    code_version_id = sa.Column(sa.String, sa.ForeignKey("code_versions._id",
                                                          ondelete="CASCADE",
                                                          name='code_hashes_code_version_id_fkey'),
                                 index=True )
 
-    code_version = relationship("CodeVersion", back_populates="code_hashes", lazy='selectin')
+
+    @property
+    def code_version( self ):
+        raise RuntimeError( f"CodeHash.code_version is deprecated, don't use it" )
+
+    @code_version.setter
+    def code_version( self, val ):
+        raise RuntimeError( f"CodeHash.code_version is deprecated, don't use it" )
+
+
 
 
 class CodeVersion(Base):
     __tablename__ = 'code_versions'
 
-    id = sa.Column(
+    _id = sa.Column(
         sa.String,
         primary_key=True,
         nullable=False,
         doc='Version of the code. Can use semantic versioning or date/time, etc. '
     )
 
-    code_hashes = sa.orm.relationship(
-        CodeHash,
-        back_populates='code_version',
-        cascade='all, delete-orphan',
-        passive_deletes=True,
-        doc='List of commit hashes for this version of the code',
-    )
+    @property
+    def id( self ):
+        return self._id
+
+    @id.setter
+    def id( self, val ):
+        self._id = val
+
+
+    # There is a kind of race condition in making this property the way we do, that in practice
+    # is not going to matter.  Somebody else could add a new hash to this code version, and we
+    # wouldn't get that new hash if we'd called code_hashes before on this code_version object.
+    # Not worth worrying about.
+    @property
+    def code_hashes( self ):
+        if self._code_hashes is None:
+            self._code_hashes = self.get_code_hashes()
+        return self._code_hashes
 
     def update(self, session=None):
+        """Create a new CodeHash object associated with this CodeVersion using the current git hash.
+
+        Will do nothing if it already exists, or if the current git hash can't be determined.
+
+        """
         git_hash = get_git_hash()
 
         if git_hash is None:
             return  # quietly fail if we can't get the git hash
-        with SmartSession(session) as session:
-            hash_obj = session.scalars(sa.select(CodeHash).where(CodeHash.id == git_hash)).first()
-            if hash_obj is None:
-                hash_obj = CodeHash(git_hash)
 
-            self.code_hashes.append(hash_obj)
+        hash_obj = CodeHash( _id=git_hash, code_version_id=self.id )
+        try:
+            hash_obj.insert( session=session )
+        except IntegrityError as ex:
+            if 'duplicate key value violates unique constraint "code_hashes_pkey"' in str(ex):
+                # It's already there, so we don't care.
+                pass
+            else:
+                raise
+
+    def get_code_hashes( self, session=None ):
+        """Return all CodeHash objects associated with this codeversion"""
+        with SmartSession( session ) as sess:
+            hashes = sess.query( CodeHash ).filter( CodeHash.code_version_id==self.id ).all()
+        return hashes
+
+    @classmethod
+    def get_by_id( cls, cvid, session=None ):
+        with SmartSession( session ) as sess:
+            cv = sess.query( CodeVersion ).filter( CodeVersion._id == cvid ).first()
+        return cv
+
+    def __init__( self, *args, **kwargs ):
+        super().__init__( *args, **kwargs )
+        self._code_hashes = None
+
+    @orm.reconstructor
+    def init_on_load( self ):
+        self._code_hashes = None
+
+    def __repr__( self ):
+        return f"<CodeVersion {self.id}>"
+
+    # ======================================================================
+    # The fields below are things that we've deprecated; these definitions
+    #   are here to catch cases in the code where they're still used
+
+    # @property
+    # def code_hashes( self ):
+    #     raise RuntimeError( f"CodeVersion.code_hashes is deprecated, don't use it" )
+
+    @code_hashes.setter
+    def code_hashes( self, val ):
+        raise RuntimeError( f"CodeVersion.code_hashes setter is deprecated, don't use it" )
+
+    @property
+    def provenances( self ):
+        raise RuntimeError( f"CodeVersion.provenances is deprecated, don't use it" )
+
+    @provenances.setter
+    def provenances( self, val ):
+        raise RuntimeError( f"CodeVersion.provenances is deprecated, don't use it" )
 
 
 provenance_self_association_table = sa.Table(
@@ -69,11 +149,11 @@ provenance_self_association_table = sa.Table(
     Base.metadata,
     sa.Column('upstream_id',
               sa.String,
-              sa.ForeignKey('provenances.id', ondelete="CASCADE", name='provenance_upstreams_upstream_id_fkey'),
+              sa.ForeignKey('provenances._id', ondelete="CASCADE", name='provenance_upstreams_upstream_id_fkey'),
               primary_key=True),
     sa.Column('downstream_id',
               sa.String,
-              sa.ForeignKey('provenances.id', ondelete="CASCADE", name='provenance_upstreams_downstream_id_fkey'),
+              sa.ForeignKey('provenances._id', ondelete="CASCADE", name='provenance_upstreams_downstream_id_fkey'),
               primary_key=True),
 )
 
@@ -85,12 +165,22 @@ class Provenance(Base):
         "confirm_deleted_rows": False,
     }
 
-    id = sa.Column(
+    _id = sa.Column(
         sa.String,
         primary_key=True,
         nullable=False,
         doc="Unique hash of the code version, parameters and upstream provenances used to generate this dataset. ",
     )
+
+    @property
+    def id( self ):
+        if self._id is None:
+            self.update_id()
+        return self._id
+
+    @id.setter
+    def id( self, val ):
+        raise RuntimeError( "Don't set Provenance.id directly, use update_id()" )
 
     process = sa.Column(
         sa.String,
@@ -100,52 +190,23 @@ class Provenance(Base):
     )
 
     code_version_id = sa.Column(
-        sa.ForeignKey("code_versions.id", ondelete="CASCADE", name='provenances_code_version_id_fkey'),
+        sa.ForeignKey("code_versions._id", ondelete="CASCADE", name='provenances_code_version_id_fkey'),
         nullable=False,
         index=True,
         doc="ID of the code version the provenance is associated with. ",
     )
 
-    code_version = relationship(
-        "CodeVersion",
-        back_populates="provenances",
-        cascade="save-update, merge, expunge, refresh-expire",
-        passive_deletes=True,
-        lazy='selectin',
-    )
-
     parameters = sa.Column(
         JSONB,
         nullable=False,
-        default={},
+        server_default='{}',
         doc="Critical parameters used to generate the underlying data. ",
-    )
-
-    upstreams = relationship(
-        "Provenance",
-        secondary=provenance_self_association_table,
-        primaryjoin='provenances.c.id == provenance_upstreams.c.downstream_id',
-        secondaryjoin='provenances.c.id == provenance_upstreams.c.upstream_id',
-        passive_deletes=True,
-        cascade="save-update, merge, expunge, refresh-expire",
-        lazy='selectin',  # should be able to get upstream_hashes without a session!
-        join_depth=3,  # how many generations up the upstream chain to load
-    )
-
-    downstreams = relationship(
-        "Provenance",
-        secondary=provenance_self_association_table,
-        primaryjoin='provenances.c.id == provenance_upstreams.c.upstream_id',
-        secondaryjoin='provenances.c.id == provenance_upstreams.c.downstream_id',
-        passive_deletes=True,
-        cascade="delete",
-        overlaps="upstreams",
     )
 
     is_bad = sa.Column(
         sa.Boolean,
         nullable=False,
-        default=False,
+        server_default='false',
         doc="Flag to indicate if the provenance is bad and should not be used. ",
     )
 
@@ -158,13 +219,13 @@ class Provenance(Base):
     is_outdated = sa.Column(
         sa.Boolean,
         nullable=False,
-        default=False,
+        server_default='false',
         doc="Flag to indicate if the provenance is outdated and should not be used. ",
     )
 
     replaced_by = sa.Column(
         sa.String,
-        sa.ForeignKey("provenances.id", ondelete="SET NULL", name='provenances_replaced_by_fkey'),
+        sa.ForeignKey("provenances._id", ondelete="SET NULL", name='provenances_replaced_by_fkey'),
         nullable=True,
         index=True,
         doc="ID of the provenance that replaces this one. ",
@@ -173,64 +234,57 @@ class Provenance(Base):
     is_testing = sa.Column(
         sa.Boolean,
         nullable=False,
-        default=False,
+        server_default='false',
         doc="Flag to indicate if the provenance is for testing purposes only. ",
     )
 
     @property
-    def upstream_ids(self):
-        if self.upstreams is None:
-            return []
-        else:
-            ids = set([u.id for u in self.upstreams])
-            ids = list(ids)
-            ids.sort()
-            return ids
+    def upstreams( self ):
+        if self._upstreams is None:
+            self._upstreams = self.get_upstreams()
+        return self._upstreams
 
-    @property
-    def upstream_hashes(self):
-        return self.upstream_ids  # hash and ID are the same now
-
-    @property
-    def downstream_ids(self):
-        if self.downstreams is None:
-            return []
-        else:
-            ids = set([u.id for u in self.downstreams])
-            ids = list(ids)
-            ids.sort()
-            return ids
-
-    @property
-    def downstream_hashes(self):
-        return self.downstream_ids  # hash and ID are the same now
 
     def __init__(self, **kwargs):
-        """
-        Create a provenance object.
+        """Create a provenance object.
 
         Parameters
         ----------
         process: str
             Name of the process that created this provenance object.
-            Examples can include: "calibration", "subtraction", "source extraction" or just "level1".
-        code_version: CodeVersion
+            Examples can include: "calibration", "subtraction", "source
+            extraction" or just "level1".
+
+        code_version_id: str
             Version of the code used to create this provenance object.
+            If None, will use Provenance.get_code_version()
+
         parameters: dict
-            Dictionary of parameters used in the process.
-            Include only the critical parameters that affect the final products.
+            Dictionary of parameters used in the process.  Include only
+            the critical parameters that affect the final products.
+
         upstreams: list of Provenance
-            List of provenance objects that this provenance object is dependent on.
+            List of provenance objects that this provenance object is
+            dependent on.
+
         is_bad: bool
-            Flag to indicate if the provenance is bad and should not be used.
+            Flag to indicate if the provenance is bad and should not be
+            used.
+
         bad_comment: str
             Comment on why the provenance is bad.
+
         is_testing: bool
-            Flag to indicate if the provenance is for testing purposes only.
+            Flag to indicate if the provenance is for testing purposes
+            only.
+
         is_outdated: bool
-            Flag to indicate if the provenance is outdated and should not be used.
+            Flag to indicate if the provenance is outdated and should
+            not be used.
+
         replaced_by: int
             ID of the Provenance object that replaces this one.
+
         """
         SeeChangeBase.__init__(self)
 
@@ -239,23 +293,31 @@ class Provenance(Base):
         else:
             self.process = kwargs.get('process')
 
-        if 'code_version' not in kwargs:
-            raise ValueError('Provenance must have a code_version. ')
+        # The dark side of **kwargs when refactoring code...
+        #   have to catch problems like this manually.
+        if 'code_version' in kwargs:
+            raise RuntimeError( 'code_version is not a valid argument to Provenance.__init__; '
+                                'use code_version_id' )
 
-        code_version = kwargs.get('code_version')
-        if not isinstance(code_version, CodeVersion):
-            raise ValueError(f'Code version must be a models.CodeVersion. Got {type(code_version)}.')
+        if 'code_version_id' in kwargs:
+            code_version_id = kwargs.get('code_version_id')
+            if not isinstance(code_version_id, str ):
+                raise ValueError(f'Code version must be a str. Got {type(code_version_id)}.')
+            else:
+                self.code_version_id = code_version_id
         else:
-            self.code_version = code_version
+            cv = Provenance.get_code_version()
+            self.code_version_id = cv.id
 
         self.parameters = kwargs.get('parameters', {})
         upstreams = kwargs.get('upstreams', [])
         if upstreams is None:
-            self.upstreams = []
+            self._upstreams = []
         elif not isinstance(upstreams, list):
-            self.upstreams = [upstreams]
+            self._upstreams = [upstreams]
         else:
-            self.upstreams = upstreams
+            self._upstreams = upstreams
+        self._upstreams.sort( key=lambda x: x.id )
 
         self.is_bad = kwargs.get('is_bad', False)
         self.bad_comment = kwargs.get('bad_comment', None)
@@ -263,70 +325,79 @@ class Provenance(Base):
 
         self.update_id()  # too many times I've forgotten to do this!
 
+    @orm.reconstructor
+    def init_on_load( self ):
+        SeeChangeBase.init_on_load( self )
+        self._upstreams = None
+
+
     def __repr__(self):
-        try:
-            upstream_hashes = [h[:6] for h in self.upstream_hashes]
-        except:
-            upstream_hashes = '[...]'
+        # try:
+        #     upstream_hashes = [h[:6] for h in self.upstream_hashes]
+        # except:
+        #     upstream_hashes = '[...]'
 
         return (
             '<Provenance('
             f'id= {self.id[:6] if self.id else "<None>"}, '
             f'process="{self.process}", '
-            f'code_version="{self.code_version.id}", '
-            f'parameters={self.parameters}, '
-            f'upstreams={upstream_hashes})>'
+            f'code_version="{self.code_version_id}", '
+            f'parameters={self.parameters}'
+            # f', upstreams={upstream_hashes}'
+            f')>'
         )
 
-    def __setattr__(self, key, value):
-        if key in ['upstreams', 'downstreams']:
-            if value is None:
-                super().__setattr__(key, [])
-            elif isinstance(value, list):
-                if not all([isinstance(u, Provenance) for u in value]):
-                    raise ValueError(f'{key} must be a list of Provenance objects')
 
-                # make sure no duplicate upstreams are added
-                hashes = set([u.id for u in value])
-                new_list = []
-                for p in value:
-                    if p.id in hashes:
-                        new_list.append(p)
-                        hashes.remove(p.id)
+    @classmethod
+    def get( cls, provid, session=None ):
+        """Get a provenace given an id, or None if it doesn't exist."""
+        with SmartSession( session ) as sess:
+            return sess.query( Provenance ).filter( Provenance._id==provid ).first()
 
-                super().__setattr__(key, new_list)
-            else:
-                raise ValueError(f'{key} must be a list of Provenance objects')
-        else:
-            super().__setattr__(key, value)
+    @classmethod
+    def get_batch( cls, provids, session=None ):
+        """Get a list of provenances given a list of ids."""
+        with SmartSession( session ) as sess:
+            return sess.query( Provenance ).filter( Provenance._id.in_( provids ) ).all()
 
     def update_id(self):
         """Update the id using the code_version, process, parameters and upstream_hashes.
         """
-        if self.process is None or self.parameters is None or self.code_version is None:
-            raise ValueError('Provenance must have process, code_version, and parameters defined. ')
+        if self.process is None or self.parameters is None or self.code_version_id is None:
+            raise ValueError('Provenance must have process, code_version_id, and parameters defined. ')
 
         superdict = dict(
             process=self.process,
             parameters=self.parameters,
-            upstream_hashes=self.upstream_hashes,  # this list is ordered by upstream ID
-            code_version=self.code_version.id
+            upstream_hashes=[ u.id for u in self._upstreams ],  # this list is ordered by upstream ID
+            code_version=self.code_version_id
         )
         json_string = json.dumps(superdict, sort_keys=True)
 
-        self.id = base64.b32encode(hashlib.sha256(json_string.encode("utf-8")).digest()).decode()[:20]
+        self._id = base64.b32encode(hashlib.sha256(json_string.encode("utf-8")).digest()).decode()[:20]
+
+    @classmethod
+    def combined_upstream_hash( self, upstreams ):
+        json_string = json.dumps( [ u.id for u in upstreams ], sort_keys=True)
+        return base64.b32encode(hashlib.sha256(json_string.encode("utf-8")).digest()).decode()[:20]
+
 
     def get_combined_upstream_hash(self):
         """Make a single hash from the hashes of the upstreams.
         This is useful for identifying RefSets.
         """
-        json_string = json.dumps(self.upstream_hashes, sort_keys=True)
-        return base64.b32encode(hashlib.sha256(json_string.encode("utf-8")).digest()).decode()[:20]
+        return self.__class__.combined_upstream_hash( self.upsterams )
+
+
+    # This is a cache.  It won't change in one run, so we can save
+    #  querying the database repeatedly in get_code_version by saving
+    #  the result.
+    _current_code_version = None
 
     @classmethod
     def get_code_version(cls, session=None):
-        """
-        Get the most relevant or latest code version.
+        """Get the most relevant or latest code version.
+
         Tries to match the current git hash with a CodeHash
         instance, but if that doesn't work (e.g., if the
         code is running on a machine without git) then
@@ -343,47 +414,154 @@ class Provenance(Base):
         code_version: CodeVersion
             CodeVersion object
         """
-        with SmartSession( session ) as session:
-            code_hash = session.scalars(sa.select(CodeHash).where(CodeHash.id == get_git_hash())).first()
-            if code_hash is not None:
-                code_version = code_hash.code_version
-            else:
-                code_version = session.scalars(sa.select(CodeVersion).order_by(CodeVersion.id.desc())).first()
-        return code_version
 
-    def merge_concurrent(self, session=None, commit=True):
-        """Merge the provenance but make sure it doesn't exist before adding it to the database.
+        if Provenance._current_code_version is None:
+            code_version = None
+            with SmartSession( session ) as session:
+                code_hash = session.scalars(sa.select(CodeHash).where(CodeHash._id == get_git_hash())).first()
+                if code_hash is not None:
+                    code_version = session.scalars( sa.select(CodeVersion)
+                                                    .where( CodeVersion._id == code_hash.code_version_id ) ).first()
+                if code_version is None:
+                    code_version = session.scalars(sa.select(CodeVersion).order_by(CodeVersion._id.desc())).first()
+            if code_version is None:
+                raise RuntimeError( "There is no code_version in the database.  Put one there." )
+            Provenance._current_code_version = code_version
 
-        If between the time we check if the provenance exists and the time it is merged,
-        another process has added the same provenance, we will get an integrity error.
-        This is expected under the assumptions of "optimistic concurrency".
-        If that happens, we simply begin again, checking for the provenance and merging it.
+        return Provenance._current_code_version
+
+
+    def insert( self, session=None, _exists_ok=False ):
+        """Insert the provenance into the database.
+
+        Will raise a constraint violation if the provenance ID already exists in the database.
+
+        Parameters
+        ----------
+          session : SQLAlchmey sesion or None
+            Usually you don't want to use this.
+
         """
-        return models.base.merge_concurrent( self, session=session, commit=commit )
+
+        with SmartSession( session ) as sess:
+            try:
+                SeeChangeBase.insert( self, sess )
+
+                # Should be safe to go ahead and insert into the association table
+                # If the provenance already existed, we will have raised an exceptipn.
+                # If not, somebody else who might try to insert this provenance
+                # will get an exception on the insert() statement above, and so won't
+                # try the following association table inserts.
+
+                upstreams = self._upstreams if self._upstreams is not None else self.get_upstreams( session=sess )
+                if len(upstreams) > 0:
+                    for upstream in upstreams:
+                        sess.execute( sa.text( "INSERT INTO provenance_upstreams(upstream_id,downstream_id) "
+                                               "VALUES (:upstream,:me)" ),
+                                      { 'me': self.id, 'upstream': upstream.id } )
+                    sess.commit()
+            except IntegrityError as ex:
+                if _exists_ok and ( 'duplicate key value violates unique constraint "provenances_pkey"' in str(ex) ):
+                    sess.rollback()
+                else:
+                    raise
 
 
-@event.listens_for(Provenance, "before_insert")
-def insert_new_dataset(mapper, connection, target):
-    """
-    This function is called before a new provenance is inserted into the database.
-    It will check all the required fields are populated and update the id.
-    """
-    target.update_id()
+    def insert_if_needed( self, session=None ):
+        """Insert the provenance into the database if it's not already there.
+
+        Parameters
+        ----------
+          session : SQLAlchemy session or None
+            Usually you don't want to use this
+
+        """
+
+        self.insert( session=session, _exists_ok=True )
 
 
-CodeVersion.provenances = relationship(
-    "Provenance",
-    back_populates="code_version",
-    cascade="save-update, merge, expunge, refresh-expire, delete, delete-orphan",
-    foreign_keys="Provenance.code_version_id",
-    passive_deletes=True,
-)
+    def get_upstreams( self, session=None ):
+        with SmartSession( session ) as sess:
+            upstreams = ( sess.query( Provenance )
+                          .join( provenance_self_association_table,
+                                 provenance_self_association_table.c.upstream_id==Provenance._id )
+                          .where( provenance_self_association_table.c.downstream_id==self.id )
+                          .order_by( Provenance._id )
+                         ).all()
+            return upstreams
+
+    def get_downstreams( self, session=None ):
+        with SmartSession( session ) as sess:
+            downstreams = ( sess.query( Provenance )
+                            .join( provenance_self_association_table,
+                                   provenance_self_association_table.c.downstream_id==Provenance._id )
+                            .where( provenance_self_association_table.c.upstream_id==self.id )
+                            .order_by( Provenance._id )
+                           ).all()
+        return downstreams
+
+
+    # ======================================================================
+    # The fields below are things that we've deprecated; these definitions
+    #   are here to catch cases in the code where they're still used
+
+    @property
+    def code_Version( self ):
+        raise RuntimeError( f"Don't use Provenance.code_Version, use code_Version_id" )
+
+    @code_Version.setter
+    def code_Version( self, val ):
+        raise RuntimeError( f"Don't use Provenance.code_Version, use code_Version_id" )
+
+    @upstreams.setter
+    def upstreams( self, val ):
+        raise RuntimeError( f"Provenance.upstreams is deprecated, only set it on creation." )
+
+    @property
+    def downstreams( self ):
+        raise RuntimeError( f"Provenance.downstreams is deprecated, use get_downstreams" )
+
+    @downstreams.setter
+    def downstreams( self, val ):
+        raise RuntimeError( f"Provenance.downstreams is deprecated, can't be set" )
+
+    @property
+    def upstream_ids( self ):
+        raise RuntimeError( f"Provenance.upstream_ids is deprecated, use upsterams" )
+
+    @upstream_ids.setter
+    def upstream_ids( self, val ):
+        raise RuntimeError( f"Provenance.upstream_ids is deprecated, use upstreams" )
+
+    @property
+    def downstream_ids( self ):
+        raise RuntimeError( f"Provenance.downstream_ids is deprecated, use get_downstreams" )
+
+    @downstream_ids.setter
+    def downstream_ids( self, val ):
+        raise RuntimeError( f"Provenance.downstream_ids is deprecated, use get_downstreams" )
+
+    @property
+    def upstream_hashes( self ):
+        raise RuntimeError( f"Provenance.upstream_hashes is deprecated, use upstreams" )
+
+    @upstream_hashes.setter
+    def upstream_hashes( self, val ):
+        raise RuntimeError( f"Provenance.upstream_hashes is deprecated, use upstreams" )
+
+    @property
+    def downstream_hashes( self ):
+        raise RuntimeError( f"Provenance.downstream_hashes is deprecated, use get_downstreams" )
+
+    @downstream_hashes.setter
+    def downstream_hashes( self, val ):
+        raise RuntimeError( f"Provenance.downstream_hashes is deprecated, use get_downstreams" )
 
 
 class ProvenanceTagExistsError(Exception):
     pass
 
-class ProvenanceTag(Base, AutoIDMixin):
+class ProvenanceTag(Base, UUIDMixin):
     """A human-readable tag to associate with provenances.
 
     A well-defined provenane tag will have a provenance defined for every step, but there will
@@ -394,7 +572,9 @@ class ProvenanceTag(Base, AutoIDMixin):
 
     __tablename__ = "provenance_tags"
 
-    __table_args__ = ( UniqueConstraint( 'tag', 'provenance_id', name='_provenancetag_prov_tag_uc' ), )
+    @declared_attr
+    def __table_args__(cls):
+        return ( UniqueConstraint( 'tag', 'provenance_id', name='_provenancetag_prov_tag_uc' ), )
 
     tag = sa.Column(
         sa.String,
@@ -404,16 +584,9 @@ class ProvenanceTag(Base, AutoIDMixin):
     )
 
     provenance_id = sa.Column(
-        sa.ForeignKey( 'provenances.id', ondelete="CASCADE", name='provenance_tags_provenance_id_fkey' ),
+        sa.ForeignKey( 'provenances._id', ondelete="CASCADE", name='provenance_tags_provenance_id_fkey' ),
         index=True,
         doc='Provenance ID.  Each tag/process should only have one provenance.'
-    )
-
-    provenance = orm.relationship(
-        'Provenance',
-        cascade='save-update, merge, refresh-expire, expunge',
-        lazy='selectin',
-        doc=( "Provenance" )
     )
 
     def __repr__( self ):
@@ -434,7 +607,7 @@ class ProvenanceTag(Base, AutoIDMixin):
           tag: str
             The human-readable provenance tag.  For cleanliness, should be ASCII, no spaces.
 
-          provs: list of str or Provenance
+          provs: list of str, UUID, or Provenance
             The provenances to include in this tag.  Usually, you want to make sure to include
             a provenance for every process in the pipeline: exposure, referencing, preprocessing,
             extraction, subtraction, detection, cutting, measuring, [TODO MORE: deepscore, alert]
@@ -443,13 +616,18 @@ class ProvenanceTag(Base, AutoIDMixin):
 
         """
 
+        # The debug comments in this function are for debugging database
+        #   deadlocks.  Uncomment them if you're trying to deal with
+        #   that.  Normally they're commented out because they make the
+        #   debug output much more verbose.
+
         with SmartSession( session ) as sess:
             # Get all the provenance IDs we're going to insert
             provids = set()
             for prov in provs:
                 if isinstance( prov, Provenance ):
                     provids.add( prov.id )
-                elif isinstance( prov, str ):
+                elif isinstance( prov, str ) or isinstance( prov, uuid.UUID ):
                     provobj = sess.get( Provenance, prov )
                     if provobj is None:
                         raise ValueError( f"Unknown Provenance ID {prov}" )
@@ -463,19 +641,22 @@ class ProvenanceTag(Base, AutoIDMixin):
                 #  given how we expect the code to be used, should probably
                 #  not happen in practice), lock the table before searching
                 #  and only unlock after inserting.
-                sess.connection().execute( sa.text( "LOCK TABLE provenance_tags" ) )
+                cls._get_table_lock( sess )
                 current = sess.query( ProvenanceTag ).filter( ProvenanceTag.tag == tag )
                 if current.count() != 0:
+                    # SCLogger.debug( "ProvenanceTag rolling back" )
                     sess.rollback()
                     raise ProvenanceTagExistsError( f"ProvenanceTag {tag} already exists." )
 
                 for provid in provids:
                     sess.add( ProvenanceTag( tag=tag, provenance_id=provid ) )
 
+                # SCLogger.debug( "ProvenanceTag comitting" )
                 sess.commit()
             finally:
                 # Make sure no lock is left behind; exiting the with block
                 #   ought to do this, but be paranoid.
+                # SCLogger.debug( "ProvenanceTag rolling back" )
                 sess.rollback()
 
     @classmethod
@@ -501,8 +682,8 @@ class ProvenanceTag(Base, AutoIDMixin):
         repeatok = { 'referencing' }
 
         with SmartSession( session ) as sess:
-            ptags = ( sess.query( (ProvenanceTag.id,Provenance.process) )
-                      .filter( ProvenanceTag.provenance_id==Provenance.id )
+            ptags = ( sess.query( (ProvenanceTag._id,Provenance.process) )
+                      .filter( ProvenanceTag.provenance_id==Provenance._id )
                       .filter( ProvenanceTag.tag==tag )
                      ).all()
 

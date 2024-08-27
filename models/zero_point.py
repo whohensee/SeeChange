@@ -2,61 +2,25 @@ import numpy as np
 
 import sqlalchemy as sa
 from sqlalchemy import orm
-from sqlalchemy.ext.associationproxy import association_proxy
 from sqlalchemy.schema import UniqueConstraint
 from sqlalchemy.dialects.postgresql import ARRAY
 
-from models.base import Base, SmartSession, AutoIDMixin, HasBitFlagBadness, FileOnDiskMixin, SeeChangeBase
+from models.base import Base, SmartSession, UUIDMixin, HasBitFlagBadness, FileOnDiskMixin, SeeChangeBase
 from models.enums_and_bitflags import catalog_match_badness_inverse
 from models.world_coordinates import WorldCoordinates
 from models.image import Image
-from models.source_list import SourceList
+from models.source_list import SourceList, SourceListSibling
 
 
-class ZeroPoint(Base, AutoIDMixin, HasBitFlagBadness):
+class ZeroPoint(SourceListSibling, Base, UUIDMixin, HasBitFlagBadness):
     __tablename__ = 'zero_points'
 
-    __table_args__ = (
-        UniqueConstraint('sources_id', 'provenance_id', name='_zp_sources_provenance_uc'),
-    )
-
     sources_id = sa.Column(
-        sa.ForeignKey('source_lists.id', ondelete='CASCADE', name='zero_points_source_list_id_fkey'),
+        sa.ForeignKey('source_lists._id', ondelete='CASCADE', name='zero_points_source_list_id_fkey'),
         nullable=False,
         index=True,
+        unique=True,
         doc="ID of the source list this zero point is associated with. ",
-    )
-
-    sources = orm.relationship(
-        'SourceList',
-        lazy='selectin',
-        cascade='save-update, merge, refresh-expire, expunge',
-        passive_deletes=True,
-        doc="The source list this zero point is associated with. ",
-    )
-
-    image = association_proxy( "sources", "image" )
-
-    provenance_id = sa.Column(
-        sa.ForeignKey('provenances.id', ondelete="CASCADE", name='zero_points_provenance_id_fkey'),
-        nullable=False,
-        index=True,
-        doc=(
-            "ID of the provenance of this zero point. "
-            "The provenance will contain a record of the code version"
-            "and the parameters used to produce this zero point. "
-        )
-    )
-
-    provenance = orm.relationship(
-        'Provenance',
-        cascade='save-update, merge, refresh-expire, expunge',
-        lazy='selectin',
-        doc=(
-            "Provenance of this zero point. "
-            "The provenance will contain a record of the code version"
-            "and the parameters used to produce this zero point. "
-        )
     )
 
     zp = sa.Column(
@@ -76,7 +40,7 @@ class ZeroPoint(Base, AutoIDMixin, HasBitFlagBadness):
     aper_cor_radii = sa.Column(
         ARRAY( sa.REAL, zero_indexes=True ),
         nullable=True,
-        default=None,
+        server_default=None,
         index=False,
         doc="Pixel radii of apertures whose aperture corrections are in aper_cors."
     )
@@ -84,7 +48,7 @@ class ZeroPoint(Base, AutoIDMixin, HasBitFlagBadness):
     aper_cors = sa.Column(
         ARRAY( sa.REAL, zero_indexes=True ),
         nullable=True,
-        default=None,
+        server_default=None,
         index=False,
         doc=( "Aperture corrections for apertures with radii in aper_cor_radii.  Defined so that "
               "mag = -2.5*log10(adu_aper) + zp + aper_cor, where adu_aper is the number of ADU "
@@ -134,78 +98,42 @@ class ZeroPoint(Base, AutoIDMixin, HasBitFlagBadness):
             if np.fabs( rad - aprad ) <= 0.01:
                 return apcor
 
-        iminfo = "for image {self.image.id} ({self.image.filepath}) " if self.image is not None else ""
-        raise ValueError( f"No aperture correction tabulated {iminfo}"
+        raise ValueError( f"No aperture correction tabulated for sources {self.sources_id} "
                           f"for apertures within 0.01 pixels of {rad}; "
                           f"available apertures are {self.aper_cor_radii}" )
 
-    def get_upstreams(self, session=None):
-        """Get the extraction SourceList and WorldCoordinates used to make this ZeroPoint"""
-        with SmartSession(session) as session:
-            sources = session.scalars(sa.select(SourceList).where(SourceList.id == self.sources_id)).all()
+    # ======================================================================
+    # The fields below are things that we've deprecated; these definitions
+    #   are here to catch cases in the code where they're still used
 
-        return sources
+    @property
+    def sources( self ):
+        raise RuntimeError( f"Don't use ZeroPoint.sources, use sources_id" )
 
-    def get_downstreams(self, session=None, siblings=False):
-        """Get the downstreams of this ZeroPoint.
+    @sources.setter
+    def sources( self, val ):
+        raise RuntimeError( f"Don't use ZeroPoint.sources, use sources_id" )
 
-        If siblings=True then also include the SourceList, PSF, background object and WCS
-        that were created at the same time as this ZeroPoint.
-        """
-        from models.source_list import SourceList
-        from models.psf import PSF
-        from models.background import Background
-        from models.world_coordinates import WorldCoordinates
-        from models.provenance import Provenance
+    @property
+    def image( self ):
+        raise RuntimeError( f"ZeroPoint.image is deprecated, don't use it" )
 
-        with SmartSession(session) as session:
-            output = []
-            if self.provenance is not None:
-                subs = session.scalars(
-                    sa.select(Image).where(
-                        Image.provenance.has(Provenance.upstreams.any(Provenance.id == self.provenance.id))
-                    )
-                ).all()
-                output += subs
+    @image.setter
+    def image( self, val ):
+        raise RuntimeError( f"ZeroPoint.image is deprecated, don't use it" )
 
-            if siblings:
-                sources = session.scalars(sa.select(SourceList).where(SourceList.id == self.sources_id)).all()
-                if len(sources) > 1:
-                    raise ValueError(
-                        f"Expected exactly one SourceList for ZeroPoint {self.id}, but found {len(sources)}."
-                    )
-                output.append(sources[0])
+    @property
+    def provenance_id( self ):
+        raise RuntimeError( f"ZeroPoint.provenance_id is deprecated; get provenance from sources" )
 
-                psf = session.scalars(
-                    sa.select(PSF).where(
-                        PSF.image_id == sources.image_id, PSF.provenance_id == self.provenance_id
-                    )
-                ).all()
-                if len(psf) > 1:
-                    raise ValueError(f"Expected exactly one PSF for ZeroPoint {self.id}, but found {len(psf)}.")
+    @provenance_id.setter
+    def provenance_id( self, val ):
+        raise RuntimeError( f"ZeroPoint.provenance_id is deprecated; get provenance from sources" )
 
-                output.append(psf[0])
+    @property
+    def provenance( self ):
+        raise RuntimeError( f"ZeroPoint.provenance is deprecated; get provenance from sources" )
 
-                bgs = session.scalars(
-                    sa.select(Background).where(
-                        Background.image_id == sources.image_id, Background.provenance_id == self.provenance_id
-                    )
-                ).all()
-
-                if len(bgs) > 1:
-                    raise ValueError(
-                        f"Expected exactly one Background for WorldCoordinates {self.id}, but found {len(bgs)}."
-                    )
-
-                output.append(bgs[0])
-
-                wcs = session.scalars(
-                    sa.select(WorldCoordinates).where(WorldCoordinates.sources_id == sources.id)
-                ).all()
-
-                if len(wcs) > 1:
-                    raise ValueError(f"Expected exactly one WCS for ZeroPoint {self.id}, but found {len(wcs)}.")
-
-                output.append(wcs[0])
-
-        return output
+    @provenance.setter
+    def provenance( self, val ):
+        raise RuntimeError( f"ZeroPoint.provenance is deprecated; get provenance from sources" )

@@ -1,20 +1,36 @@
 import collections.abc
 
 import os
+import re
 import pathlib
 import git
 import numpy as np
 from datetime import datetime
 import dateutil.parser
 import uuid
+import json
 
 import sqlalchemy as sa
 
 from astropy.io import fits
 from astropy.time import Time
 
-from models.base import SmartSession, safe_mkdir
 from util.logger import SCLogger
+
+def asUUID( id ):
+    """Pass either a UUID or a string representation of one, get a UUID back."""
+    if isinstance( id, uuid.UUID ):
+        return id
+    if not isinstance( id, str ):
+        raise TypeError( f"asUUID requires a UUID or a str, not a {type(id)}" )
+    return uuid.UUID( id )
+
+
+class UUIDJsonEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, uuid.UUID):
+            return str(obj)
+        return json.JSONEncoder.default(self, obj)
 
 
 def ensure_file_does_not_exist( filepath, delete=False ):
@@ -93,60 +109,53 @@ def remove_empty_folders(path, remove_root=True):
 
 
 def get_git_hash():
-    """
-    Get the commit hash of the current git repo.
+    """Get the commit hash of the current git repo.
 
-    If the environmental variable GITHUB_SHA is set,
-    use that as the git commit hash.
-    If not, try to find the git commit hash of the current repo.
-    If all these methods fail, quietly return None.
+    Tries in order:
+      * the environment variable GITHUB_SHA
+      * the git commit hash of the repo of the current directory
+      * the variable __git_hash from the file util/githash.py
+
+    If none of those work, or if the last one doesn't return something
+    that looks like a valid git hash, return None.
+
     """
 
+    # Start with the git_hash that github uses (which may not actually
+    #   the hash of this revision beuse of PR shenanigans, but on github
+    #   tests we don't care, we just need _something_).
     git_hash = os.getenv('GITHUB_SHA')
     if git_hash is None:
+        # If that didn't work, try to read the git-hash of the
+        #   git repo the current directory is in.
         try:
             repo = git.Repo(search_parent_directories=True)
             git_hash = repo.head.object.hexsha
         except Exception:
             git_hash = None
 
+    if git_hash is None:
+        try:
+            # If that didn't work, read the git hash from
+            #   util/githash.py
+            import util.githash
+            git_hash = util.githash.__git_hash
+            # There are reasons why this might have gone haywire even if
+            #   import util.githash didn't throw an exception.
+            #   githash.py is a file automatically created in the
+            #   Makefile using "git rev-parse HEAD".  If for whatever
+            #   reason the make is run in a directory that's not a git
+            #   checkout (e.g. somebody downloaded a distribution
+            #   tarball), then there won't be a git hash; in that case,
+            #   if the make worked, the file will set __git_hash to "".
+            #   So, check to make sure that the git_hash we got at
+            #   least vaguely looks like a 40-character hash.
+            if re.search( '^[a-z0-9]{40}$', git_hash ) is None:
+                git_hash = None
+        except Exception:
+            git_hash = None
+
     return git_hash
-
-
-def get_latest_provenance(process_name, session=None):
-    """
-    Find the provenance object that fits the process_name
-    that is the most recent.
-    # TODO: we need to think about what "most recent" means.
-
-    Parameters
-    ----------
-    process_name: str
-        Name of the process that created this provenance object.
-        Examples can include: "calibration", "subtraction", "source extraction" or just "level1".
-    session: sqlalchemy.orm.session.Session
-        Session to use to query the database.
-        If not given, a new session will be created,
-        and will be closed at the end of the function.
-
-    Returns
-    -------
-    Provenance
-        The most recent provenance object that matches the process_name.
-        If not found, returns None.
-    """
-    # importing the models here to avoid circular imports
-    from models.base import SmartSession
-    from models.provenance import Provenance
-
-    with SmartSession(session) as session:
-        prov = session.scalars(
-            sa.select(Provenance).where(
-                Provenance.process == process_name
-            ).order_by(Provenance.created_at.desc())
-        ).first()
-
-    return prov
 
 
 def parse_dateobs(dateobs=None, output='datetime'):
@@ -347,6 +356,10 @@ def save_fits_image_file(filename, data, header, extname=None, overwrite=True, s
     The path to the file saved (or written to)
 
     """
+
+    # avoid circular imports
+    from models.base import safe_mkdir
+
     filename = str(filename)  # handle pathlib.Path objects
     hdu = fits.ImageHDU( data, name=extname ) if single_file else fits.PrimaryHDU( data )
 

@@ -7,6 +7,7 @@ from sqlalchemy import orm
 from sqlalchemy.dialects.postgresql import JSONB, ARRAY
 from sqlalchemy.schema import CheckConstraint
 from sqlalchemy.orm.session import object_session
+from sqlalchemy.ext.declarative import declared_attr
 from sqlalchemy.ext.hybrid import hybrid_property
 from sqlalchemy.exc import IntegrityError
 
@@ -14,14 +15,14 @@ from astropy.time import Time
 from astropy.io import fits
 
 from util.config import Config
-from util.util import read_fits_image 
+from util.util import read_fits_image
 from util.radec import parse_ra_hms_to_deg, parse_dec_dms_to_deg
 from util.logger import SCLogger
 
 from models.base import (
     Base,
     SeeChangeBase,
-    AutoIDMixin,
+    UUIDMixin,
     FileOnDiskMixin,
     SpatiallyIndexed,
     SmartSession,
@@ -157,14 +158,26 @@ class ExposureImageIterator:
             raise StopIteration
 
 
-class Exposure(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagBadness):
+class Exposure(Base, UUIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagBadness):
 
     __tablename__ = "exposures"
+
+    @declared_attr
+    def __table_args__( cls ):
+        return (
+            CheckConstraint( sqltext='NOT(md5sum IS NULL AND '
+                               '(md5sum_extensions IS NULL OR array_position(md5sum_extensions, NULL) IS NOT NULL))',
+                               name=f'{cls.__tablename__}_md5sum_check' ),
+            sa.Index(f"{cls.__tablename__}_q3c_ang2ipix_idx", sa.func.q3c_ang2ipix(cls.ra, cls.dec)),
+            CheckConstraint( sqltext='NOT(filter IS NULL AND filter_array IS NULL)',
+                             name='exposures_filter_or_array_check' )
+        )
+
 
     _type = sa.Column(
         sa.SMALLINT,
         nullable=False,
-        default=ImageTypeConverter.convert('Sci'),
+        server_default=sa.sql.elements.TextClause( str(ImageTypeConverter.convert('Sci')) ),
         index=True,
         doc=(
             "Type of image. One of: Sci, Diff, Bias, Dark, DomeFlat, SkyFlat, TwiFlat, "
@@ -189,28 +202,17 @@ class Exposure(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagB
     _format = sa.Column(
         sa.SMALLINT,
         nullable=False,
-        default=ImageFormatConverter.convert('fits'),
+        server_default=sa.sql.elements.TextClause( str(ImageFormatConverter.convert('fits')) ),
         doc="Format of the file on disk. Should be fits or hdf5. "
             "The value is saved as SMALLINT but translated to a string when read. "
     )
 
     provenance_id = sa.Column(
-        sa.ForeignKey('provenances.id', ondelete='CASCADE'),
+        sa.ForeignKey('provenances._id', ondelete='CASCADE'),
         nullable=False,
         index=True,
         doc=(
             "ID of the provenance of this exposure. "
-            "The provenance will containe a record of the code version "
-            "and the parameters used to obtain this exposure."
-        )
-    )
-
-    provenance = orm.relationship(
-        'Provenance',
-        cascade='save-update, merge, refresh-expire, expunge',
-        lazy='selectin',
-        doc=(
-            "Provenance of this exposure. "
             "The provenance will containe a record of the code version "
             "and the parameters used to obtain this exposure."
         )
@@ -232,7 +234,7 @@ class Exposure(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagB
     info = sa.Column(
         JSONB,
         nullable=False,
-        default={},
+        server_default='{}',
         doc=(
             "Subset of the raw exposure's header. "
             "Only keep a subset of the keywords, "
@@ -268,13 +270,6 @@ class Exposure(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagB
         doc="Array of filter names, if multiple filters were used. "
     )
 
-    __table_args__ = (
-        CheckConstraint(
-            sqltext='NOT(filter IS NULL AND filter_array IS NULL)',
-            name='exposures_filter_or_array_check'
-        ),
-    )
-
     instrument = sa.Column(
         sa.Text,
         nullable=False,
@@ -299,7 +294,7 @@ class Exposure(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagB
     _bitflag = sa.Column(
         sa.BIGINT,
         nullable=False,
-        default=0,
+        server_default=sa.sql.elements.TextClause( '0' ),
         index=True,
         doc='Bitflag for this exposure. Good exposures have a bitflag of 0. '
             'Bad exposures are each bad in their own way (i.e., have different bits set). '
@@ -366,8 +361,9 @@ class Exposure(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagB
 
         if self.filepath is None:
             # in this case, the instrument must have been given
-            if self.provenance is None:
-                self.provenance = self.make_provenance(self.instrument)  # a default provenance for exposures
+            if self.provenance_id is None:
+                prov = self.make_provenance(self.instrument)  # a default provenance for exposures
+                self.provenance_id = prov.id
 
             if invent_filepath:
                 self.filepath = self.invent_filepath()
@@ -378,8 +374,10 @@ class Exposure(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagB
             self.instrument = guess_instrument(self.filepath)
 
         # this can happen if the instrument is not given, but the filepath is
-        if self.provenance is None:
-            self.provenance = self.make_provenance(self.instrument)  # a default provenance for exposures
+        if self.provenance_id is None:
+            prov = self.make_provenance(self.instrument)  # a default provenance for exposures
+            self.provenance_id = prov.id
+
 
         # instrument_obj is lazy loaded when first getting it
         if current_file is None:
@@ -394,7 +392,7 @@ class Exposure(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagB
 
     @classmethod
     def make_provenance(cls, instrument):
-        """Generate a Provenance for this exposure.
+        """Generate a Provenance for this exposure and save it to the database.
 
         The provenance will have only one parameter,
         which is the instrument name.
@@ -406,11 +404,12 @@ class Exposure(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagB
         """
         codeversion = Provenance.get_code_version()
         prov = Provenance(
-            code_version=codeversion,
+            code_version_id=codeversion.id,
             process='load_exposure',
             parameters={'instrument': instrument},
             upstreams=[],
         )
+        prov.insert_if_needed()
 
         return prov
 
@@ -562,9 +561,9 @@ class Exposure(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagB
 
         # Much code redundancy with Image.invent_filepath; move to a mixin?
 
-        if self.provenance is None:
+        if self.provenance_id is None:
             raise ValueError("Cannot invent filepath for exposure without provenance.")
-        prov_hash = self.provenance.id
+        prov_hash = self.provenance_id
 
         t = Time(self.mjd, format='mjd', scale='utc').datetime
         date = t.strftime('%Y%m%d')
@@ -748,51 +747,23 @@ class Exposure(Base, AutoIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagB
 
         return images
 
-    def merge_concurrent(self, session=None):
-        """Try multiple times to fetch and merge this exposure.
-        This will hopefully protect us against concurrently adding the exposure from multiple processes.
-        Should also be safe to use in case that the same exposure (i.e., with the same filepath)
-        was added by previous runs.
-        """
-        exposure = None
-        with SmartSession(session) as session:
 
-            for i in range(5):
-                try:
-                    found_exp = session.scalars(
-                        sa.select(Exposure).where(Exposure.filepath == self.filepath)
-                    ).first()
-                    if found_exp is None:
-                        exposure = session.merge(self)
-                        session.commit()
-                    else:
-                        # update the found exposure with any modifications on the existing exposure
-                        columns = Exposure.__table__.columns.keys()
-                        for col in columns:
-                            if col in ['id', 'created_at', 'modified']:
-                                continue
-                            setattr(found_exp, col, getattr(self, col))
-                        exposure = found_exp
+    # ======================================================================
+    # The fields below are things that we've deprecated; these definitions
+    #   are here to catch cases in the code where they're still used
 
-                    break  # if we got here without an exception, we can break out of the loop
-                except IntegrityError as e:
-                    # this could happen if in between the query and the merge(exposure)
-                    # another process added the same exposure to the database
-                    if 'duplicate key value violates unique constraint "ix_exposures_filepath"' in str(e):
-                        SCLogger.debug(str(e))
-                        session.rollback()
-                        time.sleep(0.1 * 2 ** i)  # exponential backoff
-                    else:
-                        raise e
-            else:  # if we didn't break out of the loop, there must have been some integrity error
-                raise e
+    @property
+    def provenance( self ):
+        raise RuntimeError( "Don't use provenance, use provenance_id" )
 
-        return exposure
+    @provenance.setter
+    def provenance( self, val ):
+        raise RuntimeError( "Don't use provenance, use provenance_id" )
 
 
-if __name__ == '__main__':
-    import os
-    ROOT_FOLDER = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    filepath = os.path.join(ROOT_FOLDER, 'data/DECam_examples/c4d_221104_074232_ori.fits.fz')
-    e = Exposure(filepath)
-    SCLogger.debug(e)
+# if __name__ == '__main__':
+#     import os
+#     ROOT_FOLDER = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+#     filepath = os.path.join(ROOT_FOLDER, 'data/DECam_examples/c4d_221104_074232_ori.fits.fz')
+#     e = Exposure(filepath)
+#     SCLogger.debug(e)

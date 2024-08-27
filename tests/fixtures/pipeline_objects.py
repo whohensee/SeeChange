@@ -77,11 +77,6 @@ def backgrounder_factory(test_config):
     return make_backgrounder
 
 
-@pytest.fixture
-def backgrounder(backgrounder_factory):
-    return backgrounder_factory()
-
-
 @pytest.fixture(scope='session')
 def astrometor_factory(test_config):
 
@@ -117,11 +112,6 @@ def photometor_factory(test_config):
         return photom
 
     return make_photometor
-
-
-@pytest.fixture
-def photometor(photometor_factory):
-    return photometor_factory()
 
 
 @pytest.fixture(scope='session')

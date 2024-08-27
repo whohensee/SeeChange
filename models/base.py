@@ -8,6 +8,7 @@ import hashlib
 import pathlib
 import json
 import datetime
+import uuid
 from uuid import UUID
 
 from contextlib import contextmanager
@@ -16,8 +17,8 @@ import numpy as np
 from astropy.coordinates import SkyCoord
 
 import sqlalchemy as sa
+import sqlalchemy.dialects.postgresql
 from sqlalchemy import func, orm
-
 from sqlalchemy.orm import sessionmaker, declarative_base
 from sqlalchemy.ext.declarative import declared_attr
 from sqlalchemy.ext.hybrid import hybrid_method, hybrid_property
@@ -25,7 +26,7 @@ from sqlalchemy.orm.exc import DetachedInstanceError
 from sqlalchemy.dialects.postgresql import UUID as sqlUUID
 from sqlalchemy.dialects.postgresql import array as sqlarray
 from sqlalchemy.dialects.postgresql import ARRAY
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError
 from psycopg2.errors import UniqueViolation
 
 from sqlalchemy.schema import CheckConstraint
@@ -41,6 +42,7 @@ import util.config as config
 from util.archive import Archive
 from util.logger import SCLogger
 from util.radec import radec_to_gal_ecl
+from util.util import asUUID, UUIDJsonEncoder
 
 utcnow = func.timezone("UTC", func.current_timestamp())
 
@@ -100,18 +102,18 @@ _Session = None
 
 
 def Session():
-    """
-    Make a session if it doesn't already exist.
-    Use this in interactive sessions where you don't
-    want to open the session as a context manager.
-    If you want to use it in a context manager
-    (the "with" statement where it closes at the
-    end of the context) use SmartSession() instead.
+    """Make a session if it doesn't already exist.
+
+    Use this in interactive sessions where you don't want to open the
+    session as a context manager.  Don't use this anywhere in the code
+    base.  Instead, always use a context manager, getting your
+    connection using "with SmartSession(...) as ...".
 
     Returns
     -------
     sqlalchemy.orm.session.Session
         A session object that doesn't automatically close.
+
     """
     global _Session, _engine
 
@@ -142,13 +144,12 @@ def Session():
 
 @contextmanager
 def SmartSession(*args):
-    """
-    Return a Session() instance that may or may not
-    be inside a context manager.
+    """Return a Session() instance that may or may not be inside a context manager.
 
     If a given input is already a session, just return that.
     If all inputs are None, create a session that would
     close at the end of the life of the calling scope.
+
     """
     global _Session, _engine
 
@@ -167,7 +168,72 @@ def SmartSession(*args):
     # none of the given inputs managed to satisfy any of the conditions...
     # open a new session and close it when outer scope is done
     with Session() as session:
-        yield session
+        try:
+            yield session
+        finally:
+            # Ideally the sesson just closes itself when it goes out of
+            # scope, and the database connection is dropped (since we're
+            # using NullPool), but that didn't always seem to be working;
+            # intermittently (and unpredictably) we'd be left with a
+            # dangling session that was idle in transaction, that would
+            # later cause database deadlocks because of the table locks we
+            # use.  It's probably depending on garbage collection, and
+            # sometimes the garbage doesn't get collected in time.  So,
+            # explicitly close and invalidate the session.
+            #
+            # NOTE -- this doesn't seem to have actually fixed the problem. :(
+            # I've tried to hack around it by putting a timeout on the locks
+            # with a retry loop.  Sigh.
+            #
+            # Even *that* doesn't seem to have fully fixed it.
+            # *Sometimes*, not reproducibly, there's a session that
+            # hangs around that is idle in transaction.  There must be
+            # some reference to it *somewhere* that's stopping it from
+            # getting garbage collected.  I really wish SQLA just closed
+            # the connection when I told it to.  I tried adding
+            # "session.rollback()" here, but then got all kinds of
+            # deatched instance errors trying to access objects later.
+            # It seems that rollback() subverts the session's
+            # expire_on_commit=False setting.
+            #
+            # OOO, ooo, here's an idea: just use SQL to rollback.  Hopefully
+            # SQLAlchemy won't realize what we're doing and won't totally
+            # undermine us for doing it.  (My god I hate SQLA.)
+            # (What I'm really trying to accomplish here is given that we
+            # seem to rarely have an idle session sitting around, make sure
+            # it's not in a transaction that will prevent table locks.)
+            #
+            # session.execute( sa.text( "ROLLBACK" ) )
+            #
+            # NOPE!  That didn't work.  If there was a previous
+            # exception, sqlalchemy catches that before it lets me run
+            # session.execute, saying I gotta rollback before doing
+            # anything else.  (There is irony here.)
+            #
+            # OK, lets try grabbing the connection from the session and
+            # manually rolling back with psycopg2 or whatever is
+            # underneath.  I'm not sure this will do what I want either,
+            # because I don't know if session.bind.raw_connection() gets
+            # me the connection that session is using, or if it gets
+            # another connection.  (If the latter, than this code is
+            # wholly gratuitous.)
+            #
+            # dbcon = session.bind.raw_connection()
+            # cursor = dbcon.cursor()
+            # cursor.execute( "ROLLBACK" )
+
+            # ...even that doesn't seem to be solving the problem.
+            # The solution may end up being moving totally away from
+            # SQLAlchemy and using something that lets us actually
+            # control our database connections.
+
+            # OK, another thing to try.  See if expunging all objects
+            # lets me rollback.
+            session.expunge_all()
+            session.rollback()
+
+            session.close()
+            session.invalidate()
 
 
 def db_stat(obj):
@@ -211,20 +277,26 @@ def get_all_database_objects(display=False, session=None):
     from models.calibratorfile import CalibratorFile, CalibratorFileDownloadLock
     from models.catalog_excerpt import CatalogExcerpt
     from models.reference import Reference
+    from models.refset import RefSet
     from models.instrument import SensorSection
     from models.user import AuthUser, PasswordLink
 
     models = [
         CodeHash, CodeVersion, Provenance, ProvenanceTag, DataFile, Exposure, Image,
         SourceList, PSF, WorldCoordinates, ZeroPoint, Cutouts, Measurements, Object,
-        CalibratorFile, CalibratorFileDownloadLock, CatalogExcerpt, Reference, SensorSection,
-        AuthUser, PasswordLink, KnownExposure, PipelineWorker
+        CalibratorFile, CalibratorFileDownloadLock, CatalogExcerpt, Reference, RefSet,
+        SensorSection, AuthUser, PasswordLink, KnownExposure, PipelineWorker
     ]
 
     output = {}
     with SmartSession(session) as session:
         for model in models:
-            object_ids = session.scalars(sa.select(model.id)).all()
+            # Note: AuthUser and PasswordLink have id instead of id_, because
+            #  they need to be compatible with rkwebutil rkauth
+            if ( model == AuthUser ) or ( model == PasswordLink ):
+                object_ids = session.scalars(sa.select(model.id)).all()
+            else:
+                object_ids = session.scalars(sa.select(model._id)).all()
             output[model] = object_ids
 
             if display:
@@ -236,63 +308,21 @@ def get_all_database_objects(display=False, session=None):
     return output
 
 
-def safe_merge(session, obj, db_check_att='filepath'):
-    """
-    Only merge the object if it has a valid ID,
-    and if it does not exist on the session.
-    Otherwise, return the object itself.
-
-    Parameters
-    ----------
-    session: sqlalchemy.orm.session.Session
-        The session to use for the merge.
-    obj: SeeChangeBase
-        The object to merge.
-    db_check_att: str (optional)
-        If given, will check if an object with this attribute
-        exists in the DB before merging. If it does, it will
-        merge the new object with the existing object's ID.
-        Default is to check against the "filepath" attribute,
-        which will fail quietly if the object doesn't have
-        this attribute.
-        This check only occurs for objects without an id.
-
-    Returns
-    -------
-    obj: SeeChangeBase
-        The merged object, or the unmerged object
-        if it is already on the session or if it
-        doesn't have an ID.
-    """
-    if obj is None:  # given None, return None
-        return None
-
-    # if there is no ID, maybe need to check another attribute
-    if db_check_att is not None and hasattr(obj, db_check_att):
-        existing = session.scalars(
-            sa.select(type(obj)).where(getattr(type(obj), db_check_att) == getattr(obj, db_check_att))
-        ).first()
-        if existing is not None:  # this object already has a copy on the DB!
-            obj.id = existing.id  # make sure to update existing row with new data
-            obj.created_at = existing.created_at  # make sure to keep the original creation time
-    return session.merge(obj)
-
-
 class SeeChangeBase:
     """Base class for all SeeChange classes."""
 
     created_at = sa.Column(
         sa.DateTime(timezone=True),
         nullable=False,
-        default=utcnow,
+        server_default=func.now(),
         index=True,
         doc="UTC time of insertion of object's row into the database.",
     )
 
     modified = sa.Column(
         sa.DateTime(timezone=True),
-        default=utcnow,
-        onupdate=utcnow,
+        server_default=func.now(),
+        onupdate=func.now(),
         nullable=False,
         doc="UTC time the object's row was last modified in the database.",
     )
@@ -347,13 +377,294 @@ class SeeChangeBase:
                 if type( getattr( self, key ) ) != types.MethodType:
                     setattr(self, key, value)
 
-    def safe_merge(self, session, db_check_att='filepath'):
-        """Safely merge this object into the session. See safe_merge()."""
-        return safe_merge(session, self, db_check_att=db_check_att)
+
+    @classmethod
+    def _get_table_lock( cls, session, tablename=None ):
+        """Never use this.  The code that uses this is already written.  Use it and get Bobby Tablesed."""
+
+        # This is kind of irritating.  I got the point where I was sure
+        # there were no deadlocks written into the code.  However,
+        # sometimes, unreproducibly, we'd get a deadlock when trying to
+        # LOCK TABLE because there was a dangling database session that
+        # was idle in transaction.  I can't figure out what was doing
+        # it, and my best hypothesis is that SQLAlchemy is relying on
+        # garbage collection to close database connections, even after a
+        # call to .invalidate() (which I added to
+        # SeeChangeBase.SmartSession).  Sometimes those connections didn't
+        # get garbaged collected before the process got to creating a lock.
+        #
+        # Probably can't figure it out without totally removing SQLAlchemy
+        # session management from the code base (and we've already done
+        # a big chunk of that, but the last bit would be painful), so work
+        # around it with gratuitous retries.
+        #
+        # ...and this still doesn't seem to be working.  I'm still getting
+        # timeouts after 16s of waiting.  But, after the thing dies
+        # (drops into the debugger with pytest --pdb), there are no
+        # locks in the database.  Somehow, somewhere, something is not
+        # releasing a database connection that has an idle transaction.
+        # The solution may be to move completely away from SQLAlchemy,
+        # which will mean rewriting even more code.
+
+        if tablename is None:
+            tablename = cls.__tablename__
+
+        # Uncomment this next debug statement if debugging table locks
+        # SCLogger.debug( f"SeeChangeBase.upsert ({cls.__name__}) LOCK TABLE on {tablename}" )
+        sleeptime = 0.25
+        failed = False
+        while sleeptime < 16:
+            try:
+                session.connection().execute( sa.text( "SET lock_timeout TO '1s'" ) )
+                session.connection().execute( sa.text( f'LOCK TABLE {tablename}' ) )
+                break
+            except OperationalError as e:
+                sleeptime *= 2
+                if sleeptime >= 16:
+                    failed = True
+                    break
+                else:
+                    SCLogger.warning( f"Timeout waiting for lock on {tablename}, sleeping {sleeptime}s and retrying." )
+                    session.rollback()
+                    time.sleep( sleeptime )
+        if failed:
+            # import pdb; pdb.set_trace()
+            session.rollback()
+            SCLogger.error( f"Repeated failures getting lock on {tablename}." )
+            raise RuntimeError( f"Repeated failures getting lock on {tablename}." )
+
+
+    def _get_cols_and_vals_for_insert( self ):
+        cols = []
+        values = []
+        for col in sa.inspect( self.__class__ ).c:
+            val = getattr( self, col.name )
+            if col.name == 'created_at':
+                continue
+            elif col.name == 'modified':
+                val = datetime.datetime.now( tz=datetime.timezone.utc )
+
+            if isinstance( col.type, sqlalchemy.dialects.postgresql.json.JSONB ) and ( val is not None ):
+                val = json.dumps( val )
+            elif isinstance( val, np.ndarray ):
+                val = list( val )
+
+            # In our case, everything nullable has a default of NULL.  So,
+            #   if a nullable column has val at None, it means that we
+            #   know we want it to be None, not that we want the server
+            #   default to overwrite the None.
+            if col.server_default is not None:
+                if ( val is not None ) or ( col.nullable and ( val is None ) ):
+                    cols.append( col.name )
+                    values.append( val )
+            else:
+                cols.append( col.name )
+                values.append( val )
+
+        return cols, values
+
+
+    def insert( self, session=None, nocommit=False ):
+        """Insert the object into the database.
+
+        Does not do any saving to disk, only saves the database record.
+
+        In any event, if there are no exceptions, self.id will be set upon return.
+
+        Will *not* set any unfilled fileds with their defaults.  If you
+        want that, reload the row from the database.
+
+        Depends on the subclass of SeeChangeBase having a column _id in
+        the database, and a property id that accesses that column,
+        autogenerating it if it doesn't exist.
+
+        Parameters
+        ----------
+          session: SQLALchemy Session, or None
+            Usually you do not want to pass this; it's mostly for other
+            upsert etc. methods that cascade to this.
+
+          nocommit: bool, default False
+            If True, run the statement to insert the object, but
+            don't actually commit the database.  Do this if you
+            want the insert to be inside a transaction you've
+            started on session.  It doesn't make sense to use
+            nocommit without passing a session.
+
+        """
+
+        myid = self.id    # Make sure id is generated
+
+        # Doing this manually for a few reasons.  First, doing a
+        #  Session.add wasn't always just doing an insert, but was doing
+        #  other things like going to the database and checking if it
+        #  was there and merging, whereas here we want an exception to
+        #  be raised if the row already exists in the database.  Second,
+        #  to work around that, we did orm.make_transient( self ), but
+        #  that wiped out the _id field, and I'm nervous about what
+        #  other unintended consequences calling that SQLA function
+        #  might have.  Third, now that we've moved defaults to be
+        #  database-side defaults, we'll get errors from SQLA if those
+        #  fields aren't filled by trying to do an add, whereas we
+        #  should be find with that as the database will just load
+        #  the defaults.
+        #
+        # In any event, doing this manually dodges any weirdness associated
+        #  with objects attached, or not attached, to sessions.
+
+        cols, values = self._get_cols_and_vals_for_insert()
+        notmod = [ c for c in cols if c != 'modified' ]
+        q = f'INSERT INTO {self.__tablename__}({",".join(notmod)}) VALUES (:{",:".join(notmod)}) '
+        subdict = { c: v for c, v in zip( cols, values ) if c != 'modified' }
+        with SmartSession( session ) as sess:
+            sess.execute( sa.text( q ), subdict )
+            if not nocommit:
+                sess.commit()
+
+
+    def upsert( self, session=None, load_defaults=False ):
+        """Insert an object into the database, or update it if it's already there (using _id as the primary key).
+
+        Will *not* update self's fields with server default values!
+        Re-get the database row if you want that.
+
+        Will not attach the object to session if you pass it.
+
+        Will assign the object an id if it doesn't alrady have one (in self.id).
+
+        If the object is already there, will NOT update any association
+        tables (e.g. the image_upstreams_association table), because we
+        do not define any SQLAlchemy relationships.  Those must have
+        been set when the object was first loaded.
+
+        Be careful with this.  There are some cases where we do want to
+        update database records (e.g. the images table once we know
+        fwhm, depth, etc), but most of the time we don't want to update
+        the database after the first save.
+
+        Parameters
+        ----------
+          session: SQLAlchemy Session, default None
+            Usually you don't want to pass this.
+
+          load_defaults: bool, default False
+            Normally, will *not* update self's fields with server
+            default values.  Set this to True for that to happen.  (This
+            will trigger an additional read from the database.)
+
+        """
+
+        # Doing this manually because I don't think SQLAlchemy has a
+        #   clean and direct upsert statement.
+        #
+        # Used to do this with a lock table followed by search followed
+        #   by either an insert or an update.  However, SQLAlchemy
+        #   wasn't always closing connections when we told it to.
+        #   Sometimes, rarely and unreproducably, there was a lingering
+        #   connection in a transaction that caused lock tables to fail.
+        #   My hypothesis is that SQLAlchemy is relying on garbage
+        #   collection to *actually* close database connections, and I
+        #   have not found a way to say "no, really, close the
+        #   connection for this session right now".  So, as long as we
+        #   still use SQLAlchemy at all, locking tables is likely to
+        #   cause intermittent problems.
+        #
+        # (Doing this manually also has the added advantage of avoiding
+        #   sqlalchemy "add" and "merge" statements, so we don't have to
+        #   worry about whatever other side effects those things have.)
+
+        # Make sure that self._id is generated
+        myid = self.id
+        cols, values = self._get_cols_and_vals_for_insert()
+        notmod = [ c for c in cols if c != 'modified' ]
+        q = ( f'INSERT INTO {self.__tablename__}({",".join(notmod)}) VALUES (:{",:".join(notmod)}) '
+              f'ON CONFLICT (_id) DO UPDATE SET '
+              f'{",".join( [ f"{c}=:{c}" for c in cols if c!="id" ] )} ')
+        subdict = { c: v for c, v in zip( cols, values ) }
+        with SmartSession( session ) as sess:
+            sess.execute( sa.text( q ), subdict )
+            sess.commit()
+
+            if load_defaults:
+                dbobj = self.__class__.get_by_id( self.id, session=sess )
+                for col in sa.inspect( self.__class__ ).c:
+                    if ( ( col.name == 'modified' ) or
+                         ( ( col.server_default is not None ) and ( getattr( self, col.name ) is None ) )
+                        ):
+                        setattr( self, col.name, getattr( dbobj, col.name ) )
+
+
+    @classmethod
+    def upsert_list( cls, objects, session=None, load_defaults=False ):
+        """Like upsert, but for a bunch of objects in a list, and tries to be efficient about it.
+
+        Do *not* use this with classes that have things like association
+        tables that need to get updated (i.e. with Image, maybe
+        eventually some others).
+
+        All reference fields (ids of other objects) of the objects must
+        be up to date.  If the referenced objects don't exist in the
+        database already, you'll get integrity errors.
+
+        Will update object id fields, but will not update any other
+        object fields with database defaults.  Reload the rows from the
+        table if that's what you need.
+
+        """
+
+        # Doing this manually for the same reasons as in upset()
+
+        if not all( [ isinstance( o, cls ) for o in objects ] ):
+            raise TypeError( f"{cls.__name__}.upsert_list: passed objects weren't all of this class!" )
+
+        with SmartSession( session ) as sess:
+            for obj in objects:
+                myid = obj.id                 #  Make sure _id is generated
+                cols, values = obj._get_cols_and_vals_for_insert()
+                notmod = [ c for c in cols if c != 'modified' ]
+                q = ( f'INSERT INTO {cls.__tablename__}({",".join(notmod)}) VALUES (:{",:".join(notmod)}) '
+                      f'ON CONFLICT (_id) DO UPDATE SET '
+                      f'{",".join( [ f"{c}=:{c}" for c in cols if c!="id" ] )} ')
+                subdict = { c: v for c, v in zip( cols, values ) }
+                sess.execute( sa.text( q ), subdict )
+            sess.commit()
+
+            if load_defaults:
+                for obj in objects:
+                    dbobj = obj.__class__.get_by_id( obj.id, session=sess )
+                    for col in sa.inspect( obj.__class__).c:
+                        if ( ( col.name == 'modified' ) or
+                             ( ( col.server_default is not None ) and ( getattr( obj, col.name ) is None ) )
+                            ):
+                            setattr( obj, col.name, getattr( dbobj, col.name ) )
+
+
+    def _delete_from_database( self ):
+        """Remove the object from the database.  Don't call this, call delete_from_disk_and_database.
+
+        This does not remove any associated files (if this is a
+        FileOnDiskMixin) and does not remove the object from the archive.
+
+        Note that if you call this, cascading relationships in the database
+        may well delete other objects.  This shouldn't be a problem if this is
+        called from within SeeChangeBase.delete_from_disk_and_database (the
+        only place it should be called!), because that recurses itself and
+        makes sure to clean up all files and archive files before the database
+        records get deleted.
+
+        """
+
+        with SmartSession() as session:
+            session.execute( sa.text( f"DELETE FROM {self.__tablename__} WHERE _id=:id" ), { 'id': self.id } )
+            session.commit()
+
+        # Look how much easier this is when you don't have to spend a whole bunch of time
+        #  deciding if the object needs to be merged, expunged, etc. to a session
+
 
     def get_upstreams(self, session=None):
         """Get all data products that were directly used to create this object (non-recursive)."""
-        raise NotImplementedError('get_upstreams not implemented for this class')
+        raise NotImplementedError( f'get_upstreams not implemented for this {self.__class__.__name__}' )
 
     def get_downstreams(self, session=None, siblings=True):
         """Get all data products that were created directly from this object (non-recursive).
@@ -362,73 +673,10 @@ class SeeChangeBase:
         and depend on one another. E.g., a source list and psf have an image upstream and a (subtraction?) image
         as a downstream, but they are each other's siblings.
         """
-        raise NotImplementedError('get_downstreams not implemented for this class')
+        raise NotImplementedError( f'get_downstreams not implemented for {self.__class__.__name__}' )
 
-    def _delete_from_database(self, session=None, commit=True, remove_downstreams=False):
-        """Remove the object from the database -- don't call this, call delete_from_disk_and_database.
 
-        This does not remove any associated files (if this is a FileOnDiskMixin)
-        and does not remove the object from the archive.
-
-        Parameters
-        ----------
-        session: sqlalchemy session
-            The session to use for the deletion. If None, will open a new session,
-            which will also close at the end of the call.
-        commit: bool
-            Whether to commit the deletion to the database.
-            Default is True. When session=None then commit must be True,
-            otherwise the session will exit without committing
-            (in this case the function will raise a RuntimeException).
-        remove_downstreams: bool
-            If True, will also remove all downstream data products.
-            Default is False.
-        """
-        if session is None and not commit:
-            raise RuntimeError("When session=None, commit must be True!")
-
-        with SmartSession(session) as session, warnings.catch_warnings():
-            warnings.filterwarnings(
-                action='ignore',
-                message=r'.*DELETE statement on table .* expected to delete \d* row\(s\).*',
-            )
-
-            need_commit = False
-            if remove_downstreams:
-                try:
-                    downstreams = self.get_downstreams(session=session)
-                    for d in downstreams:
-                        if hasattr(d, '_delete_from_database'):
-                            if d._delete_from_database(session=session, commit=False, remove_downstreams=True):
-                                need_commit = True
-                        if isinstance(d, list) and len(d) > 0 and hasattr(d[0], 'delete_list'):
-                            d[0].delete_list(d, remove_local=False, archive=False, commit=False, session=session)
-                            need_commit = True
-                except NotImplementedError as e:
-                    pass  # if this object does not implement get_downstreams, it is ok
-
-            info = sa.inspect(self)
-
-            if info.persistent:
-                session.delete(self)
-                need_commit = True
-            elif info.pending:
-                session.expunge(self)
-                need_commit = True
-            elif info.detached:
-                obj = session.scalars(sa.select(self.__class__).where(self.__class__.id == self.id)).first()
-                if obj is not None:
-                    session.delete(obj)
-                    need_commit = True
-
-            if commit and need_commit:
-                session.commit()
-
-        return need_commit  # to be able to recursively report back if there's a need to commit
-
-    def delete_from_disk_and_database(
-            self, session=None, commit=True, remove_folders=True, remove_downstreams=False, archive=True,
-    ):
+    def delete_from_disk_and_database( self, remove_folders=True, remove_downstreams=True, archive=True ):
         """Delete any data from disk, archive and the database.
 
         Use this to clean up an entry from all locations, as relevant
@@ -442,43 +690,44 @@ class SeeChangeBase:
         and will attempt to delete from any locations regardless
         of if it existed elsewhere or not.
 
-        TODO : this is sometimes broken if you don't pass a session.
-
         Parameters
         ----------
-        session: sqlalchemy session
-            The session to use for the deletion. If None, will open a new session,
-            which will also close at the end of the call.
-        commit: bool
-            Whether to commit the deletion to the database.
-            Default is True. When session=None then commit must be True,
-            otherwise the session will exit without committing
-            (in this case the function will raise a RuntimeException).
         remove_folders: bool
             If True, will remove any folders on the path to the files
             associated to this object, if they are empty.
+
         remove_downstreams: bool
             If True, will also remove any downstream data.
             Will recursively call get_downstreams() and find any objects
             that can have their data deleted from disk, archive and database.
-            Default is False.
+            Default is True.  Setting this to False is probably a bad idea;
+            because of the database structure, some downstream objects may
+            get deleted through a cascade, but then the files on disk and
+            in the archive will be left behind.  In any event, it violates
+            database integrity to remove something and not remove everything
+            downstream of it.
+
         archive: bool
             If True, will also delete the file from the archive.
             Default is True.
 
         """
-        if session is None and not commit:
-            raise RuntimeError("When session=None, commit must be True!")
+
+        if not remove_downstreams:
+            warnings.warn( "Setting remove_downstreams to False in delete_from_disk_and_database "
+                           "is probably a bad idea; see docstring." )
 
         # Recursively remove downstreams first
 
         if remove_downstreams:
             downstreams = self.get_downstreams()
-            for d in downstreams:
-                if hasattr( d, 'delete_from_disk_and_database' ):
-                    d.delete_from_disk_and_database( session=session, commit=commit,
-                                                     remove_folders=remove_folders, archive=archive,
-                                                     remove_downstreams=True )
+            if downstreams is not None:
+                for d in downstreams:
+                    if hasattr( d, 'delete_from_disk_and_database' ):
+                        d.delete_from_disk_and_database( remove_folders=remove_folders, archive=archive,
+                                                         remove_downstreams=True )
+
+        # Remove files from archive
 
         if archive and hasattr( self, "filepath" ):
             if self.filepath is not None:
@@ -493,6 +742,7 @@ class SeeChangeBase:
             self.md5sum = None
             self.md5sum_extensions = None
 
+        # Remove data from disk
 
         if hasattr( self, "remove_data_from_disk" ):
             self.remove_data_from_disk( remove_folders=remove_folders )
@@ -501,8 +751,9 @@ class SeeChangeBase:
             self.filepath_extensions = None
             self.filepath = None
 
-        # Don't pass remove_downstreams here because we took care of downstreams above.
-        SeeChangeBase._delete_from_database( self, session=session, commit=commit, remove_downstreams=False )
+        # Finally, after everything is cleaned up, remove the database record
+
+        self._delete_from_database()
 
 
     def to_dict(self):
@@ -617,7 +868,7 @@ class SeeChangeBase:
         """
         with open(filename, 'w') as fp:
             try:
-                json.dump(self.to_dict(), fp, indent=2)
+                json.dump(self.to_dict(), fp, indent=2, cls=UUIDJsonEncoder)
             except:
                 raise
 
@@ -625,24 +876,8 @@ class SeeChangeBase:
         """Make a new instance of this object, with all column-based attributed (shallow) copied. """
         new = self.__class__()
         for key in sa.inspect(self).mapper.columns.keys():
-            # HACK ALERT
-            # I was getting a sqlalchemy.orm.exc.DetachedInstanceError
-            #   trying to copy a zeropoint deep inside alignment, and it
-            #   was on the line value = getattr(self, key) trying to load
-            #   the "modified" colum.  Rather than trying to figure out WTF
-            #   is going on with SQLAlchmey *this* time, I just decided that
-            #   when we copy an object, we don't copy the modified field,
-            #   so that I could move on with life.
-            # (This isn't necessarily terrible; one could make the argument
-            #   that the modified field of the new object *should* be now(),
-            #   which is the default.  The real worry is that it's yet another
-            #   mysterious SQLAlchemy thing, which just happened to be this field
-            #   this time around.  As long as we're tied to the albatross that is
-            #   SQLAlchemy, these kinds of things are going to keep happening.)
-            if key != 'modified':
-                value = getattr(self, key)
-                setattr(new, key, value)
-
+            value = getattr( self, key )
+            setattr( new, key, value )
         return new
 
 
@@ -660,37 +895,6 @@ def get_archive_object():
         if archive_specs is not None:
             ARCHIVE = Archive(**archive_specs)
     return ARCHIVE
-
-def merge_concurrent( obj, session=None, commit=True ):
-    """Merge a database object but make sure it doesn't exist before adding it to the database.
-
-    When multiple processes are running at the same time, and they might
-    create the same objects (which usually happens with provenances),
-    there can be a race condition inside sqlalchemy that leads to a
-    merge failure because of a duplicate primary key violation.  Here,
-    try the merge repeatedly until it works, sleeping an increasing
-    amount of time; if we wait to long, fail for real.
-
-    """
-    output = None
-    with SmartSession(session) as session:
-        for i in range(5):
-            try:
-                output = session.merge(obj)
-                if commit:
-                    session.commit()
-                break
-            except ( IntegrityError, UniqueViolation ) as e:
-                if 'violates unique constraint' in str(e):
-                    session.rollback()
-                    SCLogger.debug( f"Merge failed, sleeping {0.1 * 2**i} seconds before retrying" )
-                    time.sleep(0.1 * 2 ** i)  # exponential sleep
-                else:
-                    raise e
-        else:  # if we didn't break out of the loop, there must have been some integrity error
-            raise e
-
-    return output
 
 
 class FileOnDiskMixin:
@@ -765,6 +969,26 @@ class FileOnDiskMixin:
     """
     local_path = None
     temp_path = None
+
+    # ref: https://docs.sqlalchemy.org/en/20/orm/declarative_mixins.html#creating-indexes-with-mixins
+    # ...but I have not succeded in finding a way for it to work with multiple mixins and having
+    # cls.__tablename__ be the subclass tablename, not the mixin tablename.  So, for now, the solution
+    # is the manual stuff below
+    # @declared_attr
+    # def __table_args__( cls ):
+    #     return (
+    #         CheckConstraint(
+    #             sqltext='NOT(md5sum IS NULL AND '
+    #                     '(md5sum_extensions IS NULL OR array_position(md5sum_extensions, NULL) IS NOT NULL))',
+    #             name=f'{cls.__tablename__}_md5sum_check'
+    #         ),
+    #     )
+
+    # Subclasses of this class must include the following in __table_args__:
+    #   CheckConstraint( sqltext='NOT(md5sum IS NULL AND '
+    #                    '(md5sum_extensions IS NULL OR array_position(md5sum_extensions, NULL) IS NOT NULL))',
+    #                    name=f'{cls.__tablename__}_md5sum_check' )
+
 
     @classmethod
     def configure_paths(cls):
@@ -844,31 +1068,20 @@ class FileOnDiskMixin:
     md5sum = sa.Column(
         sqlUUID(as_uuid=True),
         nullable=True,
-        default=None,
+        server_default=None,
         doc="md5sum of the file, provided by the archive server"
     )
 
     md5sum_extensions = sa.Column(
         ARRAY(sqlUUID(as_uuid=True), zero_indexes=True),
         nullable=True,
-        default=None,
+        server_default=None,
         doc="md5sum of extension files; must have same number of elements as filepath_extensions"
     )
 
-    # ref: https://docs.sqlalchemy.org/en/20/orm/declarative_mixins.html#creating-indexes-with-mixins
-    @declared_attr
-    def __table_args__(cls):
-        return (
-            CheckConstraint(
-                sqltext='NOT(md5sum IS NULL AND '
-                        '(md5sum_extensions IS NULL OR array_position(md5sum_extensions, NULL) IS NOT NULL))',
-                name=f'{cls.__tablename__}_md5sum_check'
-            ),
-        )
-
     def __init__(self, *args, **kwargs):
-        """
-        Initialize an object that is associated with a file on disk.
+        """Initialize an object that is associated with a file on disk.
+
         If giving a single unnamed argument, will assume that is the filepath.
         Note that the filepath should not include the global data path,
         but only a path relative to that. # TODO: remove the global path if filepath starts with it?
@@ -877,6 +1090,7 @@ class FileOnDiskMixin:
         ----------
         args: list
             List of arguments, should only contain one string as the filepath.
+
         kwargs: dict
             Dictionary of keyword arguments.
             These include:
@@ -960,9 +1174,8 @@ class FileOnDiskMixin:
         return filepath
 
     def get_fullpath(self, download=True, as_list=False, nofile=None, always_verify_md5=False):
-        """
-        Get the full path of the file, or list of full paths
-        of files if filepath_extensions is not None.
+        """Get the full path of the file, or list of full paths of files if filepath_extensions is not None.
+
         If the archive is defined, and download=True (default),
         the file will be downloaded from the server if missing.
         If the file is not found on server or locally, will
@@ -1094,8 +1307,11 @@ class FileOnDiskMixin:
 
         return fullname
 
+
     def save(self, data, extension=None, overwrite=True, exists_ok=True, verify_md5=True, no_archive=False ):
         """Save a file to disk, and to the archive.
+
+        Does not write anything to the database.  (At least, it's not supposed to....)
 
         Parameters
         ---------
@@ -1410,18 +1626,96 @@ def safe_mkdir(path):
     FileOnDiskMixin.safe_mkdir(path)
 
 
-class AutoIDMixin:
-    id = sa.Column(
-        sa.BigInteger,
+class UUIDMixin:
+    # We use UUIDs rather than auto-incrementing SQL sequences for
+    # unique object primary keys so that we can generate unique ids
+    # without having to contact the database.  This allows us, for
+    # example, to build up a collection of objects including foreign
+    # keys to each other, and save them to the database at the end.
+    # With auto-generating primary keys, we wouldn't be able to set the
+    # foreign keys until we'd saved the referenced object to the
+    # databse, so that its id was generated.  (SQLAlchemy gets around
+    # this with object relationships, but object relationships in SA
+    # caused us so many headaches that we stopped using them.)  It also
+    # allows us to do things like cache objects that we later load into
+    # the database, without worrying that the cached object's id (and
+    # references amongst multiple cached objects) will be inconsistent
+    # with the state of the database counters.
+
+    # Note that even though the default is uuid.uuid4(), this is set by SQLAlchemy
+    #   when the object is saved to the database, not when the object is created.
+    #   It will be None when a new object is created if not explicitly set.
+    #   (In practice, often this id will get set by our code when we access the
+    #   id property of a created object before it's saved to the datbase, or it will
+    #   be set in our insert/upsert methods, as we only very rarely let SQLAlchemy
+    #   itself actually save anything to the database.)
+    _id = sa.Column(
+        sqlUUID,
         primary_key=True,
         index=True,
-        autoincrement=True,
-        doc="Autoincrementing unique identifier for this dataset",
+        default=uuid.uuid4,            # This is the one exception to always using server_default
+        doc="Unique identifier for this row",
     )
+
+    @property
+    def id( self ):
+        """If the id is None, make one."""
+
+        if self._id is None:
+            self._id=uuid.uuid4()
+        return self._id
+
+    @id.setter
+    def id( self, val ):
+        self._id = asUUID( val )
+
+    @classmethod
+    def get_by_id( cls, uuid, session=None ):
+        """Get an object of the current class that matches the given uuid.
+
+        Returns None if not found.
+        """
+        with SmartSession( session ) as sess:
+            return sess.query( cls ).filter( cls._id==uuid ).first()
+
+    @classmethod
+    def get_batch_by_ids( cls, uuids, session=None, return_dict=False ):
+        """Get objects whose ids are in the list uuids.
+
+        Parameters
+        ----------
+          uuids: list of UUID
+            The object IDs whose corresponding objects you want.
+
+          session: SQLAlchmey session or None
+
+          return_dict: bool, default False
+            If False, just return a list of objects.  If True, return a
+            dict of { id: object }.
+
+        """
+
+        with SmartSession( session ) as sess:
+            objs = sess.query( cls ).filter( cls._id.in_( uuids ) ).all()
+        return { o.id: o for o in objs } if return_dict else objs
+
 
 
 class SpatiallyIndexed:
     """A mixin for tables that have ra and dec fields indexed via q3c."""
+
+    # Subclasses of this class must include the following in __table_args__:
+    #   sa.Index(f"{cls.__tablename__}_q3c_ang2ipix_idx", sa.func.q3c_ang2ipix(cls.ra, cls.dec))
+
+    # @declared_attr
+    # def __table_args__( cls ):
+    #     # ...this doesn't seem to work the way I want.  What I want is for subclasses to
+    #     # inherit and run all the __table_args__ from all of their superclasses, but
+    #     # in practice it doesn't seem to really work that way.  So, we fall back to
+    #     # the manual solution in the comment above.
+    #     return (
+    #         sa.Index(f"{cls.__tablename__}_q3c_ang2ipix_idx", sa.func.q3c_ang2ipix(cls.ra, cls.dec)),
+    #     )
 
     ra = sa.Column(sa.Double, nullable=False, doc='Right ascension in degrees')
 
@@ -1434,13 +1728,6 @@ class SpatiallyIndexed:
     ecllat = sa.Column(sa.Double, index=True, doc="Ecliptic latitude of the target. ")
 
     ecllon = sa.Column(sa.Double, index=False, doc="Ecliptic longitude of the target. ")
-
-    @declared_attr
-    def __table_args__(cls):
-        tn = cls.__tablename__
-        return (
-            sa.Index(f"{tn}_q3c_ang2ipix_idx", sa.func.q3c_ang2ipix(cls.ra, cls.dec)),
-        )
 
     def calculate_coordinates(self):
         """Fill self.gallat, self.gallon, self.ecllat, and self.ecllong based on self.ra and self.dec."""
@@ -1522,11 +1809,16 @@ class SpatiallyIndexed:
 class FourCorners:
     """A mixin for tables that have four RA/Dec corners"""
 
-    ra_corner_00 = sa.Column( sa.REAL, nullable=False, index=True, doc="RA of the low-RA, low-Dec corner (degrees)" )
-    ra_corner_01 = sa.Column( sa.REAL, nullable=False, index=True, doc="RA of the low-RA, high-Dec corner (degrees)" )
-    ra_corner_10 = sa.Column( sa.REAL, nullable=False, index=True, doc="RA of the high-RA, low-Dec corner (degrees)" )
-    ra_corner_11 = sa.Column( sa.REAL, nullable=False, index=True, doc="RA of the high-RA, high-Dec corner (degrees)" )
-    dec_corner_00 = sa.Column( sa.REAL, nullable=False, index=True, doc="Dec of the low-RA, low-Dec corner (degrees)" )
+    ra_corner_00 = sa.Column( sa.REAL, nullable=False, index=True,
+                              doc="RA of the low-RA, low-Dec corner (degrees)" )
+    ra_corner_01 = sa.Column( sa.REAL, nullable=False, index=True,
+                              doc="RA of the low-RA, high-Dec corner (degrees)" )
+    ra_corner_10 = sa.Column( sa.REAL, nullable=False, index=True,
+                              doc="RA of the high-RA, low-Dec corner (degrees)" )
+    ra_corner_11 = sa.Column( sa.REAL, nullable=False, index=True,
+                              doc="RA of the high-RA, high-Dec corner (degrees)" )
+    dec_corner_00 = sa.Column( sa.REAL, nullable=False, index=True,
+                               doc="Dec of the low-RA, low-Dec corner (degrees)" )
     dec_corner_01 = sa.Column( sa.REAL, nullable=False, index=True,
                                doc="Dec of the low-RA, high-Dec corner (degrees)" )
     dec_corner_10 = sa.Column( sa.REAL, nullable=False, index=True,
@@ -1595,46 +1887,6 @@ class FourCorners:
         return ( [  ras[dex00],  ras[dex01],  ras[dex10],  ras[dex11] ],
                  [ decs[dex00], decs[dex01], decs[dex10], decs[dex11] ] )
 
-    @hybrid_method
-    def containing( self, ra, dec ):
-        """An SQLAlchemy filter for objects that might contain a given ra/dec.
-
-        This will be reliable for objects (i.e. images, or whatever else
-        has four corners) that are square to the sky (assuming that the
-        ra* and dec* fields are correct).  However, if the object is at
-        an angle, it will return objects that have the given ra, dec in
-        the rectangle on the sky oriented along ra/dec lines that fully
-        contains the four corners of the image.
-
-        Parameters
-        ----------
-           ra, dec: float
-              Position to search (decimal degrees).
-
-        Returns
-        -------
-           An expression usable in a sqlalchemy filter
-
-        """
-
-        # This query will go through every row of the table it's
-        # searching, because q3c uses the index on the first two
-        # arguments, not on the array argument.
-
-        # It could probably be made faster by making a first pass doing:
-        #   greatest( ra** ) >= ra AND least( ra** ) <= ra AND
-        #   greatest( dec** ) >= dec AND least( dec** ) <= dec
-        # with indexes in ra** and dec**.  Put the results of that into
-        # a temp table, and then do the polygon search on that temp table.
-        #
-        # I have no clue how to implement that simply here as as an
-        # SQLAlchemy filter.  So, there is the find_containing() class
-        # method below.
-
-        return func.q3c_poly_query( ra, dec, sqlarray( [ self.ra_corner_00, self.dec_corner_00,
-                                                         self.ra_corner_01, self.dec_corner_01,
-                                                         self.ra_corner_11, self.dec_corner_11,
-                                                         self.ra_corner_10, self.dec_corner_10 ] ) )
 
     @classmethod
     def find_containing_siobj( cls, siobj, session=None ):
@@ -1688,7 +1940,7 @@ class FourCorners:
         while ( ra < 0 ): ra += 360.
         while ( ra >= 360.): ra -= 360.
 
-        query = ( "SELECT i.id, i.ra_corner_00, i.ra_corner_01, i.ra_corner_10, i.ra_corner_11, "
+        query = ( "SELECT i._id, i.ra_corner_00, i.ra_corner_01, i.ra_corner_10, i.ra_corner_11, "
                   "       i.dec_corner_00, i.dec_corner_01, i.dec_corner_10, i.dec_corner_11 "
                   "INTO TEMP TABLE temp_find_containing "
                   f"FROM {cls.__tablename__} i "
@@ -1724,16 +1976,27 @@ class FourCorners:
 
         Returns
         -------
-          An sql query result thingy
+          A list of objects of cls.
 
         """
         # This should protect against SQL injection
+        ra = float(ra) if isinstance(ra, int) else ra
+        dec = float(dec) if isinstance(dec, int) else dec
         if ( not isinstance( ra, float ) ) or ( not isinstance( dec, float ) ):
-            return TypeError( f"(ra,dec) must be floats, got ({type(ra)},{type(dec)})" )
+            raise TypeError( f"(ra,dec) must be floats, got ({type(ra)},{type(dec)})" )
+
+        # Becaue q3c_poly_query uses an index on ra, dec, just using
+        # that directly wouldn't use any index here, meaning every row
+        # of the table would have to be scanned and passed through the
+        # polygon check.  To make the query faster, we first call
+        # _find_possibly_containing_temptable that does a
+        # square-to-the-sky search using minra, maxra, mindec, maxdec
+        # (which *are* indexed) to greatly reduce the number of things
+        # we'll q3c_poly_query.
 
         with SmartSession( session ) as sess:
             cls._find_possibly_containing_temptable( ra, dec, session, prov_id=prov_id )
-            query = sa.text( f"SELECT i.id FROM temp_find_containing i "
+            query = sa.text( f"SELECT i._id FROM temp_find_containing i "
                              f"WHERE q3c_poly_query( {ra}, {dec}, ARRAY[ i.ra_corner_00, i.dec_corner_00, "
                              f"                                          i.ra_corner_01, i.dec_corner_01, "
                              f"                                          i.ra_corner_11, i.dec_corner_11, "
@@ -1775,7 +2038,7 @@ class FourCorners:
         # TODO : speed tests once we have a big enough database for that
         # to matter to see how much this hurts us.
 
-        query = ( "SELECT i.id, i.ra_corner_00, i.ra_corner_01, i.ra_corner_10, i.ra_corner_11, "
+        query = ( "SELECT i._id, i.ra_corner_00, i.ra_corner_01, i.ra_corner_10, i.ra_corner_11, "
                   "       i.dec_corner_00, i.dec_corner_01, i.dec_corner_10, i.dec_corner_11 "
                   "INTO TEMP TABLE temp_find_overlapping "
                   f"FROM {cls.__tablename__} i "
@@ -1846,7 +2109,7 @@ class FourCorners:
         with SmartSession( session ) as sess:
             cls._find_potential_overlapping_temptable( fcobj, sess, prov_id=prov_id )
             objs = sess.scalars( sa.select( cls )
-                                 .from_statement( sa.text( "SELECT id FROM temp_find_overlapping" ) )
+                                 .from_statement( sa.text( "SELECT _id FROM temp_find_overlapping" ) )
                                 ).all()
             sess.execute( sa.text( "DROP TABLE temp_find_overlapping" ) )
             return objs
@@ -1920,7 +2183,7 @@ class HasBitFlagBadness:
     _bitflag = sa.Column(
         sa.BIGINT,
         nullable=False,
-        default=0,
+        server_default=sa.sql.elements.TextClause( '0' ),
         index=True,
         doc='Bitflag for this object. Good objects have a bitflag of 0. '
             'Bad objects are each bad in their own way (i.e., have different bits set). '
@@ -1934,7 +2197,7 @@ class HasBitFlagBadness:
             return sa.Column(
                 sa.BIGINT,
                 nullable=False,
-                default=0,
+                server_default=sa.sql.elements.TextClause( '0' ),
                 index=True,
                 doc='Bitflag of objects used to generate this object. '
             )
@@ -1956,37 +2219,116 @@ class HasBitFlagBadness:
 
     @bitflag.inplace.setter
     def bitflag(self, value):
-        allowed_bits = 0
-        for i in self._get_inverse_badness().values():
-            allowed_bits += 2 ** i
-        if value & ~allowed_bits != 0:
-            raise ValueError(f'Bitflag value {bin(value)} has bits set that are not allowed.')
-        self._bitflag = value
+        raise RuntimeError( "Don't use this, use set_badness" )
+        # allowed_bits = 0
+        # for i in self._get_inverse_badness().values():
+        #     allowed_bits += 2 ** i
+        # if value & ~allowed_bits != 0:
+        #     raise ValueError(f'Bitflag value {bin(value)} has bits set that are not allowed.')
+        # self._bitflag = value
+
+    @property
+    def own_bitflag( self ):
+        return self._bitflag
+
+    @own_bitflag.setter
+    def own_bitflag( self, val ):
+        raise RuntimeError( "Don't use this ,use set_badness" )
+
+    @property
+    def own_badness( self ):
+        """A comma separated string of keywords describing why this data is bad.
+
+        Does not include badness inherited from upstream objects; use badness
+        for that.
+
+        """
+        return bitflag_to_string( self._bitflag, data_badness_dict )
+
+    @own_badness.setter
+    def own_badness( self, value ):
+        raise RuntimeError( "Don't use this, use set_badness()" )
 
     @property
     def badness(self):
+        """A comma separated string of keywords describing why this data is bad, including upstreams.
+
+        Based on the bitflag.  This includes all the reasons this data is bad,
+        including the parent data models that were used to create this data
+        (e.g., the Exposure underlying the Image).
+
         """
-        A comma separated string of keywords describing
-        why this data is not good, based on the bitflag.
-        This includes all the reasons this data is bad,
-        including the parent data models that were used
-        to create this data (e.g., the Exposure underlying
-        the Image).
-        """
-        return bitflag_to_string(self.bitflag, data_badness_dict)
+        return bitflag_to_string (self.bitflag, data_badness_dict )
 
     @badness.setter
-    def badness(self, value):
-        """Set the badness for this image using a comma separated string. """
-        self.bitflag = string_to_bitflag(value, self._get_inverse_badness())
+    def badness( self, value ):
+        raise RuntimeError( "Don't set badness, use set_badness." )
 
-    def append_badness(self, value):
-        """Add some keywords (in a comma separated string)
-        describing what is bad about this image.
-        The keywords will be added to the list "badness"
-        and the bitflag for this image will be updated accordingly.
+    def _set_bitflag( self, value=None, commit=True ):
+        """Set the objects bitflag to the integer value.
+
+        See set_badness
+
         """
-        self.bitflag |= string_to_bitflag(value, self._get_inverse_badness())
+        if value is not None:
+            self._bitflag = value
+        if commit and ( self.id is not None ):
+            with SmartSession() as sess:
+                sess.execute( sa.text( f"UPDATE {self.__tablename__} SET _bitflag=:bad WHERE _id=:id" ),
+                              { "bad": self._bitflag, "id": self.id } )
+                sess.commit()
+
+    def set_badness( self, value=None, commit=True ):
+        """Set the badness for this image using a comma separated string.
+
+        In general, you should *not* set the bits that are bad only because an
+        upstream is bad, but just the ones that are bade specifically from
+        this image.
+
+        DEVELOPER NOTE: any object that inherits from HasBitFlagBadness must
+        have an id property.  This will be the case for objects that inherit
+        from UUIDMixin, as most of ours do.
+
+        Parameters
+        ----------
+          value: str or None
+            If str, a comma-separated string indicating the badnesses to set.
+            If None, it means save this object's own bitflag as is to the
+            database.  It doesn't make sense to use value=None and
+            commit=False.
+
+          commit: bool, default True
+            If True, and the object is already in the database, will save the
+            bitflag changes to the database.  If False, then it's the
+            responsibility of the calling function to make sure they get saved
+            if necessary.  (That can be accomplished with a subsequent call to
+            obj.set_badness( None, commit=True ).)
+
+            (If the object isn't already in the database, then nothing gets
+            saved.  However, in that case, when the object is later saved, it
+            will get saved with its value of _bitflag then, so things will all
+            work out in the end.)
+
+        """
+
+        if value is not None:
+            value = string_to_bitflag( value, self._get_inverse_badness() )
+        self._set_bitflag( value, commit=commit )
+
+
+    def append_badness( self, value, commit=True ):
+        """Add badness (comma-separated string of keywords) to the object.
+
+        Parameters
+        ----------
+          value: str
+
+          commit: bool, default True
+            If false, won't commit to the database.  (See set_badness.)
+
+        """
+
+        self._set_bitflag( self._bitflag | string_to_bitflag( value, self._get_inverse_badness() ), commit=commit )
 
     description = sa.Column(
         sa.Text,
@@ -1998,12 +2340,13 @@ class HasBitFlagBadness:
         self._bitflag = 0
         self._upstream_bitflag = 0
 
-    def update_downstream_badness(self, session=None, commit=True, siblings=True):
+    def update_downstream_badness(self, session=None, commit=True, siblings=True, objbank=None):
         """Send a recursive command to update all downstream objects that have bitflags.
 
-        Since this function is called recursively, it always updates the current
-        object's _upstream_bitflag to reflect the state of this object's upstreams,
-        before calling the same function on all downstream objects.
+        Since this function is called recursively, it always updates the
+        current object's _upstream_bitflag to reflect the state of this
+        object's immediate upstreams, before calling the same function on all
+        downstream objects.
 
         Note that this function will session.merge() this object and all its
         recursive downstreams (to update the changes in bitflag) and will
@@ -2018,29 +2361,67 @@ class HasBitFlagBadness:
             The session to use for the update. If None, will open a new session,
             which will also close at the end of the call. In that case, must
             provide a commit=True to commit the changes.
+
         commit: bool (default True)
             Whether to commit the changes to the database.
+
         siblings: bool (default True)
             Whether to also update the siblings of this object.
             Default is True. This is usually what you want, but
             anytime this function calls itself, it uses siblings=False,
             to avoid infinite recursion.
+
+        objbank: dict
+            Don't pass this, it's only used internally.
+
         """
-        # make sure this object is current:
+
+        if objbank is None:
+            objbank = {}
+
         with SmartSession(session) as session:
-            merged_self = session.merge(self)
+            # Before the database refactor, this was done with
+            # SQLAlchemy, and worked.  Afterwards, even though in this
+            # one place I tried to keep them all in one session, it
+            # didn't work.  What was happening was that when an object,
+            # merged into the session, was changed here, that same
+            # object (i.e. same memory location) was *not* being pulled
+            # out from the queries in image.get_upstreams(), even though
+            # session was passed on to get_upstreams().  So, things
+            # weren't propagating right.  Something about session
+            # querying and merging wasn't working right.  (WHAT?
+            # Confusion with SQLAlchemy merging?  Never!)
+            #
+            # So, rather than fully trusting the mysteriousness of
+            # sqlalchemy sessions, use an object bank that we pass
+            # recursively, to make sure that every time we want to refer
+            # an object of a given id, we refer to the same object in
+            # memory.  That way, we can be sure that changes we make
+            # during the recursion will stick.  (We're still trusting SA
+            # that when we commit, because we merged all of those
+            # objects, the changes to them will get sent in to the
+            # databse.  Fingers crossed.  merge is always scary.)
+
+            if self.id not in objbank.keys():
+                merged_self = session.merge(self)
+                objbank[ merged_self.id ] = merged_self
+            merged_self = objbank[ self.id ]
+
             new_bitflag = 0  # start from scratch, in case some upstreams have lost badness
-            for upstream in merged_self.get_upstreams(session):
+            for upstream in merged_self.get_upstreams( session=session ):
+                if upstream.id in objbank.keys():
+                    upstream = objbank[ upstream.id ]
                 if hasattr(upstream, '_bitflag'):
                     new_bitflag |= upstream.bitflag
 
             if hasattr(merged_self, '_upstream_bitflag'):
                 merged_self._upstream_bitflag = new_bitflag
+                self._upstream_bitflag = merged_self._upstream_bitflag
 
             # recursively do this for all downstream objects
             for downstream in merged_self.get_downstreams(session=session, siblings=siblings):
                 if hasattr(downstream, 'update_downstream_badness') and callable(downstream.update_downstream_badness):
-                    downstream.update_downstream_badness(session=session, siblings=False, commit=False)
+                    downstream.update_downstream_badness(session=session, siblings=False, commit=False, objbank=objbank)
 
             if commit:
                 session.commit()

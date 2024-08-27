@@ -4,7 +4,7 @@ import sqlalchemy as sa
 from sqlalchemy import orm
 from sqlalchemy.dialects.postgresql import JSONB
 
-from models.base import Base, SeeChangeBase, AutoIDMixin, SmartSession
+from models.base import Base, SeeChangeBase, UUIDMixin, SmartSession
 from models.enums_and_bitflags import (
     bitflag_to_string,
     string_to_bitflag,
@@ -16,7 +16,7 @@ from models.enums_and_bitflags import (
 
 from util.logger import SCLogger
 
-class Report(Base, AutoIDMixin):
+class Report(Base, UUIDMixin):
     """A report on the status of analysis of one section from an Exposure.
 
     The report's main role is to keep a database record of when we started
@@ -26,19 +26,11 @@ class Report(Base, AutoIDMixin):
     __tablename__ = 'reports'
 
     exposure_id = sa.Column(
-        sa.ForeignKey('exposures.id', ondelete='CASCADE', name='reports_exposure_id_fkey'),
+        sa.ForeignKey('exposures._id', ondelete='CASCADE', name='reports_exposure_id_fkey'),
         nullable=False,
         index=True,
         doc=(
             "ID of the exposure for which the report was made. "
-        )
-    )
-
-    exposure = orm.relationship(
-        'Exposure',
-        cascade='save-update, merge, refresh-expire, expunge',
-        doc=(
-            "Exposure for which the report was made. "
         )
     )
 
@@ -75,7 +67,7 @@ class Report(Base, AutoIDMixin):
         sa.Boolean,
         nullable=False,
         index=True,
-        default=False,
+        server_default='false',
         doc=(
             "Whether the processing of this section was successful. "
         )
@@ -84,7 +76,7 @@ class Report(Base, AutoIDMixin):
     num_prev_reports = sa.Column(
         sa.Integer,
         nullable=False,
-        default=0,
+        server_default=sa.sql.elements.TextClause( '0' ),
         doc=(
             "Number of previous reports for this exposure, section, and provenance. "
         )
@@ -150,7 +142,7 @@ class Report(Base, AutoIDMixin):
     process_memory = sa.Column(
         JSONB,
         nullable=False,
-        default={},
+        server_default='{}',
         doc='Memory usage of the process during processing. '
             'Each key in the dictionary is for a processing step, '
             'and the value is the memory usage in megabytes. '
@@ -159,7 +151,7 @@ class Report(Base, AutoIDMixin):
     process_runtime = sa.Column(
         JSONB,
         nullable=False,
-        default={},
+        server_default='{}',
         doc='Runtime of the process during processing. '
             'Each key in the dictionary is for a processing step, '
             'and the value is the runtime in seconds. '
@@ -168,7 +160,7 @@ class Report(Base, AutoIDMixin):
     progress_steps_bitflag = sa.Column(
         sa.BIGINT,
         nullable=False,
-        default=0,
+        server_default=sa.sql.elements.TextClause( '0' ),
         index=True,
         doc='Bitflag recording what processing steps have already been applied to this section. '
     )
@@ -194,7 +186,7 @@ class Report(Base, AutoIDMixin):
     products_exist_bitflag = sa.Column(
         sa.BIGINT,
         nullable=False,
-        default=0,
+        server_default=sa.sql.elements.TextClause( '0' ),
         index=True,
         doc='Bitflag recording which pipeline products were not None when the pipeline finished. '
     )
@@ -222,7 +214,7 @@ class Report(Base, AutoIDMixin):
     products_committed_bitflag = sa.Column(
         sa.BIGINT,
         nullable=False,
-        default=0,
+        server_default=sa.sql.elements.TextClause( '0' ),
         index=True,
         doc='Bitflag recording which pipeline products were not None when the pipeline finished. '
     )
@@ -248,24 +240,11 @@ class Report(Base, AutoIDMixin):
         self.products_committed_bitflag |= string_to_bitflag(value, pipeline_products_inverse)
 
     provenance_id = sa.Column(
-        sa.ForeignKey('provenances.id', ondelete="CASCADE", name='images_provenance_id_fkey'),
+        sa.ForeignKey('provenances._id', ondelete="CASCADE", name='images_provenance_id_fkey'),
         nullable=False,
         index=True,
         doc=(
             "ID of the provenance of this report. "
-            "The provenance has upstreams that point to the "
-            "measurements and R/B score objects that themselves "
-            "point back to all the other provenances that were "
-            "used to produce this report. "
-        )
-    )
-
-    provenance = orm.relationship(
-        'Provenance',
-        cascade='save-update, merge, refresh-expire, expunge',
-        lazy='selectin',
-        doc=(
-            "The provenance of this report. "
             "The provenance has upstreams that point to the "
             "measurements and R/B score objects that themselves "
             "point back to all the other provenances that were "
@@ -292,7 +271,7 @@ class Report(Base, AutoIDMixin):
     def init_on_load(self):
         SeeChangeBase.init_on_load(self)
 
-    def scan_datastore(self, ds, process_step=None, session=None):
+    def scan_datastore( self, ds, process_step=None ):
         """Go over all the data in a datastore and update the report accordingly.
         Will commit the Report object to the database.
         If there are any exceptions pending on the datastore it will re-raise them.
@@ -315,9 +294,6 @@ class Report(Base, AutoIDMixin):
             If not given, will open a session and close it at the end
             of the function.
 
-            NOTE: it may be better not to provide the external session
-            to this function. That way it will only commit this report,
-            and not also save other objects that were pending on the session.
         """
         t0 = time.perf_counter()
         if 'reporting' not in self.process_runtime:
@@ -325,14 +301,14 @@ class Report(Base, AutoIDMixin):
 
         # parse the error, if it exists, so we can get to other data products without raising
         exception = ds.read_exception()
-        
+
         # check which objects exist on the datastore, and which have been committed
         for prod in pipeline_products_dict.values():
             if getattr(ds, prod) is not None:
                 self.append_products_exist(prod)
-        
+
         self.products_committed = ds.products_committed
-        
+
         # store the runtime and memory usage statistics
         self.process_runtime.update(ds.runtimes)  # update with new dictionary
         self.process_memory.update(ds.memory_usages)  # update with new dictionary
@@ -355,21 +331,13 @@ class Report(Base, AutoIDMixin):
                 self.error_message = str(exception)
                 self.error_step = process_step
 
-        with SmartSession(session) as session:
-            new_report = self.commit_to_database(session=session)
+        self.upsert()
 
         self.process_runtime['reporting'] += time.perf_counter() - t0
 
         if exception is not None:
             raise exception
 
-        return new_report
-
-    def commit_to_database(self, session):
-        """Commit this report to the database. """
-        new_report = session.merge(self)
-        session.commit()
-        return new_report
 
     @staticmethod
     def read_warnings(process_step, warnings_list):
@@ -383,3 +351,15 @@ class Report(Base, AutoIDMixin):
         warnings_list.clear()  # remove all the warnings but keep the list object
 
         return ', '.join(formatted_warnings)
+
+    # ======================================================================
+    # The fields below are things that we've deprecated; these definitions
+    #   are here to catch cases in the code where they're still used
+
+    @property
+    def exposure( self ):
+        raise RuntimeError( f"Don't use Report.exposure, use exposure_id" )
+
+    @exposure.setter
+    def exposure( self, val ):
+        raise RuntimeError( f"Don't use Report.exposure, use exposure_id" )

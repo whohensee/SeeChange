@@ -3,9 +3,9 @@ import numpy as np
 
 import sqlalchemy as sa
 from sqlalchemy import orm
+from sqlalchemy.ext.declarative import declared_attr
 from sqlalchemy.ext.hybrid import hybrid_property
-from sqlalchemy.schema import UniqueConstraint
-from sqlalchemy.ext.associationproxy import association_proxy
+from sqlalchemy.schema import UniqueConstraint, CheckConstraint
 
 import h5py
 
@@ -15,7 +15,7 @@ from models.base import (
     SmartSession,
     Base,
     SeeChangeBase,
-    AutoIDMixin,
+    UUIDMixin,
     FileOnDiskMixin,
     HasBitFlagBadness,
 )
@@ -43,21 +43,24 @@ class Co_Dict(dict):
         return super().__getitem__(key)
 
 
-class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
+class Cutouts(Base, UUIDMixin, FileOnDiskMixin, HasBitFlagBadness):
 
     __tablename__ = 'cutouts'
 
     # a unique constraint on the provenance and the source list
-    __table_args__ = (
-        UniqueConstraint(
-            'sources_id', 'provenance_id', name='_cutouts_sources_provenance_uc'
-        ),
-    )
+    @declared_attr
+    def __table_args__(cls):
+        return (
+            CheckConstraint( sqltext='NOT(md5sum IS NULL AND '
+                             '(md5sum_extensions IS NULL OR array_position(md5sum_extensions, NULL) IS NOT NULL))',
+                             name=f'{cls.__tablename__}_md5sum_check' ),
+            UniqueConstraint('sources_id', 'provenance_id', name='_cutouts_sources_provenance_uc')
+        )
 
     _format = sa.Column(
         sa.SMALLINT,
         nullable=False,
-        default=CutoutsFormatConverter.convert('hdf5'),
+        server_default=sa.sql.elements.TextClause( str(CutoutsFormatConverter.convert('hdf5')) ),
         doc="Format of the file on disk. Should be fits, hdf5, csv or npy. "
             "Saved as integer but is converted to string when loaded. "
     )
@@ -76,25 +79,14 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
         self._format = CutoutsFormatConverter.convert(value)
 
     sources_id = sa.Column(
-        sa.ForeignKey('source_lists.id', name='cutouts_source_list_id_fkey', ondelete="CASCADE"),
+        sa.ForeignKey('source_lists._id', name='cutouts_source_list_id_fkey', ondelete="CASCADE"),
         nullable=False,
         index=True,
         doc="ID of the source list (of detections in the difference image) this cutouts object is associated with. "
     )
 
-    sources = orm.relationship(
-        SourceList,
-        cascade='save-update, merge, refresh-expire, expunge',
-        passive_deletes=True,
-        lazy='selectin',
-        doc="The source list (of detections in the difference image) this cutouts object is associated with. "
-    )
-
-    sub_image_id = association_proxy('sources', 'image_id')
-    sub_image = association_proxy('sources', 'image')
-
     provenance_id = sa.Column(
-        sa.ForeignKey('provenances.id', ondelete="CASCADE", name='cutouts_provenance_id_fkey'),
+        sa.ForeignKey('provenances._id', ondelete="CASCADE", name='cutouts_provenance_id_fkey'),
         nullable=False,
         index=True,
         doc=(
@@ -103,27 +95,6 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
             "and the parameters used to produce this cutout. "
         )
     )
-
-    provenance = orm.relationship(
-        'Provenance',
-        cascade='save-update, merge, refresh-expire, expunge',
-        lazy='selectin',
-        doc=(
-            "Provenance of this cutout. "
-            "The provenance will contain a record of the code version"
-            "and the parameters used to produce this cutout. "
-        )
-    )
-
-    @property
-    def new_image(self):
-        """Get the aligned new image using the sub_image. """
-        return self.sub_image.new_aligned_image
-
-    @property
-    def ref_image(self):
-        """Get the aligned reference image using the sub_image. """
-        return self.sub_image.ref_aligned_image
 
     def __init__(self, *args, **kwargs):
         FileOnDiskMixin.__init__(self, *args, **kwargs)
@@ -185,8 +156,7 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
     def __repr__(self):
         return (
             f"<Cutouts {self.id} "
-            f"from SourceList {self.sources_id} "
-            f"from Image {self.sub_image_id} "
+            f"from SourceList {self.sources_id}>"
         )
 
     @staticmethod
@@ -201,7 +171,7 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
 
         return names
 
-    def load_all_co_data(self):
+    def load_all_co_data( self, sources=None ):
         """Intended method for a Cutouts object to ensure that the data for all
         sources is loaded into its co_dict attribute. Will only actually load
         from disk if any subdictionaries (one per source in SourceList) are missing.
@@ -210,10 +180,20 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
         the creation of Measurements objects. Not necessary for accessing
         individual subdictionaries however, because the Co_Dict class can lazy
         load those as they are requested (eg. co_dict["source_index_0"]).
+
+        Parameters
+        ----------
+          sources: SourceList
+            The detections associated with these cutouts.  Here for
+            efficiency, or if the cutouts and sources aren't yet in the
+            database.  If not given, will load them from the database.
+
         """
-        if self.sources.num_sources is None:
+        if sources is None:
+            sources = SourceList.get_by_id( self.sources_id )
+        if sources.num_sources is None:
             raise ValueError("The detections of this cutouts has no num_sources attr")
-        proper_length = self.sources.num_sources
+        proper_length = sources.num_sources
         if len(self.co_dict) != proper_length and self.filepath is not None:
             self.load()
 
@@ -242,30 +222,36 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
             The cutout object.
         """
         cutout = Cutouts()
-        cutout.sources = detections
-        cutout.provenance = provenance
+        cutout.sources_id = detections.id
+        cutout.provenance_id = None if provenance is None else provenance.id
 
         # update the bitflag
         cutout._upstream_bitflag = detections.bitflag
 
         return cutout
 
-    def invent_filepath(self):
-        if self.sources is None:
-            raise RuntimeError( f"Can't invent a filepath for cutouts without a source list" )
-        if self.provenance is None:
+    def invent_filepath( self, image=None, detections=None ):
+        if image is None:
+            if detections is None:
+                detections = SourceList.get_by_id( self.sources_id )
+            if detections is None:
+                raise RuntimeError( f"Can't invent a filepath for cutouts without a image or detections source list" )
+            image = Image.get_by_id( detections.image_id )
+        if image is None:
+            raise RuntimeError( f"Can't invent a filepath for cutouts without an image" )
+        if self.provenance_id is None:
             raise RuntimeError( f"Can't invent a filepath for cutouts without a provenance" )
 
         # base the filename on the image filename, not on the sources filename.
-        filename = self.sub_image.filepath
+        filename = image.filepath
         if filename is None:
-            filename = self.sub_image.invent_filepath()
+            filename = image.invent_filepath()
 
         if filename.endswith(('.fits', '.h5', '.hdf5')):
             filename = os.path.splitext(filename)[0]
 
         filename += '.cutouts_'
-        filename += self.provenance.id[:6]
+        filename += self.provenance_id[:6]
         if self.format == 'hdf5':
             filename += '.h5'
         elif self.format == ['fits', 'jpg', 'png']:
@@ -303,20 +289,27 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
                     compression='gzip'
                 )
 
-    def save(self, filename=None, overwrite=True, **kwargs):
+    def save(self, filename=None, image=None, sources=None, overwrite=True, **kwargs):
         """Save the data of this Cutouts object into a file.
 
         Parameters
         ----------
         filename: str, optional
             The (relative/full path) filename to save to. If not given, will use the default filename.
+
+        image: Image
+            The sub image that these cutouts are associated with.  (Needed to determine filepath.)
+
+        sources: SourceList
+            The SourceList (detections on sub image) that these cutouts are associated with.
+
         kwargs: dict
             Any additional keyword arguments to pass to the FileOnDiskMixin.save method.
         """
         if len(self.co_dict) == 0:
             return None  # do nothing
 
-        proper_length = self.sources.num_sources
+        proper_length = sources.num_sources
         if len(self.co_dict) != proper_length:
             raise ValueError(f"Trying to save cutouts dict with {len(self.co_dict)}"
                              f" subdicts, but SourceList has {proper_length} sources")
@@ -326,7 +319,7 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
                 raise TypeError("Each entry of co_dict must be a dictionary")
 
         if filename is None:
-            filename = self.invent_filepath()
+            filename = self.invent_filepath( image=image )
 
         self.filepath = filename
 
@@ -411,14 +404,84 @@ class Cutouts(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
                     for groupname in file:
                         self.co_dict[groupname] = self._load_dataset_dict_from_hdf5(file, groupname)
 
-    def get_upstreams(self, session=None):
-        """Get the detections SourceList that was used to make this cutout. """
-        with SmartSession(session) as session:
-            return session.scalars(sa.select(SourceList).where(SourceList.id == self.sources_id)).all()
 
-    def get_downstreams(self, session=None, siblings=False):
-        """Get the downstream Measurements that were made from this Cutouts object. """
+    def get_upstreams( self, session=None ):
+        """Return upstreams of this cutouts object.
+
+        This will be the SourceList that is the detections from which this cutout was made.
+        """
+
+        with SmartSession( session ) as session:
+            return session.scalars( sa.Select( SourceList ).where( SourceList._id == self.sources_id ) ).all()
+
+    def get_downstreams( self, session=None, siblings=False ):
+        """Return downstreams of this cutouts object.
+
+        Only gets immediate downstreams; does not recurse.  (As per the
+        docstring in SeeChangeBase.get_downstreams.)
+
+        Returns a list of Measurements objects.
+
+        """
+
+        # Avoid circular imports
         from models.measurements import Measurements
 
-        with SmartSession(session) as session:
-            return session.scalars(sa.select(Measurements).where(Measurements.cutouts_id == self.id)).all()
+        with SmartSession( session ) as sess:
+            measurements = sess.query( Measurements ).filter( Measurements.cutouts_id==self.id )
+
+        return list( measurements )
+
+
+    # ======================================================================
+    # The fields below are things that we've deprecated; these definitions
+    #   are here to catch cases in the code where they're still used
+
+    @property
+    def sources( self ):
+        raise RuntimeError( f"Don't use Cutouts.sources, use sources_id" )
+
+    @sources.setter
+    def sources( self, val ):
+        raise RuntimeError( f"Don't use Cutouts.sources, use sources_id" )
+
+    @property
+    def provenance( self ):
+        raise RuntimeError( f"Don't use Cutouts.provenance, use provenance_id" )
+
+    @provenance.setter
+    def provenance( self, val ):
+        raise RuntimeError( f"Don't use Cutouts.provenance, use provenance_id" )
+
+    @property
+    def sub_image( self ):
+        raise RuntimeError( f"Cutouts.sub_image is deprecated, don't use it" )
+
+    @sub_image.setter
+    def sub_image( self, val ):
+        raise RuntimeError( f"Cutouts.sub_image is deprecated, don't use it" )
+
+    @property
+    def sub_image_id( self ):
+        raise RuntimeError( f"Cutouts.sub_image_id is deprecated, don't use it" )
+
+    @sub_image_id.setter
+    def sub_image_id( self, val ):
+        raise RuntimeError( f"Cutouts.sub_image_id is deprecated, don't use it" )
+
+    @property
+    def new_image( self ):
+        raise RuntimeError( f"Cutouts.new_image is deprecated, don't use it" )
+
+    @new_image.setter
+    def new_image( self, val ):
+        raise RuntimeError( f"Cutouts.new_image is deprecated, don't use it" )
+
+    @property
+    def ref_image( self ):
+        raise RuntimeError( f"Cutouts.ref_image is deprecated, don't use it" )
+
+    @ref_image.setter
+    def ref_image( self, val ):
+        raise RuntimeError( f"Cutouts.ref_image is deprecated, don't use it" )
+

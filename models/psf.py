@@ -4,14 +4,16 @@ import numpy as np
 
 import sqlalchemy as sa
 import sqlalchemy.orm as orm
+from sqlalchemy.ext.declarative import declared_attr
 from sqlalchemy.ext.hybrid import hybrid_property
-from sqlalchemy.schema import UniqueConstraint
+from sqlalchemy.schema import UniqueConstraint, CheckConstraint
 
 from astropy.io import fits
 
-from models.base import Base, SmartSession, SeeChangeBase, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness
+from models.base import Base, SmartSession, SeeChangeBase, UUIDMixin, FileOnDiskMixin, HasBitFlagBadness
 from models.enums_and_bitflags import PSFFormatConverter, psf_badness_inverse
 from models.image import Image
+from models.source_list import SourceList, SourceListSibling
 from util.logger import SCLogger
 
 # NOTE.  As of this writing, the only format for PSFs we were
@@ -28,17 +30,21 @@ from util.logger import SCLogger
 # for different formats.
 
 
-class PSF(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
+class PSF(SourceListSibling, Base, UUIDMixin, FileOnDiskMixin, HasBitFlagBadness):
     __tablename__ = 'psfs'
 
-    __table_args__ = (
-        UniqueConstraint('image_id', 'provenance_id', name='_psf_image_provenance_uc'),
-    )
+    @declared_attr
+    def __table_args__(cls):
+        return (
+            CheckConstraint( sqltext='NOT(md5sum IS NULL AND '
+                               '(md5sum_extensions IS NULL OR array_position(md5sum_extensions, NULL) IS NOT NULL))',
+                               name=f'{cls.__tablename__}_md5sum_check' ),
+        )
 
     _format = sa.Column(
         sa.SMALLINT,
         nullable=False,
-        default=PSFFormatConverter.convert('psfex'),
+        server_default=sa.sql.elements.TextClause( str(PSFFormatConverter.convert('psfex')) ),
         doc='Format of the PSF file.  Currently only supports psfex.'
     )
 
@@ -55,19 +61,12 @@ class PSF(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
     def format( self, value ):
         self._format = PSFFormatConverter.convert( value )
 
-    image_id = sa.Column(
-        sa.ForeignKey( 'images.id', ondelete='CASCADE', name='psfs_image_id_fkey' ),
+    sources_id = sa.Column(
+        sa.ForeignKey( 'source_lists._id', ondelete='CASCADE', name='psfs_source_lists_id_fkey' ),
         nullable=False,
         index=True,
-        doc="ID of the image for which this is the PSF."
-    )
-
-    image = orm.relationship(
-        'Image',
-        cascade='save-update, merge, refresh-expire, expunge',
-        passive_deletes=True,
-        lazy='selectin',
-        doc="Image for which this is the PSF."
+        unique=True,
+        doc="id of the source_list this psf is associated with"
     )
 
     fwhm_pixels = sa.Column(
@@ -77,31 +76,6 @@ class PSF(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
         doc="Approximate FWHM of seeing in pixels; use for a broad estimate, doesn't capture spatial variation."
     )
 
-    provenance_id = sa.Column(
-        sa.ForeignKey('provenances.id', ondelete="CASCADE", name='psfs_provenance_id_fkey'),
-        nullable=False,
-        index=True,
-        doc=(
-            "ID of the provenance of this PSF. "
-            "The provenance will contain a record of the code version"
-            "and the parameters used to produce this PSF."
-        )
-    )
-
-    provenance = orm.relationship(
-        'Provenance',
-        cascade='save-update, merge, refresh-expire, expunge',
-        lazy='selectin',
-        doc=(
-            "Provenance of this PSF. "
-            "The provenance will contain a record of the code version"
-            "and the parameters used to produce this PSF."
-        )
-    )
-
-    __table_args__ = (
-        sa.Index( 'psfs_image_id_provenance_index', 'image_id', 'provenance_id', unique=True ),
-    )
 
     @property
     def data( self ):
@@ -189,7 +163,7 @@ class PSF(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
         self._table = None
         self._info = None
 
-    def save( self, filename=None, **kwargs ):
+    def save( self, filename=None, image=None, sources=None, **kwargs ):
         """Write the PSF to disk.
 
         May or may not upload to the archive and update the
@@ -202,12 +176,25 @@ class PSF(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
 
         Parameters
         ----------
-          filename: str or path
+          filename: str or Path, or None
              The path to the file to write, relative to the local store
              root.  Do not include the extension (e.g. '.psf') at the
              end of the name; that will be added automatically for all
              extensions.  If None, will call image.invent_filepath() to get a
              filestore-standard filename and directory.
+
+          sources: SourceList or None
+             Ignored if filename is specified.  Otherwise, the
+             SourceList to use in inventing the filepath (needed to get
+             the provenance). If None, will try to load it from the
+             database.  Use this for efficiency, or if you know the
+             soruce list isn't yet in the databse.
+
+          image: Image or None
+             Ignored if filename is specified.  Otherwise, the Image to
+             use in inventing the filepath.  If None, will try to load
+             it from the database.  Use this for efficiency, or if you
+             know the image isn't yet in the database.
 
           Additional arguments are passed on to FileOnDiskMixin.save
 
@@ -223,14 +210,18 @@ class PSF(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
                 filename += '.psf'
             self.filepath = filename
         else:
-            if self.image.filepath is not None:
-                self.filepath = self.image.filepath
-            else:
-                self.filepath = self.image.invent_filepath()
+            if ( sources is None ) or ( image is None ):
+                with SmartSession() as session:
+                    if sources is None:
+                        sources = SourceList.get_by_id( self.sources_id, session=session )
+                    if ( sources is not None ) and ( image is None ):
+                        image = Image.get_by_id( sources.image_id, session=session )
+                if ( sources is None ) or ( image is None ):
+                    raise RuntimeError( "Can't invent PSF filepath; can't find either the corresponding "
+                                        "SourceList or the corresponding Image." )
 
-            if self.provenance is None:
-                raise RuntimeError("Can't invent a filepath for the PSF without a provenance")
-            self.filepath += f'.psf_{self.provenance.id[:6]}'
+            self.filepath = image.filepath if image.filepath is not None else image.invent_filepath()
+            self.filepath += f'.psf_{sources.provenance_id[:6]}'
 
         psfpath = pathlib.Path( self.local_path ) / f'{self.filepath}.fits'
         psfxmlpath = pathlib.Path( self.local_path ) / f'{self.filepath}.xml'
@@ -523,72 +514,41 @@ class PSF(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
                                                      )
                                               )
 
-    def get_upstreams(self, session=None):
-        """Get the image that was used to make this PSF. """
-        with SmartSession(session) as session:
-            return session.scalars(sa.select(Image).where(Image.id == self.image_id)).all()
-        
-    def get_downstreams(self, session=None, siblings=False):
-        """Get the downstreams of this PSF.
+    # ======================================================================
+    # The fields below are things that we've deprecated; these definitions
+    #   are here to catch cases in the code where they're still used
 
-        If siblings=True then also include the SourceList, WCS, ZP and background object
-        that were created at the same time as this PSF.
-        """
-        from models.source_list import SourceList
-        from models.background import Background
-        from models.world_coordinates import WorldCoordinates
-        from models.zero_point import ZeroPoint
-        from models.provenance import Provenance
 
-        with SmartSession(session) as session:
-            output = []
-            if self.image_id is not None and self.provenance is not None:
-                subs = session.scalars(
-                    sa.select(Image).where(
-                        Image.provenance.has(Provenance.upstreams.any(Provenance.id == self.provenance.id)),
-                        Image.upstream_images.any(Image.id == self.image_id),
-                    )
-                ).all()
-                output += subs
+    @property
+    def provenance_id( self ):
+        raise RuntimeError( f"PSF.provenance_id is deprecated; get provenance from sources" )
 
-            if siblings:
-                # There should be exactly one source list, wcs, and zp per PSF, with the same provenance
-                # as they are created at the same time.
-                sources = session.scalars(
-                    sa.select(SourceList).where(
-                        SourceList.image_id == self.image_id, SourceList.provenance_id == self.provenance_id
-                    )
-                ).all()
-                if len(sources) != 1:
-                    raise ValueError(f"Expected exactly one source list for PSF {self.id}, but found {len(sources)}")
+    @provenance_id.setter
+    def provenance_id( self, val ):
+        raise RuntimeError( f"PSF.provenance_id is deprecated; get provenance from sources" )
 
-                output.append(sources[0])
+    @property
+    def provenance( self ):
+        raise RuntimeError( f"PSF.provenance is deprecated; get provenance from sources" )
 
-                bgs = session.scalars(
-                    sa.select(Background).where(
-                        Background.image_id == self.image_id,
-                        Background.provenance_id == self.provenance_id
-                    )
-                ).all()
-                if len(bgs) != 1:
-                    raise ValueError(f"Expected exactly one Background for SourceList {self.id}, but found {len(bgs)}")
+    @provenance.setter
+    def provenance( self, val ):
+        raise RuntimeError( f"PSF.provenance is deprecated; get provenance from sources" )
 
-                output.append(bgs[0])
+    @property
+    def image( self ):
+        raise RuntimeError( f"PSF.image is deprecated, don't use it" )
 
-                wcs = session.scalars(
-                    sa.select(WorldCoordinates).where(WorldCoordinates.sources_id == sources.id)
-                ).all()
-                if len(wcs) != 1:
-                    raise ValueError(f"Expected exactly one wcs for PSF {self.id}, but found {len(wcs)}")
+    @image.setter
+    def image( self, val ):
+        raise RuntimeError( f"PSF.image is deprecated, don't use it" )
 
-                output.append(wcs[0])
+    @property
+    def image_id( self ):
+        raise RuntimeError( f"PSF.image_id is deprecated, don't use it" )
 
-                zp = session.scalars(sa.select(ZeroPoint).where(ZeroPoint.sources_id == sources.id)).all()
+    @image_id.setter
+    def image_id( self, val ):
+        raise RuntimeError( f"PSF.image_id is deprecated, don't use it" )
 
-                if len(zp) != 1:
-                    raise ValueError(f"Expected exactly one zp for PSF {self.id}, but found {len(zp)}")
 
-                output.append(zp[0])
-
-        return output
-    

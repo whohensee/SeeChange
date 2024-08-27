@@ -8,13 +8,13 @@ from collections import defaultdict
 import sqlalchemy as sa
 from sqlalchemy import orm
 from sqlalchemy.ext.hybrid import hybrid_property
-from sqlalchemy.ext.associationproxy import association_proxy
-from sqlalchemy.schema import UniqueConstraint
+from sqlalchemy.ext.declarative import declared_attr
+from sqlalchemy.schema import UniqueConstraint, CheckConstraint
 from sqlalchemy.dialects.postgresql import ARRAY
 
 import astropy.table
 
-from models.base import Base, SmartSession, AutoIDMixin, FileOnDiskMixin, SeeChangeBase, HasBitFlagBadness
+from models.base import Base, SmartSession, UUIDMixin, FileOnDiskMixin, SeeChangeBase, HasBitFlagBadness
 from models.image import Image
 from models.enums_and_bitflags import (
     SourceListFormatConverter,
@@ -25,7 +25,7 @@ from util.logger import SCLogger
 import util.ldac
 
 
-class SourceList(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
+class SourceList(Base, UUIDMixin, FileOnDiskMixin, HasBitFlagBadness):
     """Encapsulates a source list.
 
     By default, uses SExtractor.
@@ -40,14 +40,19 @@ class SourceList(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
 
     __tablename__ = 'source_lists'
 
-    __table_args__ = (
-        UniqueConstraint('image_id', 'provenance_id', name='_source_list_image_provenance_uc'),
-    )
+    @declared_attr
+    def __table_args__( cls ):
+        return (
+            CheckConstraint( sqltext='NOT(md5sum IS NULL AND '
+                               '(md5sum_extensions IS NULL OR array_position(md5sum_extensions, NULL) IS NOT NULL))',
+                               name=f'{cls.__tablename__}_md5sum_check' ),
+            UniqueConstraint('image_id', 'provenance_id', name='_source_list_image_provenance_uc')
+        )
 
     _format = sa.Column(
         sa.SMALLINT,
         nullable=False,
-        default=SourceListFormatConverter.convert('sextrfits'),
+        server_default=sa.sql.elements.TextClause( str(SourceListFormatConverter.convert('sextrfits')) ),
         doc="Format of the file on disk. Should be sepnpy or sextrfits. "
             "Saved as integer but is converter to string when loaded. "
     )
@@ -66,27 +71,16 @@ class SourceList(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
         self._format = SourceListFormatConverter.convert(value)
 
     image_id = sa.Column(
-        sa.ForeignKey('images.id', ondelete='CASCADE', name='source_lists_image_id_fkey'),
+        sa.ForeignKey('images._id', ondelete='CASCADE', name='source_lists_image_id_fkey'),
         nullable=False,
         index=True,
         doc="ID of the image this source list was generated from. "
     )
 
-    image = orm.relationship(
-        Image,
-        lazy='selectin',
-        cascade='save-update, merge, refresh-expire, expunge',
-        passive_deletes=True,
-        doc="The image this source list was generated from. "
-    )
-
-    is_sub = association_proxy('image', 'is_sub')
-    is_coadd = association_proxy('image', 'is_coadd')
-
     aper_rads = sa.Column(
         ARRAY( sa.REAL, zero_indexes=True ),
         nullable=True,
-        default=None,
+        server_default=None,
         index=False,
         doc="Radius of apertures used for aperture photometry in pixels."
     )
@@ -94,7 +88,7 @@ class SourceList(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
     inf_aper_num = sa.Column(
         sa.SMALLINT,
         nullable=True,
-        default=None,
+        server_default=None,
         index=False,
         doc="Which element of aper_rads to use as the 'infinite' aperture; -1 = last one. "
     )
@@ -102,7 +96,7 @@ class SourceList(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
     best_aper_num = sa.Column(
         sa.SMALLINT,
         nullable=True,
-        default=None,
+        server_default=None,
         index=False,
         doc="Which element of aper_rads to use as the 'best' aperture; -1 = use PSF photometry. "
     )
@@ -115,22 +109,11 @@ class SourceList(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
     )
 
     provenance_id = sa.Column(
-        sa.ForeignKey('provenances.id', ondelete="CASCADE", name='source_lists_provenance_id_fkey'),
+        sa.ForeignKey('provenances._id', ondelete="CASCADE", name='source_lists_provenance_id_fkey'),
         nullable=False,
         index=True,
         doc=(
             "ID of the provenance of this source list. "
-            "The provenance will contain a record of the code version"
-            "and the parameters used to produce this source list. "
-        )
-    )
-
-    provenance = orm.relationship(
-        'Provenance',
-        cascade='save-update, merge, refresh-expire, expunge',
-        lazy='selectin',
-        doc=(
-            "Provenance of this source list. "
             "The provenance will contain a record of the code version"
             "and the parameters used to produce this source list. "
         )
@@ -149,10 +132,6 @@ class SourceList(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
         self._bitflag = 0
         self._info = None
         self._is_star = None
-        self.wcs = None
-        self.zp = None
-        self.cutouts = None
-        self.measurements = None
 
         # manually set all properties (columns or not)
         self.set_attributes_from_dict(kwargs)
@@ -172,52 +151,14 @@ class SourceList(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
         self._info = None
         self._is_star = None
 
-        self.wcs = None
-        self.zp = None
-        self.cutouts = None
-        self.measurements = None
-
-    def merge_all(self, session):
-        """Use safe_merge to merge all the downstream products and assign them back to self.
-
-        This includes: wcs, zp, cutouts, measurements.
-        Make sure to first assign a merged image to self.image,
-        otherwise SQLA will use that relationship to merge a new image,
-        which will be different from the one we want to merge into.
-
-        Must provide a session to merge into. Need to commit at the end.
-
-        Returns the merged SourceList with its products on the same session.
-        """
-        new_sources = self.safe_merge(session=session)
-        session.flush()
-        for att in ['wcs', 'zp', 'cutouts']:
-            sub_obj = getattr(self, att, None)
-            if sub_obj is not None:
-                sub_obj.sources = new_sources  # make sure to first point this relationship back to new_sources
-                sub_obj.sources_id = new_sources.id  # make sure to first point this relationship back to new_sources
-                if sub_obj not in session:
-                    sub_obj = sub_obj.safe_merge(session=session)
-                setattr(new_sources, att, sub_obj)
-
-        for att in ['measurements']:
-            sub_obj = getattr(self, att, None)
-            if sub_obj is not None:
-                new_list = []
-                for item in sub_obj:
-                    item.sources = new_sources  # make sure to first point this relationship back to new_sources
-                    new_list.append(session.merge(item))
-                setattr(new_sources, att, new_list)
-
-        return new_sources
 
     def __repr__(self):
         output = (
             f'<SourceList(id={self.id}, '
             f'format={self.format}, '
             f'image_id={self.image_id}, '
-            f'is_sub={self.is_sub}), '
-            f'num_sources= {self.num_sources}>'
+            f'num_sources= {self.num_sources}, '
+            f'filepath={self.filepath} >'
         )
 
         return output
@@ -232,14 +173,16 @@ class SourceList(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
     @data.setter
     def data(self, value):
 
-        if isinstance(value, pd.DataFrame):
-            value = value.to_records(index=False)
+        if value is not None:
+            if isinstance(value, pd.DataFrame):
+                value = value.to_records(index=False)
 
-        if not isinstance(value, (np.ndarray, astropy.table.Table)) or value.dtype.names is None:
-            raise TypeError("data must be a pandas.DataFrame, astropy.table.Table or numpy.recarray")
+            if not isinstance(value, (np.ndarray, astropy.table.Table)) or value.dtype.names is None:
+                raise TypeError("data must be a pandas.DataFrame, astropy.table.Table or numpy.recarray")
 
         self._data = value
-        self.num_sources = len(value)
+        if value is not None:
+            self.num_sources = len(value)
 
     @property
     def info(self):
@@ -507,7 +450,6 @@ class SourceList(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
         return -2.5 * np.log10( meanrat )
 
     def load(self, filepath=None):
-
         """Load this source list from the file.
 
         Updates self._data and self._info.
@@ -583,22 +525,39 @@ class SourceList(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
         else:
             raise NotImplementedError( f"Don't know how to load source lists of format {self.format}" )
 
-    def invent_filepath( self ):
-        if self.image is None:
+    def invent_filepath( self, image=None, provenance=None ):
+        """Invent a filepath for this SourceList.
+
+        Parmaeters
+        ----------
+          image: Image or None
+            The image that this source list comes from.  (So,
+            self.image_id==image.id.)  If None, it will be loaded from
+            the database.  Pass this for efficiency, or if you know the
+            image isn't in the database yet.
+
+        """
+
+        if ( image is None ) and ( self.image_id is None ):
             raise RuntimeError( f"Can't invent a filepath for sources without an image" )
-        if self.provenance is None:
+        if self.provenance_id is None:
             raise RuntimeError( f"Can't invent a filepath for sources without a provenance" )
 
-        filename = self.image.filepath
+        if image is None:
+            image = Image.get_by_id( self.image_id )
+        if image is None:
+            raise RuntimeError( "Could not find image for sourcelist; it is probably not committed to the database" )
+
+        filename = image.filepath
         if filename is None:
-            filename = self.image.invent_filepath()
+            filename = image.invent_filepath()
 
         if filename.endswith(('.fits', '.h5', '.hdf5')):
             filename = os.path.splitext(filename)[0]
 
         filename += '.sources_'
-        self.provenance.update_id()
-        filename += self.provenance.id[:6]
+        filename += self.provenance_id[:6]
+
         if self.format in ['sepnpy', 'filter']:
             filename += '.npy'
         elif self.format == 'sextrfits':
@@ -608,17 +567,25 @@ class SourceList(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
 
         return filename
 
-    def save(self, **kwargs):
+    def save(self, image=None, **kwargs):
         """Save the data table to a file on disk.
 
         Updates self.filepath (if it is None) and self.num_sources
+
+        Parameters
+        ----------
+           image: Image or None
+             Image to pass to invent_filepath.  If None, invent_filepath
+             will try to load the image from the database when inventing
+             the filename.
+
         """
 
         if self.data is None:
             raise ValueError("Cannot save source list without data")
 
         if self.filepath is None:
-            self.filepath = self.invent_filepath()
+            self.filepath = self.invent_filepath( image=image )
 
         fullname = os.path.join(self.local_path, self.filepath)
         self.safe_mkdir(os.path.dirname(fullname))
@@ -746,65 +713,70 @@ class SourceList(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
     def get_upstreams(self, session=None):
         """Get the image that was used to make this source list. """
         with SmartSession(session) as session:
-            return session.scalars(sa.select(Image).where(Image.id == self.image_id)).all()
+            return session.scalars(sa.select(Image).where(Image._id == self.image_id)).all()
 
     def get_downstreams(self, session=None, siblings=False):
         """Get all the data products that are made using this source list.
 
         If siblings=True then also include the PSF, Background, WCS, and ZP
         that were created at the same time as this SourceList.
+
+        Only gets immediate downstreams; does not recurse.  (As per the
+        docstring in SeeChangeBase.get_downstreams.)
+
+        Returns a list of objects (potentially including Background,
+        PSF, WorldCoordinates, ZeroPoint, Cutouts, and Image objects).
+
         """
-        from models.psf import PSF
+
+        # Avoid circular imports
         from models.background import Background
+        from models.psf import PSF
         from models.world_coordinates import WorldCoordinates
         from models.zero_point import ZeroPoint
         from models.cutouts import Cutouts
-        from models.provenance import Provenance
+        from models.provenance import Provenance, provenance_self_association_table
+        from models.image import image_upstreams_association_table
 
-        with SmartSession(session) as session:
-            output = []
-            if self.image_id is not None and self.provenance is not None:
-                subs = session.scalars(
-                    sa.select(Image).where(
-                        Image.provenance.has(Provenance.upstreams.any(Provenance.id == self.provenance.id)),
-                        Image.upstream_images.any(Image.id == self.image_id),
-                    )
-                ).all()
-                output += subs
+        output = []
+        with SmartSession( session ) as sess:
 
-            if self.is_sub:
-                cutouts = session.scalars(sa.select(Cutouts).where(Cutouts.sources_id == self.id)).all()
-                output += cutouts
-            elif siblings:  # for "detections" we don't have siblings
-                psfs = session.scalars(
-                    sa.select(PSF).where(PSF.image_id == self.image_id, PSF.provenance_id == self.provenance_id)
-                ).all()
-                if len(psfs) != 1:
-                    raise ValueError(f"Expected exactly one PSF for SourceList {self.id}, but found {len(psfs)}")
+            # Siblings (Background, PSF, WorldCoordinates, ZeroPoint)
+            if siblings:
+                bkg = sess.query( Background ).filter( Background.sources_id==self.id ).first()
+                psf = sess.query( PSF ).filter( PSF.sources_id==self.id ).first()
+                wcs = sess.query( WordCoordinates ).filter( WorldCoordinates.sources_id==self.id ).first()
+                zp = sess.query( ZeroPoint ).filter( ZeroPoint.sources_id==self.id ).first()
+                for thing in [ bkg, psf, wcs, zp ]:
+                    if thing is not None:
+                        output.append( thing )
 
-                bgs = session.scalars(
-                    sa.select(Background).where(
-                        Background.image_id == self.image_id,
-                        Background.provenance_id == self.provenance_id
-                    )
-                ).all()
-                if len(bgs) != 1:
-                    raise ValueError(f"Expected exactly one Background for SourceList {self.id}, but found {len(bgs)}")
+            # Cutouts (will only happen if this is a subtraction)
+            co = sess.query( Cutouts ).filter( Cutouts.sources_id==self.id ).first()
+            if co is not None:
+                output.append( co )
 
-                wcs = session.scalars(sa.select(WorldCoordinates).where(WorldCoordinates.sources_id == self.id)).all()
-                if len(wcs) != 1:
-                    raise ValueError(
-                        f"Expected exactly one WorldCoordinates for SourceList {self.id}, but found {len(wcs)}"
-                    )
-                zps = session.scalars(sa.select(ZeroPoint).where(ZeroPoint.sources_id == self.id)).all()
-                if len(zps) != 1:
-                    raise ValueError(
-                        f"Expected exactly one ZeroPoint for SourceList {self.id}, but found {len(zps)}"
-                    )
-
-                output += psfs + bgs + wcs + zps
+            # Coadd or subtraction images made from this SourceList's
+            #  parent image, which have this sourcelist as an upstream.
+            #  They're not explicitly tracked as downstreams of sources
+            #  (is that a mistake?), so we have to poke into the image
+            #  upstreams association table.  Also poke into the
+            #  provenance upstreams association table; this may be
+            #  redundant, but it makes sure that we're really getting
+            #  things that are downstream of self.
+            imgs = ( sess.query( Image )
+                     .join( provenance_self_association_table,
+                            provenance_self_association_table.c.downstream_id == Image.provenance_id )
+                     .join( image_upstreams_association_table,
+                            image_upstreams_association_table.c.downstream_id == Image._id )
+                     .filter( provenance_self_association_table.c.upstream_id == self.provenance_id )
+                     .filter( image_upstreams_association_table.c.upstream_id == self.image_id )
+                    ).all()
+            output.extend( list(imgs) )
 
         return output
+
+        # return output
 
     def show(self, **kwargs):
         """Show the source positions on top of the image.
@@ -815,25 +787,134 @@ class SourceList(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
         """
         import matplotlib.pyplot as plt
 
+        raise NotImplementedError( "This is broken. needs to be fixed." )
+
         if self.image is None:
             raise ValueError("Can't show source list without an image")
         self.image.show(**kwargs)
         plt.plot(self.x, self.y, 'ro', markersize=5, fillstyle='none')
 
+    # ======================================================================
+    # The fields below are things that we've deprecated; these definitions
+    #   are here to catch cases in the code where they're still used
 
-# TODO: replace these with association proxies?
-# add "property" attributes to SourceList referencing the image for convenience
-for att in [
-    'section_id',
-    'mjd',
-    'filter',
-    'filter_short',
-    'telescope',
-    'instrument',
-    'instrument_object',
-]:
-    setattr(
-        SourceList,
-        att,
-        property(fget=lambda self, att=att: getattr(self.image, att) if self.image is not None else None)
-    )
+    @property
+    def provenance( self ):
+        raise RuntimeError( f"SourceList.provenance is deprecated, don't use it" )
+
+    @provenance.setter
+    def provenance( self, val ):
+        raise RuntimeError( f"SourceList.provenance is deprecated, don't use it" )
+
+    @property
+    def image( self ):
+        raise RuntimeError( f"Don't use SourceList.image, use image_id" )
+
+    @image.setter
+    def image( self, val ):
+        raise RuntimeError( f"Don't use SourceList.image, use image_id" )
+
+    @property
+    def is_sub( self ):
+        raise RuntimeError( f"SourceList.is_sub is deprecated, don't use it" )
+
+    @is_sub.setter
+    def is_sub( self, val ):
+        raise RuntimeError( f"SourceList.is_sub is deprecated, don't use it" )
+
+    @property
+    def is_coadd( self ):
+        raise RuntimeError( f"SourceList.is_coadd is deprecated, don't use it" )
+
+    @is_coadd.setter
+    def is_coadd( self, val ):
+        raise RuntimeError( f"SourceList.is_coadd is deprecated, don't use it" )
+
+    @property
+    def wcs( self ):
+        raise RuntimeError( f"SourceList.wcs is deprecated, don't use it" )
+
+    @wcs.setter
+    def wcs( self, val ):
+        raise RuntimeError( f"SourceList.wcs is deprecated, don't use it" )
+
+    @property
+    def zp( self ):
+        raise RuntimeError( f"SourceList.zp is deprecated, don't use it" )
+
+    @zp.setter
+    def zp( self, val ):
+        raise RuntimeError( f"SourceList.zp is deprecated, don't use it" )
+
+    @property
+    def cutouts( self ):
+        raise RuntimeError( f"SourceList.cutouts is deprecated, don't use it" )
+
+    @cutouts.setter
+    def cutouts( self, val ):
+        raise RuntimeError( f"SourceList.cutouts is deprecated, don't use it" )
+
+    @property
+    def measurements( self ):
+        raise RuntimeError( f"SourceList.measurements is deprecated, don't use it" )
+
+    @measurements.setter
+    def measurements( self, val ):
+        raise RuntimeError( f"SourceList.measurements is deprecated, don't use it" )
+
+
+# Mixin for Background, PSF, WorldCoordinates, and ZeroPoint
+# Note that because of the Python MRO, this will have to be listed
+# as the *first* superclass, with Base later.
+
+class SourceListSibling:
+    def get_upstreams( self, session=None ):
+        """The only upstream of a SourceList sibling is the SourceList it's associated with.
+
+        If self.id or self.sources_id is None, returns None.
+
+        (That's how we've implemented it, but one could argue the Image is the upstream,
+        since the SourceList is a sibling.)
+
+        """
+
+        if ( self.id is None ) or ( self.sources_id is None ):
+            return []
+
+        from models.source_list import SourceList
+        with SmartSession( session ) as sess:
+            sl = sess.query( SourceList ).filter( SourceList._id==self.sources_id ).first()
+            # Not clear what the right thing to do here is.
+            # Going to return None, because probably what happened is that nothing is actually
+            #   in the database.  However, if there is a sibling in the database but not the
+            #   SourceList, that's an error.  Going to just feel vaguely unsettled about that
+            #   for now and not actually raise an exception.
+            # if sl is None:
+            #     raise RuntimeError( f"Failed to find SourceList {self.sources_id} "
+            #                         f"that goes with Background {self.id}" )
+
+        return [ sl ] if sl is not None else []
+
+    def get_downstreams(self, session=None, siblings=False):
+        """Get the downstreams of this SourceList sibling object.
+
+        If self.id or self.sources_id is None, returns None
+
+        If siblings=True then also include the SourceList, PSF, WCS, and
+        ZP that were created at the same time as this Background.
+
+        The downstreams are identical to the downstreams of the
+        SourceList it's associated with, except the Background (i.e. the
+        thing that's the same row in the database as self) is removed.
+
+        """
+
+        sl = self.get_upstreams( session=session )
+        if len(sl) == 0:
+            return []
+
+        sl = sl[0]
+        dses = sl.get_downstreams( session=session, siblings=siblings )
+        dses = [ d for d in dses if d.id != self.id  ]
+
+        return dses

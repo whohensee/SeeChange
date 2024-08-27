@@ -7,25 +7,35 @@ import h5py
 import sqlalchemy as sa
 import sqlalchemy.orm as orm
 from sqlalchemy.ext.hybrid import hybrid_property
-from sqlalchemy.schema import UniqueConstraint
+from sqlalchemy.ext.declarative import declared_attr
+from sqlalchemy.schema import UniqueConstraint, CheckConstraint
 
-from models.base import Base, SeeChangeBase, SmartSession, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness
+from models.base import Base, SeeChangeBase, SmartSession, UUIDMixin, FileOnDiskMixin, HasBitFlagBadness
 from models.image import Image
+from models.source_list import SourceList, SourceListSibling
 
 from models.enums_and_bitflags import BackgroundFormatConverter, BackgroundMethodConverter, bg_badness_inverse
 
+from util.logger import SCLogger
+import warnings
 
-class Background(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
+
+class Background(SourceListSibling, Base, UUIDMixin, FileOnDiskMixin, HasBitFlagBadness):
     __tablename__ = 'backgrounds'
 
-    __table_args__ = (
-        UniqueConstraint('image_id', 'provenance_id', name='_bg_image_provenance_uc'),
-    )
+    @declared_attr
+    def __table_args__(cls):
+        return (
+            CheckConstraint( sqltext='NOT(md5sum IS NULL AND '
+                               '(md5sum_extensions IS NULL OR array_position(md5sum_extensions, NULL) IS NOT NULL))',
+                               name=f'{cls.__tablename__}_md5sum_check' ),
+        )
+
 
     _format = sa.Column(
         sa.SMALLINT,
         nullable=False,
-        default=BackgroundFormatConverter.convert('scalar'),
+        server_default=sa.sql.elements.TextClause( str(BackgroundFormatConverter.convert('scalar')) ),
         doc='Format of the Background model. Can include scalar, map, or polynomial. '
     )
 
@@ -45,7 +55,7 @@ class Background(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
     _method = sa.Column(
         sa.SMALLINT,
         nullable=False,
-        default=BackgroundMethodConverter.convert('zero'),
+        server_default=sa.sql.elements.TextClause( str(BackgroundMethodConverter.convert('zero')) ),
         doc='Method used to calculate the background. '
             'Can be an algorithm like "sep", or "zero" for an image that was already background subtracted. ',
     )
@@ -63,19 +73,12 @@ class Background(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
     def method(self, value):
         self._method = BackgroundMethodConverter.convert(value)
 
-    image_id = sa.Column(
-        sa.ForeignKey('images.id', ondelete='CASCADE', name='backgrounds_image_id_fkey'),
+    sources_id = sa.Column(
+        sa.ForeignKey('source_lists._id', ondelete='CASCADE', name='backgrounds_source_lists_id_fkey'),
         nullable=False,
         index=True,
-        doc="ID of the image for which this is the background."
-    )
-
-    image = orm.relationship(
-        'Image',
-        cascade='save-update, merge, refresh-expire, expunge',
-        passive_deletes=True,
-        lazy='selectin',
-        doc="Image for which this is the background."
+        unique=True,
+        doc="ID of the source list this background is associated with"
     )
 
     value = sa.Column(
@@ -90,32 +93,6 @@ class Background(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
         index=True,
         nullable=False,
         doc="Noise RMS of the background (in units of counts), as a best representative value for the entire image."
-    )
-
-    provenance_id = sa.Column(
-        sa.ForeignKey('provenances.id', ondelete="CASCADE", name='backgrounds_provenance_id_fkey'),
-        nullable=False,
-        index=True,
-        doc=(
-            "ID of the provenance of this Background object. "
-            "The provenance will contain a record of the code version"
-            "and the parameters used to produce this Background object."
-        )
-    )
-
-    provenance = orm.relationship(
-        'Provenance',
-        cascade='save-update, merge, refresh-expire, expunge',
-        lazy='selectin',
-        doc=(
-            "Provenance of this Background object. "
-            "The provenance will contain a record of the code version"
-            "and the parameters used to produce this Background object."
-        )
-    )
-
-    __table_args__ = (
-        sa.Index( 'backgrounds_image_id_provenance_index', 'image_id', 'provenance_id', unique=True ),
     )
 
     @property
@@ -136,9 +113,10 @@ class Background(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
         or an interpolated map based on the polynomial or scalar value
         mapped onto the image shape.
 
-        This is a best-estimate of the sky counts, ignoring as best as
-        possible the sources in the sky, and looking only at the smoothed
-        background level.
+        This is a best-estimate (or, best-estimate-we-have-done, anyway)
+        of the sky counts, ignoring as best as possible the sources in
+        the sky, and looking only at the smoothed background level.
+
         """
         if self._counts_data is None and self.filepath is not None:
             self.load()
@@ -190,6 +168,32 @@ class Background(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
         self._counts_data = None
         self._var_data = None
 
+        if 'image_shape' in kwargs:
+            self._image_shape = kwargs['image_shape']
+        else:
+            if ( 'sources_id' not in kwargs ) or ( kwargs['sources_id'] is None ):
+                raise RuntimeError( "Error, can't figure out background image_shape.  Either explicitly pass "
+                                    "image_shape, or make sure that sources_id is set, and the SourceList and "
+                                    "Image are already saved to the database." )
+            with SmartSession() as session:
+                image = ( session.query( Image )
+                          .join( SourceList, Image._id==SourceList.image_id )
+                          .filter( SourceList._id==kwargs['sources_id'] )
+                         ).first()
+                if image is None:
+                    raise RuntimeError( "Error, can't figure out background image_shape.  Either explicitly pass "
+                                        "image_shape, or make sure that sources_id is set, and the SourceList and "
+                                        "Image are already saved to the database." )
+                # I don't like this; we're reading the image data just
+                # to get its shape.  Perhaps we should add width and
+                # height fields to the Image model?
+                # (Or, really, when making a background, pass an image_shape!)
+                wrnmsg = ( "Getting background shape from associated image.  This is inefficient. "
+                           "Pass image_shape when constructing a background." )
+                warnings.warn( wrnmsg )
+                # SCLogger.warning( wrnmsg )
+                self._image_shape = image.data.shape
+
         # Manually set all properties ( columns or not )
         for key, value in kwargs.items():
             if hasattr( self, key ):
@@ -203,15 +207,27 @@ class Background(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
         self._counts_data = None
         self._var_data = None
 
-    def __setattr__(self, key, value):
-        if key == 'image':
-            if value is not None and not isinstance(value, Image):
-                raise ValueError(f'Background.image must be an Image object. Got {type(value)} instead. ')
-            self._image_shape = value.data.shape
 
-        super().__setattr__(key, value)
+    def subtract_me( self, image ):
+        """Subtract this background from an image.
 
-    def save( self, filename=None, **kwargs ):
+        Parameters
+        ----------
+          image: numpy array
+            shape must match self.image_shape (not checked)
+
+        Returns
+        -------
+           numpy array : background-subtracted image
+        """
+        if self.format == 'scalar':
+            return image - self.value
+        elif self.format == 'map':
+            return image - self.counts
+        else:
+            raise RuntimeError( f"Don't know how to subtract background of type {self.format}" )
+
+    def save( self, filename=None, image=None, sources=None, **kwargs ):
         """Write the Background to disk.
 
         May or may not upload to the archive and update the
@@ -244,6 +260,18 @@ class Background(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
              extensions.  If None, will call image.invent_filepath() to get a
              filestore-standard filename and directory.
 
+          image: Image (optional)
+             Ignored if filename is not None.  If filename is None,
+             will use this image's filepath to generate the background's
+             filepath.  If both filename and image are None, will try
+             to load the background's image from the database, if possible.
+
+          sources: SourceList (optional)
+             Ignored if filename is not None.  If filename is None,
+             use this SourceList's provenance to genernate the background's
+             filepath.  If both filename and soruces are None, will try to
+             load the background's SourceList from the database, if possible.
+
           Additional arguments are passed on to FileOnDiskMixin.save()
 
         """
@@ -263,14 +291,18 @@ class Background(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
                 filename += '.h5'
             self.filepath = filename
         else:
-            if self.image.filepath is not None:
-                self.filepath = self.image.filepath
-            else:
-                self.filepath = self.image.invent_filepath()
+            if ( sources is None ) or ( image is None ):
+                with SmartSession() as session:
+                    if sources is None:
+                        sources = SourceList.get_by_id( self.sources_id, session=session )
+                    if ( sources is not None ) and ( image is None ):
+                        image = Image.get_by_id( sources.image_id, session=session )
+                if ( sources is None ) or ( image is None ):
+                    raise RuntimeError( "Can't invent Background filepath; can't find either the corresponding "
+                                        "SourceList or the corresponding Image." )
 
-            if self.provenance is None:
-                raise RuntimeError("Can't invent a filepath for the Background without a provenance")
-            self.filepath += f'.bg_{self.provenance.id[:6]}.h5'
+            self.filepath = image.filepath if image.filepath is not None else image.invent_filepath()
+            self.filepath += f'.bg_{sources.provenance_id[:6]}.h5'
 
         h5path = os.path.join( self.local_path, f'{self.filepath}')
 
@@ -367,70 +399,66 @@ class Background(Base, AutoIDMixin, FileOnDiskMixin, HasBitFlagBadness):
         self._counts_data = None
         self._var_data = None
 
-    def get_upstreams(self, session=None):
-        """Get the image that was used to make this Background object. """
-        with SmartSession(session) as session:
-            return session.scalars(sa.select(Image).where(Image.id == self.image_id)).all()
+    @classmethod
+    def copy_bg( cls, bg ):
+        """Make a new Bcakground with the same data as an existing Background object.
 
-    def get_downstreams(self, session=None, siblings=False):
-        """Get the downstreams of this Background object.
+        Does *not* set the sources_id field.
 
-        If siblings=True then also include the SourceList, PSF, WCS, and ZP
-        that were created at the same time as this PSF.
         """
-        from models.source_list import SourceList
-        from models.psf import PSF
-        from models.world_coordinates import WorldCoordinates
-        from models.zero_point import ZeroPoint
-        from models.provenance import Provenance
 
-        with SmartSession(session) as session:
-            output = []
-            if self.image_id is not None and self.provenance is not None:
-                subs = session.scalars(
-                    sa.select(Image).where(
-                        Image.provenance.has(Provenance.upstreams.any(Provenance.id == self.provenance.id)),
-                        Image.upstream_images.any(Image.id == self.image_id),
-                    )
-                ).all()
-                output += subs
+        if bg is None:
+            return None
 
-            if siblings:
-                # There should be exactly one source list, wcs, and zp per PSF, with the same provenance
-                # as they are created at the same time.
-                sources = session.scalars(
-                    sa.select(SourceList).where(
-                        SourceList.image_id == self.image_id, SourceList.provenance_id == self.provenance_id
-                    )
-                ).all()
-                if len(sources) != 1:
-                    raise ValueError(
-                        f"Expected exactly one source list for Background {self.id}, but found {len(sources)}"
-                    )
+        newbg = Background( _format = bg._format,
+                            _method = bg._method,
+                            _sources_id = None,
+                            value = bg.value,
+                            noisg = bg.noise,
+                           )
+        if bg.format == 'map':
+            newbg.counts = bg.counts.copy()
+            newbg.variance = bg.counts.copy()
+        elif bg.format == 'polynomnial':
+            newbg.coeffs = bg.coeffs.copy()
+            newbg.x_degree = bg.coeffs.copy()
+            newbg.y_degree = bg.coeffs.copy()
 
-                output.append(sources[0])
+        return newbg
 
-                psfs = session.scalars(
-                    sa.select(PSF).where(PSF.image_id == self.image_id, PSF.provenance_id == self.provenance_id)
-                ).all()
-                if len(psfs) != 1:
-                    raise ValueError(f"Expected exactly one PSF for Background {self.id}, but found {len(psfs)}")
 
-                output.append(psfs[0])
+    # ======================================================================
+    # The fields below are things that we've deprecated; these definitions
+    #   are here to catch cases in the code where they're still used
 
-                wcs = session.scalars(
-                    sa.select(WorldCoordinates).where(WorldCoordinates.sources_id == sources.id)
-                ).all()
-                if len(wcs) != 1:
-                    raise ValueError(f"Expected exactly one wcs for Background {self.id}, but found {len(wcs)}")
+    @property
+    def image( self ):
+        raise RuntimeError( f"Background.image is deprecated, don't use it" )
 
-                output.append(wcs[0])
+    @image.setter
+    def image( self, val ):
+        raise RuntimeError( f"Background.image is deprecated, don't use it" )
 
-                zp = session.scalars(sa.select(ZeroPoint).where(ZeroPoint.sources_id == sources.id)).all()
+    @property
+    def image_id( self ):
+        raise RuntimeError( f"Background.image_id is deprecated, don't use it.  (Use sources_id)" )
 
-                if len(zp) != 1:
-                    raise ValueError(f"Expected exactly one zp for Background {self.id}, but found {len(zp)}")
+    @image_id.setter
+    def image_id( self, val ):
+        raise RuntimeError( f"Background.image_id is deprecated, don't use it.  (Use sources_id)" )
 
-                output.append(zp[0])
+    @property
+    def provenance( self ):
+        raise RuntimeError( f"Background.provenance is deprecated, don't use it" )
 
-        return output
+    @provenance.setter
+    def provenance( self, val ):
+        raise RuntimeError( f"Background.provenance is deprecated, don't use it" )
+
+    @property
+    def provenance_id( self ):
+        raise RuntimeError( f"Background.provenance_id is deprecated; use corresponding SourceList.provenance_id" )
+
+    @provenance_id.setter
+    def provenance_id( self, val ):
+        raise RuntimeError( f"Background.provenance_id is deprecated; use corresponding SourceList.provenance_id" )

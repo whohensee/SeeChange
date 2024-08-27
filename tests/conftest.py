@@ -20,10 +20,13 @@ from models.base import (
     get_all_database_objects,
     setup_warning_filters
 )
-from models.provenance import CodeVersion, Provenance
+from models.knownexposure import KnownExposure, PipelineWorker
+from models.provenance import CodeVersion, CodeHash, Provenance
 from models.catalog_excerpt import CatalogExcerpt
 from models.exposure import Exposure
 from models.object import Object
+from models.refset import RefSet
+from models.calibratorfile import CalibratorFileDownloadLock
 
 from util.archive import Archive
 from util.util import remove_empty_folders, env_as_bool
@@ -119,7 +122,7 @@ def any_objects_in_database( dbsession ):
             strio.write( f'There are {len(ids)} {Class.__name__} objects in the database. '
                          f'Please make sure to cleanup!')
             for id in ids:
-                obj = dbsession.scalars(sa.select(Class).where(Class.id == id)).first()
+                obj = dbsession.scalars(sa.select(Class).where(Class._id == id)).first()
                 strio.write( f'\n    {obj}' )
             SCLogger.error( strio.getvalue() )
     return any_objects
@@ -163,11 +166,23 @@ def pytest_sessionfinish(session, exitstatus):
 
         any_objects = any_objects_in_database( dbsession )
 
-        # delete the CodeVersion object (this should remove all provenances as well)
-        dbsession.execute(sa.delete(CodeVersion).where(CodeVersion.id == 'test_v1.0.0'))
+        # delete the CodeVersion object (this should remove all provenances as well,
+        # and that should cascade to almost everything else)
+        dbsession.execute(sa.delete(CodeVersion).where(CodeVersion._id == 'test_v1.0.0'))
 
         # remove any Object objects from tests, as these are not automatically cleaned up:
         dbsession.execute(sa.delete(Object).where(Object.is_test.is_(True)))
+
+        # make sure there aren't any CalibratorFileDownloadLock rows
+        # left over from tests that failed or errored out
+        dbsession.execute(sa.delete(CalibratorFileDownloadLock))
+
+        # remove RefSets, because those won't have been deleted by the provenance cascade
+        dbsession.execute(sa.delete(RefSet))
+
+        # remove any residual KnownExposures and PipelineWorkers
+        dbsession.execute( sa.delete( KnownExposure ) )
+        dbsession.execute( sa.delete( PipelineWorker ) )
 
         dbsession.commit()
 
@@ -192,8 +207,11 @@ def pytest_sessionfinish(session, exitstatus):
             if os.path.isdir(ARCHIVE_PATH):
                 files = list(pathlib.Path(ARCHIVE_PATH).rglob('*'))
 
-                if len(files) > 0 and verify_archive_database_empty:
-                    raise RuntimeError(f'There are files left in the archive after tests cleanup: {files}')
+                if len(files) > 0:
+                    if verify_archive_database_empty:
+                        raise RuntimeError(f'There are files left in the archive after tests cleanup: {files}')
+                    else:
+                        warnings.warn( f'There are files left in the archive after tests cleanup: {files}' )
 
 
 @pytest.fixture(scope='session')
@@ -224,13 +242,16 @@ def cache_dir():
 @pytest.fixture(scope="session")
 def data_dir():
     temp_data_folder = FileOnDiskMixin.local_path
-    os.makedirs(temp_data_folder, exist_ok=True)
-    with open(os.path.join(temp_data_folder, 'placeholder'), 'w'):
+    tdf = pathlib.Path( temp_data_folder )
+    tdf.mkdir( exist_ok=True, parents=True )
+    with open( tdf / 'placeholder', 'w' ):
         pass  # make an empty file inside this folder to make sure it doesn't get deleted on "remove_data_from_disk"
 
     # SCLogger.debug(f'temp_data_folder: {temp_data_folder}')
 
     yield temp_data_folder
+
+    ( tdf / 'placeholder' ).unlink( missing_ok=True )
 
     # remove all the files created during tests
     # make sure the test config is pointing the data_dir
@@ -291,103 +312,96 @@ def test_config():
 
 @pytest.fixture(scope="session", autouse=True)
 def code_version():
+    cv = CodeVersion( id="test_v1.0.0" )
+    # cv.insert()
+    # A test was failing on this line saying test_v1.0.0 already
+    # existed.  This happened on github actions, but *not* locally.  I
+    # can't figure out what's up.  So, for now, work around by just
+    # doing upsert.
+    cv.upsert()
+
     with SmartSession() as session:
-        cv = session.scalars(sa.select(CodeVersion).where(CodeVersion.id == 'test_v1.0.0')).first()
-        if cv is None:
-            cv = CodeVersion(id="test_v1.0.0")
-            cv.update()
-            session.add( cv )
-            session.commit()
-        cv = session.scalars(sa.select(CodeVersion).where(CodeVersion.id == 'test_v1.0.0')).first()
+        newcv = session.scalars( sa.select(CodeVersion ) ).first()
+        assert newcv is not None
 
     yield cv
 
+    with SmartSession() as session:
+        session.execute( sa.text( "DELETE FROM code_versions WHERE _id='test_v1.0.0'" ) )
+        # Verify that the code hashes got cleaned out too
+        them = session.query( CodeHash ).filter( CodeHash.code_version_id == 'test_v1.0.0' ).all()
+        assert len(them) == 0
 
 @pytest.fixture
 def provenance_base(code_version):
-    with SmartSession() as session:
-        code_version = session.merge(code_version)
-        p = Provenance(
-            process="test_base_process",
-            code_version=code_version,
-            parameters={"test_parameter": uuid.uuid4().hex},
-            upstreams=[],
-            is_testing=True,
-        )
-        p = session.merge(p)
-
-        session.commit()
+    p = Provenance(
+        process="test_base_process",
+        code_version_id=code_version.id,
+        parameters={"test_parameter": uuid.uuid4().hex},
+        upstreams=[],
+        is_testing=True,
+    )
+    p.insert()
 
     yield p
 
     with SmartSession() as session:
-        session.delete(p)
+        session.execute( sa.delete( Provenance ).where( Provenance._id==p.id ) )
         session.commit()
 
 
 @pytest.fixture
 def provenance_extra( provenance_base ):
-    with SmartSession() as session:
-        provenance_base = session.merge(provenance_base)
-        p = Provenance(
-            process="test_base_process",
-            code_version=provenance_base.code_version,
-            parameters={"test_parameter": uuid.uuid4().hex},
-            upstreams=[provenance_base],
-            is_testing=True,
-        )
-        p = session.merge(p)
-        session.commit()
+    p = Provenance(
+        process="test_base_process",
+        code_version_id=provenance_base.code_version_id,
+        parameters={"test_parameter": uuid.uuid4().hex},
+        upstreams=[provenance_base],
+        is_testing=True,
+    )
+    p.insert()
 
     yield p
 
     with SmartSession() as session:
-        session.delete(p)
+        session.execute( sa.delete( Provenance ).where( Provenance._id==p.id ) )
         session.commit()
 
 
 # use this to make all the pre-committed Image fixtures
 @pytest.fixture(scope="session")
 def provenance_preprocessing(code_version):
-    with SmartSession() as session:
-        code_version = session.merge(code_version)
-        p = Provenance(
-            process="preprocessing",
-            code_version=code_version,
-            parameters={"test_parameter": "test_value"},
-            upstreams=[],
-            is_testing=True,
-        )
-
-        p = session.merge(p)
-        session.commit()
+    p = Provenance(
+        process="preprocessing",
+        code_version_id=code_version.id,
+        parameters={"test_parameter": "test_value"},
+        upstreams=[],
+        is_testing=True,
+    )
+    p.insert()
 
     yield p
 
     with SmartSession() as session:
-        session.delete(p)
+        session.execute( sa.delete( Provenance ).where( Provenance._id==p.id ) )
         session.commit()
 
 
 @pytest.fixture(scope="session")
 def provenance_extraction(code_version):
-    with SmartSession() as session:
-        code_version = session.merge(code_version)
-        p = Provenance(
-            process="extraction",
-            code_version=code_version,
-            parameters={"test_parameter": "test_value"},
-            upstreams=[],
-            is_testing=True,
-        )
-
-        p = session.merge(p)
-        session.commit()
+    p = Provenance(
+        process="extraction",
+        code_version_id=code_version.id,
+        parameters={"test_parameter": "test_value"},
+        upstreams=[],
+        is_testing=True,
+    )
+    p.insert()
 
     yield p
 
     with SmartSession() as session:
-        session.delete(p)
+        session.execute( sa.delete( Provenance ).where( Provenance._id==p.id ) )
         session.commit()
 
 
@@ -463,24 +477,3 @@ def browser():
 @pytest.fixture( scope="session" )
 def webap_url():
     return "http://webap:8081/"
-
-
-# ======================================================================
-# FOR REASONS I DO NOT UNDERSTAND, adding this fixture caused
-#  models/test_image_querying.py::test_image_query to pass
-#
-# Without this fixture, that test failed, saying that the exposure file
-# did not exist.  This lead me to believe that some other test was
-# improperly removing it (since decam_exposure is a session fixture, so
-# that exposure should never get removed), and I added this fixture to
-# figure out which other test was doing that.  However, it caused
-# everything to pass... so it's a mystery.  I want to solve this
-# mystery, but for now this is here because it seems to make things
-# work.  (My real worry is that it's not a test doing something wrong,
-# but that there is something in the code that's too eager to delete
-# things.  In that case, we really need to find it.)
-
-@pytest.fixture( autouse=True )
-def hack_check_for_exposure( decam_exposure ):
-    yield True
-    assert pathlib.Path( decam_exposure.get_fullpath() ).is_file()

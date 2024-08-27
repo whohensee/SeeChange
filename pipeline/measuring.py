@@ -9,6 +9,7 @@ from astropy.table import Table
 from improc.photometry import iterative_cutouts_photometry
 from improc.tools import make_gaussian
 
+from models.base import SmartSession
 from models.cutouts import Cutouts
 from models.measurements import Measurements
 from models.enums_and_bitflags import BitFlagConverter, BadnessConverter
@@ -17,7 +18,7 @@ from pipeline.parameters import Parameters
 from pipeline.data_store import DataStore
 
 from util.util import parse_session, env_as_bool
-
+from util.logger import SCLogger
 
 class ParsMeasurer(Parameters):
     def __init__(self, **kwargs):
@@ -130,6 +131,14 @@ class ParsMeasurer(Parameters):
             'Radius in arcseconds to associate measurements with an object. '
         )
 
+        self.do_not_associate = self.add_par(
+            'do_not_associate',
+            False,
+            bool,
+            'By default, associate_object is called for each measurement, which will commit new '
+            'Object rowss to the database.  Set this flag to skip this step.'
+        )
+
         self._enforce_no_new_attrs = True
 
         self.override(kwargs)
@@ -149,21 +158,34 @@ class Measurer:
         self._filter_bank = None  # store an array of filters to match against the cutouts
         self._filter_psf_fwhm = None  # recall the FWHM used to produce this filter bank, recalculate if it changes
 
-    def run(self, *args, **kwargs):
-        """Go over the cutouts from an image and measure all sorts of things
+    def run(self, *args, sub_psf=None, **kwargs):
+        """Measure all sorts of things on the cutous from an image.
+
+        Go over the cutouts from an image and measure all sorts of things
         for each cutout: photometry (flux, centroids), etc.
 
         Returns a DataStore object with the products of the processing.
+
+        Parameters
+        ----------
+          sub_psf: PSF or None
+             The PSF object from the sub image.  If None, will use the
+             psf object from the data store, which is probably not the
+             right thing for zogy, but is hopefully close enough.  (It
+             would be the right thing in an Alard/Lupton subtraction
+             where the ref was convolved to the new.)
+
         """
         self.has_recalculated = False
         try:  # first make sure we get back a datastore, even an empty one
             if isinstance(args[0], Cutouts):
-                args, kwargs, session = parse_session(*args, **kwargs)
-                ds = DataStore()
-                ds.cutouts = args[0]
-                ds.detections = ds.cutouts.sources
-                ds.sub_image = ds.detections.image
-                ds.image = ds.sub_image.new_image
+                raise RuntimeError( "Need to update the code for creating a Measurer given a Cutouts" )
+                # args, kwargs, session = parse_session(*args, **kwargs)
+                # ds = DataStore()
+                # ds.cutouts = args[0]
+                # ds.detections = ds.cutouts.sources
+                # ds.sub_image = ds.detections.image
+                # ds.image = ds.sub_image.new_image
             else:
                 ds, session = DataStore.from_args(*args, **kwargs)
         except Exception as e:
@@ -180,6 +202,17 @@ class Measurer:
             # get the provenance for this step:
             prov = ds.get_provenance('measuring', self.pars.get_critical_pars(), session=session)
 
+            # sub_image = ds.get_subtraction( session=session )
+            # if sub_image is None:
+            #     raise ValueError(f"Can't find a subtraction image corresponding to datastore inputs: {ds.get_inputs()}" )
+            new_zp = ds.get_zp( session=session )
+            if new_zp is None:
+                raise ValueError(f"Can't find a zp corresponding to the datastore inputs: {ds.get_inputs()}")
+
+            new_wcs = ds.get_wcs( session=session )
+            if new_wcs is None:
+                raise ValueError(f"Can't find a wcs corresponding to the datastore inputs: {ds.get_inputs()}")
+
             detections = ds.get_detections(session=session)
             if detections is None:
                 raise ValueError(f'Cannot find a source list corresponding to the datastore inputs: {ds.get_inputs()}')
@@ -188,7 +221,10 @@ class Measurer:
             if cutouts is None:
                 raise ValueError(f'Cannot find cutouts corresponding to the datastore inputs: {ds.get_inputs()}')
             else:
-                cutouts.load_all_co_data()
+                cutouts.load_all_co_data( sources=detections )
+
+            if sub_psf is None:
+                sub_psf = ds.psf
 
             # try to find some measurements in memory or in the database:
             measurements_list = ds.get_measurements(prov, session=session)
@@ -197,22 +233,28 @@ class Measurer:
             if measurements_list is None or len(measurements_list) == 0:  # must create a new list of Measurements
                 self.has_recalculated = True
 
+                SCLogger.debug( f"Measurer performing measurements on {len(cutouts.co_dict)} cutouts" )
+
                 # prepare the filter bank for this batch of cutouts
-                if self._filter_psf_fwhm is None or self._filter_psf_fwhm != cutouts.sources.image.get_psf().fwhm_pixels:
-                    self.make_filter_bank(cutouts.co_dict["source_index_0"]["sub_data"].shape[0], cutouts.sources.image.get_psf().fwhm_pixels)
+
+                if self._filter_psf_fwhm is None or self._filter_psf_fwhm != sub_psf.fwhm_pixels:
+                    self.make_filter_bank( cutouts.co_dict["source_index_0"]["sub_data"].shape[0], sub_psf.fwhm_pixels )
 
                 # go over each cutouts object and produce a measurements object
                 measurements_list = []
                 for key, co_subdict in cutouts.co_dict.items():
-                    m = Measurements(cutouts=cutouts)
+                    m = Measurements( cutouts_id=cutouts.id )
                     m.index_in_sources = int(key[13:]) # grab just the number from "source_index_xxx"
+                    m.get_data_from_cutouts( cutouts=cutouts, detections=detections )
 
-                    m.best_aperture = cutouts.sources.best_aper_num
+                    m.best_aperture = -1 if detections.best_aper_num is None else detections.best_aper_num
 
-                    m.center_x_pixel = cutouts.sources.x[m.index_in_sources]  # These will be rounded by Measurements.__setattr__
-                    m.center_y_pixel = cutouts.sources.y[m.index_in_sources]
+                    # These will be rounded by Measurements.__setattr__
+                    m.center_x_pixel = detections.x[m.index_in_sources]
+                    m.center_y_pixel = detections.y[m.index_in_sources]
 
-                    m.aper_radii = cutouts.sources.image.new_image.zp.aper_cor_radii  # zero point corrected aperture radii
+                    # zero point corrected aperture radii
+                    m.aper_radii = new_zp.aper_cor_radii
 
                     ignore_bits = 0
                     for badness in self.pars.bad_pixel_exclude:
@@ -223,10 +265,11 @@ class Measurer:
 
                     annulus_radii_pixels = self.pars.annulus_radii
                     if self.pars.annulus_units == 'fwhm':
-                        fwhm = cutouts.source.image.get_psf().fwhm_pixels
+                        fwhm = sub_psf.fwhm_pixels
                         annulus_radii_pixels = [rad * fwhm for rad in annulus_radii_pixels]
 
                     # TODO: consider if there are any additional parameters that photometry needs
+                    # TODO : I'm distressed by how long this next one takes.
                     output = iterative_cutouts_photometry(
                         co_subdict['sub_data'],
                         co_subdict['sub_weight'],
@@ -252,7 +295,7 @@ class Measurer:
                     # update the coordinates using the centroid offsets
                     x = m.center_x_pixel + m.offset_x
                     y = m.center_y_pixel + m.offset_y
-                    ra, dec = m.cutouts.sources.image.new_image.wcs.wcs.pixel_to_world_values(x, y)
+                    ra, dec = new_wcs.wcs.pixel_to_world_values(x, y)
                     m.ra = float(ra)
                     m.dec = float(dec)
                     m.calculate_coordinates()
@@ -280,13 +323,12 @@ class Measurer:
                         fluxerr = np.nan
                         area = np.nan
                     else:
-                        flux, fluxerr, area = m.get_flux_at_point(ra, dec, aperture='psf')
+                        flux, fluxerr, area = m.get_flux_at_point( ra, dec, aperture='psf', wcs=new_wcs, psf=sub_psf )
                     m.flux_psf = flux
                     m.flux_psf_err = fluxerr
                     m.area_psf = area
 
                     # update the provenance
-                    m.provenance = prov
                     m.provenance_id = prov.id
 
                     # Apply analytic cuts to each stamp image, to rule out artefacts.
@@ -340,35 +382,49 @@ class Measurer:
                             m.disqualifier_scores[k] = v.item()
 
                     measurements_list.append(m)
-            else:
-                [setattr(m, 'cutouts', cutouts) for m in measurements_list]  # update with newest cutouts
 
-            saved_measurements = []
-            for m in measurements_list:
-                # regardless of wether we created these now, or loaded from DB,
-                # the bitflag should be updated based on the most recent data
-                m._upstream_bitflag = 0
-                m._upstream_bitflag |= m.cutouts.bitflag
+                SCLogger.debug( f"Running threshold cuts on {len(measurements_list)} measurements" )
 
-                ignore_bits = 0
-                for badness in self.pars.bad_flag_exclude:
-                    ignore_bits |= 2 ** BadnessConverter.convert(badness)
+                saved_measurements = []
+                for m in measurements_list:
+                    # regardless of wether we created these now, or loaded from DB,
+                    # the bitflag should be updated based on the most recent data
+                    m._upstream_bitflag = 0
+                    m._upstream_bitflag |= cutouts.bitflag
 
-                m.disqualifier_scores['bad_flag'] = int(np.bitwise_and(
-                    np.array(m.bitflag).astype('uint64'),
-                    ~np.array(ignore_bits).astype('uint64'),
-                ))
+                    ignore_bits = 0
+                    for badness in self.pars.bad_flag_exclude:
+                        ignore_bits |= 2 ** BadnessConverter.convert(badness)
 
-                threshold_comparison = self.compare_measurement_to_thresholds(m)
-                if threshold_comparison != "delete":  # all disqualifiers are below threshold
-                    m.is_bad = threshold_comparison == "bad"
-                    saved_measurements.append(m)
+                    m.disqualifier_scores['bad_flag'] = int(np.bitwise_and(
+                        np.array(m.bitflag).astype('uint64'),
+                        ~np.array(ignore_bits).astype('uint64'),
+                    ))
+
+                    threshold_comparison = self.compare_measurement_to_thresholds(m)
+                    if threshold_comparison != "delete":  # all disqualifiers are below threshold
+                        m.is_bad = threshold_comparison == "bad"
+                        saved_measurements.append(m)
 
                 # add the resulting measurements to the data store
                 ds.all_measurements = measurements_list  # debugging only
                 ds.failed_measurements = [m for m in measurements_list if m not in saved_measurements]  # debugging only
                 ds.measurements = saved_measurements  # only keep measurements that passed the disqualifiers cuts.
-                ds.sub_image.measurements = saved_measurements
+
+                # Associate objects
+                if not self.pars.do_not_associate:
+                    SCLogger.debug( f"Associating objects to {len(ds.measurements)} Measurementses" )
+
+                    with SmartSession( session ) as sess:
+                        for m in ds.measurements:
+                            m.associate_object( self.pars.association_radius,
+                                                is_testing=prov.is_testing,
+                                                session=sess )
+                else:
+                    SCLogger.debug( "Skipping association of measurements with objects." )
+
+            else:
+                ds.measurements = measurements_list
 
             ds.runtimes['measuring'] = time.perf_counter() - t_start
             if env_as_bool('SEECHANGE_TRACEMALLOC'):
@@ -421,7 +477,7 @@ class Measurer:
         self._filter_psf_fwhm = psf_fwhm
 
     def compare_measurement_to_thresholds(self, m):
-        """Compare measurement disqualifiers of a Measurements object to the thresholds set for 
+        """Compare measurement disqualifiers of a Measurements object to the thresholds set for
         this measurer object.
 
         Inputs:
@@ -429,14 +485,14 @@ class Measurer:
 
         returns one of three strings to indicate the result
           - "ok"     : All disqualifiers below both thresholds
-          - "bad"    : Some disqualifiers above mark_thresh but all 
+          - "bad"    : Some disqualifiers above mark_thresh but all
                        below deletion_thresh
           - "delete" : Some disqualifiers above deletion_thresh
-        
+
         """
         passing_status = "ok"
 
-        mark_thresh = m.provenance.parameters["thresholds"] # thresholds above which measurement is marked 'bad'
+        mark_thresh = self.pars.thresholds
         deletion_thresh = ( mark_thresh if self.pars.deletion_thresholds is None
                            else self.pars.deletion_thresholds )
 

@@ -1,29 +1,26 @@
 # DO NOT USE THESE OUTSIDE OF TESTS IN tests/
 #
-# (The cache has some scariness to it, and we don't want
-# it built into the mainstream pipeline.)
-#
-# What's more, because of how it functions, tests will probably fail if
-# you don't empty the cache every time you reinitialize the database.
-# See Issue #339/
-
-# (The cache is still not useless, because if you run multiple tests,
-# the cache will be used internally to avoid recalculating stuff for
-# different tests.)
+# (The cache has some scariness to it, and we don't want it built into
+# the mainstream pipeline.  It's used in test fixtures, and should only
+# be used there.)
 
 import os
 import shutil
 import json
+import uuid
 import datetime
+
+import sqlalchemy as sa
 
 from models.base import FileOnDiskMixin
 from util.logger import SCLogger
+from util.util import UUIDJsonEncoder, asUUID
 
 # ======================================================================
 # Functions for copying FileOnDisk objects to/from cache
 
 
-def copy_to_cache(FoD, cache_dir, filepath=None):
+def copy_to_cache(FoD, cache_dir, filepath=None, dont_actually_copy_just_return_json_filepath=False ):
     """Save a copy of the object (and, potentially, associated files) into a cache directory.
 
     If the object is a FileOnDiskMixin, then the file(s) pointed by get_fullpath()
@@ -60,12 +57,14 @@ def copy_to_cache(FoD, cache_dir, filepath=None):
         filepath = filepath[:-5]
 
     json_filepath = filepath
+
     if not isinstance(FoD, FileOnDiskMixin):
         if filepath is None:
-            raise ValueError("filepath must be given when caching a non FileOnDiskMixin object")
+            raise ValueError("filepath must be given when caching a non-FileOnDiskMixin object")
 
-    else:  # it is a FileOnDiskMixin
-        if filepath is None:  # use the FileOnDiskMixin filepath as default
+    else:
+        # it is a FileOnDiskMixin; figure out the JSON filepath of one wasn't given
+        if filepath is None:
             filepath = FoD.filepath  # use this filepath for the data files
             json_filepath = FoD.filepath  # use the same filepath for the json file too
         if (
@@ -75,6 +74,16 @@ def copy_to_cache(FoD, cache_dir, filepath=None):
         ):
                 json_filepath += FoD.filepath_extensions[0]  # only append this extension to the json filename
 
+    # attach the cache_dir and the .json extension if needed
+    json_filepath = os.path.join(cache_dir, json_filepath)
+    if not json_filepath.endswith('.json'):
+        json_filepath += '.json'
+
+    if dont_actually_copy_just_return_json_filepath:
+        return json_filepath
+
+    # Now actually do the saving
+    if isinstance(FoD, FileOnDiskMixin):
         for i, source_f in enumerate(FoD.get_fullpath(as_list=True)):
             if source_f is None:
                 continue
@@ -85,11 +94,7 @@ def copy_to_cache(FoD, cache_dir, filepath=None):
             os.makedirs(os.path.dirname(target_f), exist_ok=True)
             shutil.copy2(source_f, target_f)
 
-    # attach the cache_dir and the .json extension if needed
-    json_filepath = os.path.join(cache_dir, json_filepath)
     os.makedirs( os.path.dirname( json_filepath ), exist_ok=True )
-    if not json_filepath.endswith('.json'):
-        json_filepath += '.json'
     FoD.to_json(json_filepath)
 
     return json_filepath
@@ -149,12 +154,18 @@ def copy_list_to_cache(obj_list, cache_dir, filepath=None):
 
     # overwrite the JSON file with the list of dictionaries
     with open(json_filepath, 'w') as fp:
-        json.dump([obj.to_dict() for obj in obj_list], fp, indent=2)
+        json.dump([obj.to_dict() for obj in obj_list], fp, indent=2, cls=UUIDJsonEncoder)
 
     return json_filepath
 
 
-def copy_from_cache(cls, cache_dir, filepath):
+def realize_column_uuids( obj ):
+    for col in sa.inspect( obj ).mapper.columns:
+        if ( isinstance( col.type, sa.sql.sqltypes.UUID ) ) and ( getattr( obj, col.key ) is not None ):
+            setattr( obj, col.key, asUUID( getattr( obj, col.key ) ) )
+
+
+def copy_from_cache( cls, cache_dir, filepath, add_to_dict=None ):
     """Copy and reconstruct an object from the cache directory.
 
     Will need the JSON file that contains all the column attributes of the file.
@@ -179,15 +190,24 @@ def copy_from_cache(cls, cache_dir, filepath):
     ----------
     cls : Class that derives from FileOnDiskMixin, or that implements from_dict(dict)
         The class of the object that's being copied
+
     cache_dir: str or path
         The path to the cache directory.
+
     filepath: str or path
         The name of the JSON file that holds the column attributes.
+
+    add_to_dict: dict (optional)
+        Additional parameters to add to the dictionary pulled from the
+        cache.  Add things here that aren't saved to the cache but that
+        are necessary in order to instantiate the object.  Things here will
+        also override anything read from the cache.
 
     Returns
     -------
     output: SeeChangeBase
         The reconstructed object, of the same type as the class.
+
     """
     # allow user to give an absolute path, so long as it is in the cache dir
     if filepath.startswith(cache_dir):
@@ -201,21 +221,11 @@ def copy_from_cache(cls, cache_dir, filepath):
     with open(full_path + '.json', 'r') as fp:
         json_dict = json.load(fp)
 
-    output = cls.from_dict(json_dict)
+    if add_to_dict is not None:
+        json_dict.update( add_to_dict )
 
-    # COMMENTED THE NEXT OUT.
-    # It's the right thing to do -- automatically assigned
-    #  database attributes should *not* be restored
-    #  from whatever they happened to be when the cache
-    #  was written -- but it was leading to mysterious
-    #  sqlalchemy errors elsewhere.
-    # if hasattr( output, 'id' ):
-    #     output.id = None
-    # now = datetime.datetime.now( tz=datetime.timezone.utc )
-    # if hasattr( output, 'created_at' ):
-    #     output.created_at = now
-    # if hasattr( output, 'modified' ):
-    #     output.modified = now
+    output = cls.from_dict(json_dict)
+    realize_column_uuids( output )
 
     # copy any associated files
     if isinstance(output, FileOnDiskMixin):
@@ -281,14 +291,6 @@ def copy_list_from_cache(cls, cache_dir, filepath):
     now = datetime.datetime.now( tz=datetime.timezone.utc )
     for obj_dict in json_list:
         newobj = cls.from_dict( obj_dict )
-        # COMMENTED THE NEXT OUT.
-        # Search above for "COMMENTED THE NEXT OUT" for reason.
-        # if hasattr( newobj, 'id' ):
-        #     newobj.id = None
-        # if hasattr( newobj, 'created_at' ):
-        #     newobj.created_at = now
-        # if hasattr( newobj, 'modified' ):
-        #     newobj.modified = now
         output.append( newobj )
 
     if len(output) == 0:

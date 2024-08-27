@@ -6,37 +6,41 @@ import sqlalchemy as sa
 from sqlalchemy import orm
 from sqlalchemy.schema import UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB, ARRAY
-from sqlalchemy.ext.associationproxy import association_proxy
+from sqlalchemy.ext.declarative import declared_attr
 
-from models.base import Base, SeeChangeBase, SmartSession, AutoIDMixin, SpatiallyIndexed, HasBitFlagBadness
+from models.base import Base, SeeChangeBase, SmartSession, UUIDMixin, SpatiallyIndexed, HasBitFlagBadness
+from models.provenance import Provenance, provenance_self_association_table
+from models.psf import PSF
+from models.world_coordinates import WorldCoordinates
 from models.cutouts import Cutouts
+from models.image import Image, image_upstreams_association_table
+from models.source_list import SourceList
+from models.zero_point import ZeroPoint
 from models.enums_and_bitflags import measurements_badness_inverse
+
+from util.logger import SCLogger
 
 from improc.photometry import get_circle
 
 
-class Measurements(Base, AutoIDMixin, SpatiallyIndexed, HasBitFlagBadness):
+class Measurements(Base, UUIDMixin, SpatiallyIndexed, HasBitFlagBadness):
 
     __tablename__ = 'measurements'
 
-    __table_args__ = (
-        UniqueConstraint('cutouts_id', 'index_in_sources', 'provenance_id', name='_measurements_cutouts_provenance_uc'),
-        sa.Index("ix_measurements_scores_gin", "disqualifier_scores", postgresql_using="gin"),
-    )
+    @declared_attr
+    def __table_args__( cls ):
+        return (
+            sa.Index(f"{cls.__tablename__}_q3c_ang2ipix_idx", sa.func.q3c_ang2ipix(cls.ra, cls.dec)),
+            UniqueConstraint('cutouts_id', 'index_in_sources', 'provenance_id',
+                             name='_measurements_cutouts_provenance_uc'),
+            sa.Index("ix_measurements_scores_gin", "disqualifier_scores", postgresql_using="gin")
+        )
 
     cutouts_id = sa.Column(
-        sa.ForeignKey('cutouts.id', ondelete="CASCADE", name='measurements_cutouts_id_fkey'),
+        sa.ForeignKey('cutouts._id', ondelete="CASCADE", name='measurements_cutouts_id_fkey'),
         nullable=False,
         index=True,
         doc="ID of the cutouts object that this measurements object is associated with. "
-    )
-
-    cutouts = orm.relationship(
-        Cutouts,
-        cascade='save-update, merge, refresh-expire, expunge',
-        passive_deletes=True,
-        lazy='selectin',
-        doc="The cutouts object that this measurements object is associated with. "
     )
 
     index_in_sources = sa.Column(
@@ -47,32 +51,17 @@ class Measurements(Base, AutoIDMixin, SpatiallyIndexed, HasBitFlagBadness):
     )
 
     object_id = sa.Column(
-        sa.ForeignKey('objects.id', ondelete="CASCADE", name='measurements_object_id_fkey'),
+        sa.ForeignKey('objects._id', ondelete="CASCADE", name='measurements_object_id_fkey'),
         nullable=False,  # every saved Measurements object must have an associated Object
         index=True,
         doc="ID of the object that this measurement is associated with. "
     )
 
-    object = orm.relationship(
-        'Object',
-        cascade='save-update, merge, refresh-expire, expunge',
-        passive_deletes=True,
-        lazy='selectin',
-        doc="The object that this measurement is associated with. "
-    )
-
     provenance_id = sa.Column(
-        sa.ForeignKey('provenances.id', ondelete="CASCADE", name='measurements_provenance_id_fkey'),
+        sa.ForeignKey('provenances._id', ondelete="CASCADE", name='measurements_provenance_id_fkey'),
         nullable=False,
         index=True,
         doc="ID of the provenance of this measurement. "
-    )
-
-    provenance = orm.relationship(
-        'Provenance',
-        cascade='save-update, merge, refresh-expire, expunge',
-        lazy='selectin',
-        doc="The provenance of this measurement. "
     )
 
     flux_psf = sa.Column(
@@ -110,16 +99,58 @@ class Measurements(Base, AutoIDMixin, SpatiallyIndexed, HasBitFlagBadness):
     best_aperture = sa.Column(
         sa.SMALLINT,
         nullable=False,
-        default=-1,
+        server_default=sa.sql.elements.TextClause( '-1' ),
         doc="The index of the aperture that was chosen as the best aperture for this measurement. "
             "Set to -1 to select the PSF flux instead of one of the apertures. "
     )
 
-    mjd = association_proxy('cutouts', 'sources.image.mjd')
 
-    exp_time = association_proxy('cutouts', 'sources.image.exp_time')
+    # So many other calculated properties need the zeropoint that we
+    # have to be able to find it.  Users would be adivsed to set the
+    # zeropoint manually if they are able...  otherwise, we're gonna
+    # have six table joins to make sure we get the right zeropoint of
+    # the upstream new image!  (Note that before the database refactor,
+    # underneath many of these table joins were happening, but also it
+    # dependend on an image object it was linked to having the manual
+    # "zp" field loaded with the right thing.  So, we haven't reduced
+    # the need for manual setting in the refactor.)
+    @property
+    def zp( self ):
+        if self._zp is None:
+            sub_image = orm.aliased( Image )
+            sub_sources = orm.aliased( SourceList )
+            imassoc = orm.aliased( image_upstreams_association_table )
+            provassoc = orm.aliased( provenance_self_association_table )
+            with SmartSession() as session:
+                zps = ( session.query( ZeroPoint )
+                        .join( SourceList, SourceList._id == ZeroPoint.sources_id )
+                        .join( provassoc, provassoc.c.upstream_id == SourceList.provenance_id )
+                        .join( imassoc, imassoc.c.upstream_id == SourceList.image_id )
+                        .join( sub_image, sa.and_( sub_image.provenance_id == provassoc.c.downstream_id,
+                                                   sub_image._id == imassoc.c.downstream_id,
+                                                   sub_image.ref_image_id != SourceList.image_id ) )
+                        .join( sub_sources, sub_sources.image_id == sub_image._id )
+                        .join( Cutouts, sub_sources._id == Cutouts.sources_id )
+                        .filter( Cutouts._id==self.cutouts_id )
+                       ).all()
+            if len( zps ) > 1:
+                raise RuntimeError( "Found multiple zeropoints for Measurements, this shouldn't happen!" )
+            if len( zps ) == 0:
+                self._zp = None
+            else:
+                self._zp = zps[0]
+        if self._zp is None:
+            raise RuntimeError( "Couldn't find ZeroPoint for Measurements in the database.  Make sure the "
+                                "ZeroPoint is loaded." )
+        return self._zp
 
-    filter = association_proxy('cutouts', 'sources.image.filter')
+    # Normally, I wouldn't have a setter here, but because the query above is
+    #  so nasty, put this here for efficiency
+    @zp.setter
+    def zp( self, val ):
+        if not isinstance( zp, ZeroPoint ):
+            raise TypeError( "Measurements.zp must be a ZeroPoint" )
+        self._zp = val
 
     @property
     def flux(self):
@@ -183,44 +214,6 @@ class Measurements(Base, AutoIDMixin, SpatiallyIndexed, HasBitFlagBadness):
     @property
     def magnitude_err(self):
         return np.sqrt((2.5 / np.log(10) * self.flux_err / self.flux) ** 2 + self.zp.dzp ** 2)
-
-    @property
-    def lim_mag(self):
-        return self.sources.image.new_image.lim_mag_estimate  # TODO: improve this when done with issue #143
-
-    @property
-    def zp(self):
-        return self.sources.image.new_image.zp
-
-    @property
-    def fwhm_pixels(self):
-        return self.sources.image.get_psf().fwhm_pixels
-
-    @property
-    def psf(self):
-        return self.sources.image.get_psf().get_clip(x=self.center_x_pixel, y=self.center_y_pixel)
-
-    @property
-    def pixel_scale(self):
-        return self.sources.image.new_image.wcs.get_pixel_scale()
-
-    @property
-    def sources(self):
-        if self.cutouts is None:
-            return None
-        return self.cutouts.sources
-
-    @property
-    def image(self):
-        if self.cutouts is None or self.sources is None:
-            return None
-        return self.sources.image
-
-    @property
-    def instrument_object(self):
-        if self.cutouts is None or self.sources is None or self.sources.image is None:
-            return None
-        return self.sources.image.instrument_object
 
     bkg_mean = sa.Column(
         sa.REAL,
@@ -312,12 +305,102 @@ class Measurements(Base, AutoIDMixin, SpatiallyIndexed, HasBitFlagBadness):
     disqualifier_scores = sa.Column(
         JSONB,
         nullable=False,
-        default={},
+        server_default='{}',
         index=True,
         doc="Values that may disqualify this object, and mark it as not a real source. "
             "This includes all sorts of analytical cuts defined by the provenance parameters. "
             "The higher the score, the more likely the measurement is to be an artefact. "
     )
+
+    @property
+    def sub_data(self):
+        if self._sub_data is None:
+            self.get_data_from_cutouts()
+        return self._sub_data
+
+    @sub_data.setter
+    def sub_data( self, val ):
+        raise RuntimeError( "Don't set sub_data, use get_data_from_cutouts()" )
+
+    @property
+    def sub_weight(self):
+        if self._sub_weight is None:
+            self.get_data_from_cutouts()
+        return self._sub_weight
+
+    @sub_weight.setter
+    def sub_weight( self, val ):
+        raise RuntimeError( "Don't set sub_weight, use get_data_from_cutouts()" )
+
+    @property
+    def sub_flags(self):
+        if self._sub_flags is None:
+            self.get_data_from_cutouts()
+        return self._sub_flags
+
+    @sub_flags.setter
+    def sub_flags( self, val ):
+        raise RuntimeError( "Don't set sub_flags, use get_data_from_cutouts()" )
+
+    @property
+    def ref_data(self):
+        if self._ref_data is None:
+            self.get_data_from_cutouts()
+        return self._ref_data
+
+    @ref_data.setter
+    def ref_data( self, val ):
+        raise RuntimeError( "Don't set ref_data, use get_data_from_cutouts()" )
+
+    @property
+    def ref_weight(self):
+        if self._ref_weight is None:
+            self.get_data_from_cutouts()
+        return self._ref_weight
+
+    @ref_weight.setter
+    def ref_weight( self, val ):
+        raise RuntimeError( "Don't set ref_weight, use get_data_from_cutouts()" )
+
+    @property
+    def ref_flags(self):
+        if self._ref_flags is None:
+            self.get_data_from_cutouts()
+        return self._ref_flags
+
+    @ref_flags.setter
+    def ref_flags( self, val ):
+        raise RuntimeError( "Don't set ref_flags, use get_data_from_cutouts()" )
+
+    @property
+    def new_data(self):
+        if self._new_data is None:
+            self.get_data_from_cutouts()
+        return self._new_data
+
+    @new_data.setter
+    def new_data( self, val ):
+        raise RuntimeError( "Don't set new_data, use get_data_from_cutouts()" )
+
+    @property
+    def new_weight(self):
+        if self._new_weight is None:
+            self.get_data_from_cutouts()
+        return self._new_weight
+
+    @new_weight.setter
+    def new_weight( self, val ):
+        raise RuntimeError( "Don't set new_weight, use get_data_from_cutouts()" )
+
+    @property
+    def new_flags(self):
+        if self._new_flags is None:
+            self.get_data_from_cutouts()
+        return self._new_flags
+
+    @new_flags.setter
+    def new_flags( self, val ):
+        raise RuntimeError( "Don't set new_flags, use get_data_from_cutouts()" )
 
     @property
     def sub_nandata(self):
@@ -340,7 +423,7 @@ class Measurements(Base, AutoIDMixin, SpatiallyIndexed, HasBitFlagBadness):
     def __init__(self, **kwargs):
         SeeChangeBase.__init__(self)  # don't pass kwargs as they could contain non-column key-values
         HasBitFlagBadness.__init__(self)
-        
+
         self.index_in_sources = None
 
         self._sub_data = None
@@ -356,6 +439,13 @@ class Measurements(Base, AutoIDMixin, SpatiallyIndexed, HasBitFlagBadness):
         self._new_data = None
         self._new_weight = None
         self._new_flags = None
+
+        self._zp = None
+
+        # These are server defaults, but we might use them
+        #  before saving and reloading
+        self.best_aperture = -1
+        self.disqualifier_scores = {}
 
         # manually set all properties (columns or not)
         for key, value in kwargs.items():
@@ -382,12 +472,13 @@ class Measurements(Base, AutoIDMixin, SpatiallyIndexed, HasBitFlagBadness):
         self._new_weight = None
         self._new_flags = None
 
+        self._zp = None
+
     def __repr__(self):
         return (
             f"<Measurements {self.id} "
-            f"from SourceList {self.cutouts.sources_id} "
+            f"from Cutouts {self.cutouts_id} "
             f"(number {self.index_in_sources}) "
-            f"from Image {self.cutouts.sub_image_id} "
             f"at x,y= {self.center_x_pixel}, {self.center_y_pixel}>"
         )
 
@@ -400,32 +491,70 @@ class Measurements(Base, AutoIDMixin, SpatiallyIndexed, HasBitFlagBadness):
 
         super().__setattr__(key, value)
 
-    def get_data_from_cutouts(self):
+    def get_data_from_cutouts( self, cutouts=None, detections=None ):
         """Populates this object with the cutout data arrays used in
         calculations. This allows us to use, for example, self.sub_data
         without having to look constantly back into the related Cutouts.
 
-        Importantly, the data for this measurements should have already
-        been loaded by the Co_Dict class
+        Parameters
+        ----------
+        cutouts: Cutouts or None
+            The Cutouts to load the data from.  load_all_co_data will be
+            called on this to make sure the cutouts dictionary is
+            loaded.  (That function checks to see if it's there already,
+            and doesn't reload it it looks right.)  If None, will try to
+            find the cutouts in the database.
+
+        detections: SourceList or None
+            The detections associated with cutouts.  Needed because
+            laod_all_co_data needs sources.  If you leave this at None,
+            it will try to load the SourceList from the database.  Pass
+            this for efficiency, or if the cutouts or detections aren't
+            already in the database.
+
         """
+        if cutouts is None:
+            cutouts = Cutouts.get_by_id( self.cutouts_id )
+            if cutouts is None:
+                raise RuntimeError( "Can't find cutouts associated with Measurements, can't load cutouts data." )
+
+        if detections is None:
+            detections = SourceList.get_by_id( cutouts.sources_id )
+            if detections is None:
+                raise RuntimeError( "Can't find detections associated with Measurements, can't load cutouts data." )
+
+        cutouts.load_all_co_data( sources=detections )
+
         groupname = f'source_index_{self.index_in_sources}'
 
-        if not self.cutouts.co_dict.get(groupname):
+        if not cutouts.co_dict.get(groupname):
             raise ValueError(f"No subdict found for {groupname}")
 
-        co_data_dict = self.cutouts.co_dict[groupname] # get just the subdict with data for this
+        co_data_dict = cutouts.co_dict[groupname] # get just the subdict with data for this
 
         for att in Cutouts.get_data_dict_attributes():
-            setattr(self, att, co_data_dict.get(att))
+            setattr( self, f"_{att}", co_data_dict.get(att) )
 
 
-    def get_filter_description(self, number=None):
+    def get_filter_description(self, number=None, psf=None, provenance=None):
         """Use the number of the filter in the filter bank to get a string describing it.
 
-        The number is from the list of filters, and for a given measurement you can use the
-        disqualifier_score['filter bank'] to get the number of the filter that got the best S/N
-        (so that filter best describes the shape of the light in the cutout).
-        This is the default value for number, if it is not given.
+        Parameters
+        ----------
+          number: int
+            The number is from the list of filters, and for a given measurement you can use the
+            disqualifier_score['filter bank'] to get the number of the filter that got the best S/N
+            (so that filter best describes the shape of the light in the cutout).
+            This is the default value for number, if it is not given.
+
+          psf: PSF or None
+            The PSF assocated with this measurement.  If not given, loads
+            it from the database.  Here for efficiency.
+
+          provenance: Provenance or None
+            The provenance of this measurement.  If not given, loads it
+            from the database.  Here for efficiency.
+
         """
         if number is None:
             number = self.disqualifier_scores.get('filter bank', None)
@@ -435,14 +564,23 @@ class Measurements(Base, AutoIDMixin, SpatiallyIndexed, HasBitFlagBadness):
 
         if number < 0:
             raise ValueError('Filter number must be non-negative.')
-        if self.provenance is None:
-            raise ValueError('No provenance for this measurement, cannot recover the parameters used. ')
-        if self.cutouts is None or self.sources is None or self.sources.image is None:
-            raise ValueError('No cutouts for this measurement, cannot recover the PSF width. ')
 
-        mult = self.provenance.parameters['width_filter_multipliers']
-        angles = np.arange(-90.0, 90.0, self.provenance.parameters['streak_filter_angle_step'])
-        fwhm = self.sources.image.get_psf().fwhm_pixels
+        if provenance is None:
+            provenance = Provenance.get( self.provenance_id )
+        if psf is None:
+            with SmartSession() as session:
+                psf = ( session.query( PSF )
+                        .join( Cutouts, Cutouts.sources_id == PSF.sources_id )
+                        .filter( Cutouts._id == self.cutouts_id ) ).first()
+
+        if provenance is None:
+            raise ValueError("Can't find for this measurement, cannot recover the parameters used. ")
+        if psf is None:
+            raise ValueError("Can't find psf for this measurement, cannot recover the PSF width. ")
+
+        mult = provenance.parameters['width_filter_multipliers']
+        angles = np.arange(-90.0, 90.0, provenance.parameters['streak_filter_angle_step'])
+        fwhm = psf.fwhm_pixels
 
         if number == 0:
             return f'PSF match (FWHM= 1.00 x {fwhm:.2f})'
@@ -455,60 +593,94 @@ class Measurements(Base, AutoIDMixin, SpatiallyIndexed, HasBitFlagBadness):
 
         raise ValueError('Filter number too high for the filter bank. ')
 
-    def associate_object(self, session=None):
+    def associate_object(self, radius, is_testing=False, session=None):
         """Find or create a new object and associate it with this measurement.
 
-        Objects must have sufficiently close coordinates to be associated with this
-        measurement (set by the provenance.parameters['association_radius'], in arcsec).
+        If no Object is found, a new one is created and saved to the
+        database. Its coordinates will be identical to those of this
+        Measurements object.
 
-        If no Object is found, a new one is created, and its coordinates will be identical
-        to those of this Measurements object.
-
-        This should only be done for measurements that have passed deletion_threshold 
+        This should only be done for measurements that have passed deletion_threshold
         preliminary cuts, which mostly rules out obvious artefacts. However, measurements
         which passed the deletion_threshold cuts but failed the threshold cuts should still
         be allowed to use this method - in this case, they will create an object with
         attribute is_bad set to True so they are available to review in the db.
-        
+
+        TODO -- this is not the right behavior.  See Issue #345.
+
+        Parameters
+        ----------
+          radius: float
+            Distance in arcseconds an existing Object must be within
+            compared to (self.ra, self.dec) to be considered the same
+            object.
+
+          is_testing: bool, default False
+            Set to True if the provenance of the measurement is a
+            testing provenance.
+
         """
         from models.object import Object  # avoid circular import
 
-        with SmartSession(session) as session:
-            obj = session.scalars(sa.select(Object).where(
-                Object.cone_search(
-                    self.ra,
-                    self.dec,
-                    self.provenance.parameters['association_radius'],
-                    radunit='arcsec',
-                ),
-                Object.is_test.is_(self.provenance.is_testing),  # keep testing sources separate
-                Object.is_bad.is_(self.is_bad),    # keep good objects with good measurements
-            )).first()
+        with SmartSession(session) as sess:
+            try:
+                # Avoid race condition of two processes saving a measurement of
+                # the same new object at once.
+                self._get_table_lock( sess, 'objects' )
+                obj = sess.scalars(sa.select(Object).where(
+                    Object.cone_search( self.ra, self.dec, radius, radunit='arcsec' ),
+                    Object.is_test.is_(is_testing),  # keep testing sources separate
+                    Object.is_bad.is_(self.is_bad),    # keep good objects with good measurements
+                )).first()
 
-            if obj is None:  # no object exists, make one based on these measurements
-                obj = Object(
-                    ra=self.ra,
-                    dec=self.dec,
-                    is_bad=self.is_bad
-                )
-                obj.is_test = self.provenance.is_testing
+                if obj is None:  # no object exists, make one based on these measurements
+                    obj = Object(
+                        ra=self.ra,
+                        dec=self.dec,
+                        is_bad=self.is_bad
+                    )
+                    obj.is_test = is_testing
 
-            self.object = obj
+                    # TODO -- need a way to generate object names.  The way we were
+                    #   doing it before no longer works since it depended on numeric IDs.
+                    # (Issue #347)
+                    obj.name = str( obj.id )[-12:]
 
-    def get_flux_at_point(self, ra, dec, aperture=None):
+                    # SCLogger.debug( "Measurements.associate_object calling Object.insert (which will commit)" )
+                    obj.insert( session=sess )
+
+                self.object_id = obj.id
+            finally:
+                # Assure that lock is released
+                # SCLogger.debug( "Measurements.associate_object rolling back" )
+                sess.rollback()
+
+    def get_flux_at_point( self, ra, dec, aperture=None, wcs=None, psf=None ):
         """Use the given coordinates to find the flux, assuming it is inside the cutout.
 
         Parameters
         ----------
         ra: float
             The right ascension of the point in degrees.
+
         dec: float
             The declination of the point in degrees.
+
         aperture: int, optional
             Use this aperture index in the list of aperture radii to choose
             which aperture to use. Set -1 to get PSF photometry.
             Leave None to use the best_aperture.
             Can also specify "best" or "psf".
+
+        wcs: WorldCoordinates, optional
+            The WCS to use to go from ra/dec to x/y.  If not given, will
+            try to find it in the database using a rather tortured query.
+
+        psf: PSF, optional
+            The PSF from the sub_image this measurement came from.  If
+            not given, will try to find it in the database.  (Actually,
+            it won't, because that's complicated.  Just pass a PSF if
+            aperture is -1.)
 
         Returns
         -------
@@ -518,6 +690,7 @@ class Measurements(Base, AutoIDMixin, SpatiallyIndexed, HasBitFlagBadness):
             The error on the flux.
         area: float
             The area of the aperture.
+
         """
         if aperture is None:
             aperture = self.best_aperture
@@ -526,9 +699,44 @@ class Measurements(Base, AutoIDMixin, SpatiallyIndexed, HasBitFlagBadness):
         if aperture == 'psf':
             aperture = -1
 
+        if self.sub_data is None:
+            raise RuntimeError( "Run get_data_from_cutouts before running get_flux_at_point" )
+
         im = self.sub_nandata  # the cutouts image we are working with (includes NaNs for bad pixels)
 
-        wcs = self.sources.image.new_image.wcs.wcs
+        if wcs is None:
+            with SmartSession() as session:
+                wcs = ( session.query( WorldCoordinates )
+                        .join( Cutouts, WorldCoordinates.sources_id==Cutouts.sources_id )
+                        .filter( Cutouts.id==self.cutouts_id ) ).first()
+            if wcs is None:
+                # There was no WorldCoordiantes for the sub image, so we're going to
+                #   make an assumption that we make elsewhere: that the wcs for the
+                #   sub image is the same as the wcs for the new image.  This is
+                #   almost the same query that's used in zp() above.
+                sub_image = orm.aliased( Image )
+                sub_sources = orm.aliased( SourceList )
+                imassoc = orm.aliased( image_upstreams_association_table )
+                provassoc = orm.aliased( provenance_self_association_table )
+                wcs = ( session.query( WorldCoordinates )
+                        .join( SourceList, SourceList._id == WorldCoordinates.sources_id )
+                        .join( provassoc, provassoc.c.upstream_id == SourceList.provenance_id )
+                        .join( imassoc, imassoc.c.upstream_id == SourceList.image_id )
+                        .join( sub_image, sa.and_( sub_image.provenance_id == provassoc.c.downstream_id,
+                                                   sub_image._id == imassoc.c.downstream_id,
+                                                   sub_image.ref_image_id != SourceList.image_id ) )
+                        .join( sub_sources, sub_sources.image_id == sub_image._id )
+                        .join( Cutouts, sub_sources._id == Cutouts.sources_id )
+                        .filter( Cutouts._id==self.cutouts_id )
+                       ).all()
+                if len(wcs) > 1:
+                    raise RuntimeError( f"Found more than one WCS for measurements {self.id}, this shouldn't happen!" )
+                if len(wcs) == 0:
+                    raise RuntimeError( f"Couldn't find a WCS for measurements {self.id}" )
+                else:
+                    wcs = wcs[0]
+        wcs = wcs.wcs
+
         # these are the coordinates relative to the center of the cutouts
         image_pixel_x = wcs.world_to_pixel_values(ra, dec)[0]
         image_pixel_y = wcs.world_to_pixel_values(ra, dec)[1]
@@ -544,7 +752,11 @@ class Measurements(Base, AutoIDMixin, SpatiallyIndexed, HasBitFlagBadness):
 
         if aperture == -1:
             # get the subtraction PSF or (if unavailable) the new image PSF
-            psf = self.sources.image.get_psf()
+            # NOTE -- right now we're just getting the new image PSF, as we don't
+            # currently have code that saves the subtraction PSF
+            if psf is None:
+                raise ValueError( "Must pass PSF if you want to do PSF photometry." )
+
             psf_clip = psf.get_clip(x=image_pixel_x, y=image_pixel_y)
             offset_ix = int(np.round(offset_x))
             offset_iy = int(np.round(offset_y))
@@ -581,20 +793,28 @@ class Measurements(Base, AutoIDMixin, SpatiallyIndexed, HasBitFlagBadness):
 
         return flux, fluxerr, area
 
-    def get_upstreams(self, session=None):
-        """Get the image that was used to make this source list. """
-        with SmartSession(session) as session:
-            return session.scalars(sa.select(Cutouts).where(Cutouts.id == self.cutouts_id)).all()
-
-    def get_downstreams(self, session=None, siblings=False):
-        """Get the downstreams of this Measurements"""
-        return []
 
     def _get_inverse_badness(self):
         return measurements_badness_inverse
 
+    def get_upstreams( self, session=None ):
+        """Return the upstreams of this Measurements object.
+
+        Will be the Cutouts that these measurements are from.
+        """
+
+        with SmartSession( session ) as session:
+            return session.scalars( sa.Select( Cutouts ).where( Cutouts._id == self.cutouts_id ) ).all()
+
+    def get_downstreams( self, session=None, siblings=False ):
+        """Get downstream data products of this Measurements."""
+
+        # Measurements doesn't currently have downstreams; this will
+        #  change with the R/B score object.
+        return []
+
     @classmethod
-    def delete_list(cls, measurements_list, session=None, commit=True):
+    def delete_list(cls, measurements_list):
         """
         Remove a list of Measurements objects from the database.
 
@@ -602,51 +822,67 @@ class Measurements(Base, AutoIDMixin, SpatiallyIndexed, HasBitFlagBadness):
         ----------
         measurements_list: list of Measurements
             The list of Measurements objects to remove.
-        session: Session, optional
-            The database session to use. If not given, will create a new session.
-        commit: bool
-            If True, will commit the changes to the database.
-            If False, will not commit the changes to the database.
-            If session is not given, commit must be True.
         """
-        if session is None and not commit:
-            raise ValueError('If session is not given, commit must be True.')
+        for m in measurements_list:
+            m.delete_from_disk_and_database()
 
-        with SmartSession(session) as session:
-            for m in measurements_list:
-                m.delete_from_disk_and_database(session=session, commit=False)
-            if commit:
-                session.commit()
+    # ======================================================================
+    # The fields below are things that we've deprecated; these definitions
+    #   are here to catch cases in the code where they're still used
 
-# use these three functions to quickly add the "property" accessor methods
-def load_attribute(object, att):
-    """Load the data for a given attribute of the object. Load from Cutouts, but
-    if the data needs to be loaded from disk, ONLY load the subdict that contains
-    data for this object, not all objects in the Cutouts."""
-    if not hasattr(object, f'_{att}'):
-        raise AttributeError(f"The object {object} does not have the attribute {att}.")
-    if getattr(object, f'_{att}') is None:
-        if len(object.cutouts.co_dict) == 0 and object.cutouts.filepath is None:
-            return None  # objects just now created and not saved cannot lazy load data!
-        
-        groupname = f'source_index_{object.index_in_sources}'
-        if object.cutouts.co_dict[groupname] is not None:  # will check disk as Co_Dict
-            object.get_data_from_cutouts()
+    @property
+    def provenance( self ):
+        raise RuntimeError( f"Don't use Measurements.provenance, use provenance_id" )
 
-    # after data is filled, should be able to just return it
-    return getattr(object, f'_{att}')
+    @provenance.setter
+    def provenance( self, val ):
+        raise RuntimeError( f"Don't use Measurements.provenance, use provenance_id" )
 
-def set_attribute(object, att, value):
-    """Set the value of the attribute on the object. """
-    setattr(object, f'_{att}', value)
+    @property
+    def cutouts( self ):
+        raise RuntimeError( f"Don't use Measurements.cutouts, use cutouts_id" )
 
-# add "@property" functions to all the data attributes
-for att in Cutouts.get_data_dict_attributes():
-    setattr(
-        Measurements,
-        att,
-        property(
-            fget=lambda self, att=att: load_attribute(self, att),
-            fset=lambda self, value, att=att: set_attribute(self, att, value),
-        )
-    )
+    @cutouts.setter
+    def cutouts( self, val ):
+        raise RuntimeError( f"Don't use Measurements.cutouts, use cutouts_id" )
+
+    @property
+    def sources( self ):
+        raise RuntimeError( f"Don't use Measurements.sources, use cutouts.id and deal with it" )
+
+    @sources.setter
+    def sources( self, val ):
+        raise RuntimeError( f"Don't use Measurements.sources, use cutouts_id and deal with it" )
+
+    @property
+    def object( self ):
+        raise RuntimeError( f"Don't use Measurements.object, use object_id" )
+
+    @object.setter
+    def object( self, val ):
+        raise RuntimeError( f"Don't use Measurements.object, use object_id" )
+
+    @property
+    def mjd( self ):
+        raise RuntimeError( f"Measurements.mjd is deprecated, don't use it" )
+
+    @mjd.setter
+    def mjd( self, val ):
+        raise RuntimeError( f"Measurements.mjd is deprecated, don't use it" )
+
+    @property
+    def exp_time( self ):
+        raise RuntimeError( f"Measurements.exp_time is deprecated, don't use it" )
+
+    @exp_time.setter
+    def exp_time( self, val ):
+        raise RuntimeError( f"Measurements.exp_time is deprecated, don't use it" )
+
+    @property
+    def filter( self ):
+        raise RuntimeError( f"Measurements.filter is deprecated, don't use it" )
+
+    @filter.setter
+    def filter( self, val ):
+        raise RuntimeError( f"Measurements.filter is deprecated, don't use it" )
+

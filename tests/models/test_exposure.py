@@ -15,6 +15,7 @@ from sqlalchemy.exc import IntegrityError
 from models.base import SmartSession, CODE_ROOT
 from models.exposure import Exposure, SectionData
 from models.instrument import Instrument, DemoInstrument
+from models.provenance import Provenance
 from models.decam import DECam
 
 from tests.conftest import rnd_str
@@ -24,10 +25,42 @@ def test_exposure_instrument_provenance(sim_exposure1):
     with SmartSession() as session:
         sim_exposure1 = session.merge(sim_exposure1)
         assert sim_exposure1.id is not None
-        assert sim_exposure1.provenance is not None
-        assert sim_exposure1.provenance.id is not None
-        assert sim_exposure1.provenance.code_version is not None
-        assert sim_exposure1.provenance.parameters == {'instrument': 'DemoInstrument'}
+        assert sim_exposure1.provenance_id is not None
+        prov = Provenance.get( sim_exposure1.provenance_id )
+        assert prov.code_version_id == 'test_v1.0.0'
+        assert prov.parameters == {'instrument': 'DemoInstrument'}
+
+
+def test_exposure_insert( unloaded_exposure ):
+    try:
+        assert unloaded_exposure._id is None
+
+        unloaded_exposure.insert()
+
+        assert unloaded_exposure.id is not None
+        idtodelete = unloaded_exposure.id
+
+        # Verify that the exposure is really in the database
+        with SmartSession() as session:
+            assert session.query( Exposure ).filter( Exposure.filepath==unloaded_exposure.filepath ).first() is not None
+
+        # Verify that it yells at us if we try to insert something already there
+        with pytest.raises( IntegrityError, match="duplicate key value violates unique constraint" ):
+            unloaded_exposure.insert()
+
+        # Verfiy that it yells at us if we try to insert it under a different uuid but with
+        #   the same filepath
+        unloaded_exposure.id = uuid.uuid4()
+        with pytest.raises( IntegrityError, match='unique constraint "ix_exposures_filepath"' ):
+            unloaded_exposure.insert()
+
+    finally:
+        # Clean up the mess we made
+        if unloaded_exposure is not None:
+            with SmartSession() as session:
+                session.execute( sa.delete( Exposure ).where( Exposure._id==idtodelete ) )
+                session.execute( sa.delete( Provenance ).where( Provenance._id==unloaded_exposure.provenance_id ) )
+                session.commit()
 
 
 def test_exposure_no_null_values():
@@ -94,15 +127,16 @@ def test_exposure_no_null_values():
         session.commit()
         exposure_id = e.id
         assert exposure_id is not None
-        assert e.provenance.process == 'load_exposure'
-        assert e.provenance.parameters == {'instrument': e.instrument}
+        prov = Provenance.get( e.provenance_id )
+        assert prov.process == 'load_exposure'
+        assert prov.parameters == {'instrument': e.instrument}
 
     finally:
         # cleanup
         with SmartSession() as session:
             exposure = None
             if exposure_id is not None:
-                exposure = session.scalars(sa.select(Exposure).where(Exposure.id == exposure_id)).first()
+                exposure = session.scalars(sa.select(Exposure).where(Exposure._id == exposure_id)).first()
             if exposure is not None:
                 session.delete(exposure)
                 session.commit()
@@ -188,7 +222,7 @@ def test_exposure_comes_loaded_with_instrument_from_db(sim_exposure1):
 
     # now reload this exposure from the DB:
     with SmartSession() as session:
-        e2 = session.scalars(sa.select(Exposure).where(Exposure.id == eid)).first()
+        e2 = session.scalars(sa.select(Exposure).where(Exposure._id == eid)).first()
         assert e2 is not None
         assert e2.instrument_object is not None
         assert isinstance(e2.instrument_object, DemoInstrument)

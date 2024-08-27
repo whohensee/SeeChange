@@ -41,7 +41,7 @@ def test_decam_exposure(decam_filename):
     assert e.filter == 'r DECam SDSS c0002 6415.0 1480.0'
     assert not e.from_db
     assert e.info == {}
-    assert e.id is None
+    assert e._id is None
     assert e.target == 'ELAIS-E1'
     assert e.project == '2023A-716082'
 
@@ -92,8 +92,8 @@ def test_image_from_decam_exposure(decam_filename, provenance_base, data_dir):
     assert im.project == '2023A-716082'
     assert im.section_id == sec_id
 
-    assert im.id is None  # not yet on the DB
-    assert im.filepath is None  # no file yet!
+    assert im._id is None
+    assert im.filepath is None
 
     assert len(im.header) == 98
     assert im.header['NAXIS'] == 2
@@ -264,7 +264,7 @@ def test_add_to_known_exposures( decam_raw_origin_exposures ):
 
 @pytest.mark.skipif( env_as_bool('SKIP_NOIRLAB_DOWNLOADS'), reason="SKIP_NOIRLAB_DOWNLOADS is set" )
 def test_decam_download_and_commit_exposure(
-        code_version, decam_raw_origin_exposures, cache_dir, data_dir, test_config, archive
+        code_version, decam_raw_origin_exposures, cache_dir, data_dir, test_config, archive, decam_exposure_name
 ):
     eids = []
     try:
@@ -278,7 +278,28 @@ def test_decam_download_and_commit_exposure(
             # this commented out here in case somebody comes back and
             # thinks, hmm, better test this with more than on exposure.
             # expdexes = [ 1, 2 ]
-            expdexes = [ 1 ]
+            # expdexes = [ 1 ]
+
+            # ...we also want to make sure we don't test on an exposure that's
+            # the same as what the decam_exposure_name fixture returns, because
+            # when we clean up, we'll be undermining that (session-scope) fixture!
+
+            expdex = None
+            for dex in range( 1, len( decam_raw_origin_exposures ) ):
+                # Looking inside the _frame property, which you aren't supposed to do....
+                match = re.search( "([^/]+)$", decam_raw_origin_exposures._frame.iloc[dex].archive_filename )
+                if match.group(1) != decam_exposure_name:
+                    expdex = dex
+                    break
+
+            if expdex is None:
+                # Empirically, the length of decam_raw_origin_exposures
+                # is 18, so there must be 17 (or, 16 if you start with
+                # the second one as we did) that don't match
+                # decam_exposure_name!
+                raise RuntimeError( "This shouldn't happen" )
+
+            expdexes = [ expdex ]
 
             # get these downloaded first, to get the filenames to check against the cache
             downloaded = decam_raw_origin_exposures.download_exposures(
@@ -306,7 +327,7 @@ def test_decam_download_and_commit_exposure(
                 assert match is not None
                 # Todo : add the subdirectory to dbfname once that is implemented
                 dbfname = ( f'c4d_20{match.group("yymmdd")}_{match.group("hhmmss")}_{exposure.filter[0]}_'
-                            f'{exposure.provenance.id[0:6]}.fits' )
+                            f'{exposure.provenance_id[0:6]}.fits' )
                 assert exposure.filepath == dbfname
                 assert ( pathlib.Path( exposure.get_fullpath( download=False ) ) ==
                          pathlib.Path( FileOnDiskMixin.local_path ) / exposure.filepath )
@@ -322,27 +343,26 @@ def test_decam_download_and_commit_exposure(
 
         # Make sure they're really in the database
         with SmartSession() as session:
-            foundexps = session.query( Exposure ).filter( Exposure.id.in_( eids ) ).all()
+            foundexps = session.query( Exposure ).filter( Exposure._id.in_( eids ) ).all()
             assert len(foundexps) == len(exposures)
             assert set( [ f.id for f in foundexps ] ) == set( [ e.id for e in exposures ] )
             assert set( [ f.filepath for f in foundexps ]) == set( [ e.filepath for e in exposures ] )
     finally:
         # Clean up
         with SmartSession() as session:
-            exposures = session.query( Exposure ).filter( Exposure.id.in_( eids ) )
-            for exposure in exposures:
-                exposure.delete_from_disk_and_database( session=session, commit=False )
-            session.commit()
-            if 'downloaded' in locals():
-                for d in downloaded:
-                    path = os.path.join(data_dir, d['exposure'].name)
-                    if os.path.isfile(path):
-                        os.unlink(path)
-                    if os.path.isfile(d['exposure']):
-                        os.unlink(d['exposure'])
+            exposures = session.query( Exposure ).filter( Exposure._id.in_( eids ) )
+        for exposure in exposures:
+            exposure.delete_from_disk_and_database()
+        if 'downloaded' in locals():
+            for d in downloaded:
+                path = os.path.join(data_dir, d['exposure'].name)
+                if os.path.isfile(path):
+                    os.unlink(path)
+                if os.path.isfile(d['exposure']):
+                    os.unlink(d['exposure'])
 
-
-@pytest.mark.skipif( not env_as_bool('RUN_SLOW_TESTS'), reason="Set RUN_SLOW_TESTS to run this test" )
+# This test really isn't *that* slow.  Not compared to so many others nowadays.
+# @pytest.mark.skipif( not env_as_bool('RUN_SLOW_TESTS'), reason="Set RUN_SLOW_TESTS to run this test" )
 def test_get_default_calibrators( decam_default_calibrators ):
     sections, filters = decam_default_calibrators
     decam = get_instrument_instance( 'DECam' )
@@ -372,12 +392,14 @@ def test_get_default_calibrators( decam_default_calibrators ):
                         if ftype == 'linearity':
                             assert cf.image_id is None
                             assert cf.datafile_id is not None
-                            p = ( pathlib.Path( FileOnDiskMixin.local_path ) / cf.datafile.filepath )
+                            df = DataFile.get_by_id( cf.datafile_id, session=session )
+                            p = ( pathlib.Path( FileOnDiskMixin.local_path ) / df.filepath )
                             assert p.is_file()
                         else:
                             assert cf.image_id is not None
                             assert cf.datafile_id is None
-                            p = ( pathlib.Path( FileOnDiskMixin.local_path ) / cf.image.filepath )
+                            i = Image.get_by_id( cf.image_id, session=session )
+                            p = ( pathlib.Path( FileOnDiskMixin.local_path ) / i.filepath )
                             assert p.is_file()
 
 

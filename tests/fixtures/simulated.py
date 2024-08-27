@@ -46,6 +46,8 @@ def make_sim_exposure():
 
 
 def add_file_to_exposure(exposure):
+    """Creates an empty file at the exposure's filepath if one doesn't exist already."""
+
     fullname = exposure.get_fullpath()
     open(fullname, 'a').close()
 
@@ -55,12 +57,9 @@ def add_file_to_exposure(exposure):
         os.remove(fullname)
 
 
-def commit_exposure(exposure, session=None):
-    with SmartSession(session) as session:
-        exposure = session.merge(exposure)
-        exposure.nofile = True  # avoid calls to the archive to find this file
-        session.commit()
-
+def commit_exposure(exposure):
+    exposure.insert()
+    exposure.nofile = True  # avoid calls to the archive to find this file
     return exposure
 
 
@@ -74,19 +73,25 @@ def generate_exposure_fixture():
 
         yield e
 
+        e.delete_from_disk_and_database()
+
         with SmartSession() as session:
-            e = session.merge(e)
-            if sa.inspect(e).persistent:
-                session.delete(e)
-                session.commit()
+            # The provenance will have been automatically created
+            session.execute( sa.delete( Provenance ).where( Provenance._id==e.provenance_id ) )
+            session.commit()
 
     return new_exposure
 
-
-# this will inject 10 exposures named sim_exposure1, sim_exposure2, etc.
+# this will inject 9 exposures named sim_exposure1, sim_exposure2, etc.
 for i in range(1, 10):
     globals()[f'sim_exposure{i}'] = generate_exposure_fixture()
 
+
+@pytest.fixture
+def unloaded_exposure():
+    e = make_sim_exposure()
+
+    return e
 
 @pytest.fixture
 def sim_exposure_filter_array():
@@ -105,6 +110,9 @@ def sim_exposure_filter_array():
                 session.delete(e)
                 session.commit()
 
+            session.execute( sa.delete( Provenance ).where( Provenance._id==e.provenance_id ) )
+            session.commit()
+
 
 # tools for making Image fixtures
 class ImageCleanup:
@@ -121,8 +129,7 @@ class ImageCleanup:
 
     @classmethod
     def save_image(cls, image, archive=True):
-        """
-        Save the image to disk, and return an ImageCleanup object.
+        """Save the image to disk, and return an ImageCleanup object.
 
         Parameters
         ----------
@@ -160,18 +167,18 @@ class ImageCleanup:
 
     def __del__(self):
         try:
-            if self.archive:
-                self.image.delete_from_disk_and_database()
-            else:
-                self.image.remove_data_from_disk()
-        except Exception as e:
-            if (
-                    "Can't emit change event for attribute 'Image.md5sum' "
-                    "- parent object of type <Image> has been garbage collected"
-            ) in str(e):
-                # no need to worry about md5sum if the underlying Image is already gone
-                pass
-            warnings.warn(str(e))
+            # Just in case this image was used in a test and became an upstream, we
+            #   need to clean out those entries.  (They won't automatically clean out
+            #   because ondelete is RESTRICT for upstream_id in image_upstreams_associaton.)
+            # We're trusting that whoever made the downstream will clean themselves up.
+            with SmartSession() as sess:
+                sess.execute( sa.text( "DELETE FROM image_upstreams_association "
+                                       "WHERE upstream_id=:id" ),
+                              { "id": self.image.id } )
+                sess.commit()
+            self.image.delete_from_disk_and_database()
+        finally:
+            pass
 
 
 # idea taken from: https://github.com/pytest-dev/pytest/issues/2424#issuecomment-333387206
@@ -179,51 +186,48 @@ def generate_image_fixture(commit=True):
 
     @pytest.fixture
     def new_image(provenance_preprocessing):
+        im = None
+        exp = None
         exp = make_sim_exposure()
         add_file_to_exposure(exp)
-        if commit:
-            exp = commit_exposure(exp)
+        # Have to commit the exposure even if commit=False
+        #  because otherwise tests that use this fixture
+        #  would get an error about unknown exposure id
+        #  when trying to commit the image.
+        exp = commit_exposure(exp)
         exp.update_instrument()
 
         im = Image.from_exposure(exp, section_id=0)
+        im.provenance_id = provenance_preprocessing.id
         im.data = np.float32(im.raw_data)  # this replaces the bias/flat preprocessing
         im.flags = np.random.randint(0, 100, size=im.raw_data.shape, dtype=np.uint32)
         im.weight = np.full(im.raw_data.shape, 1.0, dtype=np.float32)
 
         if commit:
-            with SmartSession() as session:
-                im.provenance = provenance_preprocessing
-                im.save()
-                merged_image = session.merge(im)
-                merged_image.raw_data = im.raw_data
-                merged_image.data = im.data
-                merged_image.flags = im.flags
-                merged_image.weight = im.weight
-                merged_image.header = im.header
-                im = merged_image
-                session.commit()
+            im.save()
+            im.insert()
 
         yield im
 
-        with SmartSession() as session:
-            im = session.merge(im)
-            exp = im.exposure
-            im.delete_from_disk_and_database(session=session, commit=True)
-            if sa.inspect( im ).persistent:
-                session.delete(im)
-                session.commit()
+        # Just in case this image got added as an upstream to anything,
+        #   need to clean out the association table.  (See comment in
+        #   ImageCleanup.__del__.)
+        with SmartSession() as sess:
+            sess.execute( sa.text( "DELETE FROM image_upstreams_association "
+                                   "WHERE upstream_id=:id" ),
+                          { "id": im.id } )
+            sess.commit()
 
-            if im in session:
-                session.expunge(im)
+        # Clean up the exposure that got created; this will recusrively delete im as well
+        if exp is not None:
+            exp.delete_from_disk_and_database()
 
-            if exp is not None and sa.inspect( exp ).persistent:
-                session.delete(exp)
-                session.commit()
+        # Cleanup provenances?  We seem to be OK with those lingering in the database at the end of tests.
 
     return new_image
 
 
-# this will inject 10 images named sim_image1, sim_image2, etc.
+# this will inject 9 images named sim_image1, sim_image2, etc.
 for i in range(1, 10):
     globals()[f'sim_image{i}'] = generate_image_fixture()
 
@@ -239,74 +243,77 @@ def sim_reference(provenance_preprocessing, provenance_extra):
     ra = np.random.uniform(0, 360)
     dec = np.random.uniform(-90, 90)
     images = []
-    with SmartSession() as session:
-        provenance_extra = session.merge(provenance_extra)
+    exposures = []
 
-        for i in range(5):
-            exp = make_sim_exposure()
-            add_file_to_exposure(exp)
-            exp = commit_exposure(exp, session)
-            exp.filter = filter
-            exp.target = target
-            exp.project = "coadd_test"
-            exp.ra = ra
-            exp.dec = dec
+    for i in range(5):
+        exp = make_sim_exposure()
+        add_file_to_exposure(exp)
+        exp = commit_exposure( exp )
+        exp.filter = filter
+        exp.target = target
+        exp.project = "coadd_test"
+        exp.ra = ra
+        exp.dec = dec
+        exposures.append( exp )
 
-            exp.update_instrument()
-            im = Image.from_exposure(exp, section_id=0)
-            im.data = im.raw_data - np.median(im.raw_data)
-            im.flags = np.random.randint(0, 100, size=im.raw_data.shape, dtype=np.uint32)
-            im.weight = np.full(im.raw_data.shape, 1.0, dtype=np.float32)
-            im.provenance = provenance_preprocessing
-            im.ra = ra
-            im.dec = dec
-            im.save()
-            im.provenance = session.merge(im.provenance)
-            session.add(im)
-            images.append(im)
+        exp.update_instrument()
+        im = Image.from_exposure(exp, section_id=0)
+        im.data = im.raw_data - np.median(im.raw_data)
+        im.flags = np.random.randint(0, 100, size=im.raw_data.shape, dtype=np.uint32)
+        im.weight = np.full(im.raw_data.shape, 1.0, dtype=np.float32)
+        im.provenance_id = provenance_preprocessing.id
+        im.ra = ra
+        im.dec = dec
+        im.save()
+        im.insert()
+        images.append(im)
 
-        ref_image = Image.from_images(images)
-        ref_image.is_coadd = True
-        ref_image.data = np.mean(np.array([im.data for im in images]), axis=0)
-        ref_image.flags = np.max(np.array([im.flags for im in images]), axis=0)
-        ref_image.weight = np.mean(np.array([im.weight for im in images]), axis=0)
+    ref_image = Image.from_images(images)
+    ref_image.is_coadd = True
+    ref_image.data = np.mean(np.array([im.data for im in images]), axis=0)
+    ref_image.flags = np.max(np.array([im.flags for im in images]), axis=0)
+    ref_image.weight = np.mean(np.array([im.weight for im in images]), axis=0)
 
-        provenance_extra.process = 'coaddition'
-        ref_image.provenance = provenance_extra
-        ref_image.save()
-        session.add(ref_image)
+    coaddprov = Provenance( process='coaddition',
+                            code_version_id=provenance_extra.code_version_id,
+                            parameters={},
+                            upstreams=[provenance_extra],
+                            is_testing=True )
+    coaddprov.insert_if_needed()
+    ref_image.provenance_id = coaddprov.id
+    ref_image.save()
+    ref_image.insert()
 
-        ref = Reference()
-        ref.image = ref_image
-        ref.provenance = Provenance(
-            code_version=provenance_extra.code_version,
-            process='referencing',
-            parameters={'test_parameter': 'test_value'},
-            upstreams=[provenance_extra],
-            is_testing=True,
-        )
-        ref.validity_start = Time(50000, format='mjd', scale='utc').isot
-        ref.validity_end = Time(58500, format='mjd', scale='utc').isot
-        ref.section_id = 0
-        ref.filter = filter
-        ref.target = target
-        ref.project = "coadd_test"
-
-        session.add(ref)
-        session.commit()
+    ref = Reference()
+    ref.image_id = ref_image.id
+    refprov = Provenance(
+        code_version_id=provenance_extra.code_version_id,
+        process='referencing',
+        parameters={'test_parameter': 'test_value'},
+        upstreams=[provenance_extra],
+        is_testing=True,
+    )
+    refprov.insert_if_needed()
+    ref.provenance_id = refprov.id
+    ref.instrument = 'Simulated'
+    ref.section_id = 0
+    ref.filter = filter
+    ref.target = target
+    ref.project = "coadd_test"
+    ref.insert()
 
     yield ref
 
-    if 'ref' in locals():
-        with SmartSession() as session:
-            ref = ref.merge_all(session)
-            for im in ref.image.upstream_images:
-                im.exposure.delete_from_disk_and_database(session=session, commit=False)
-                im.delete_from_disk_and_database(session=session, commit=False)
-            ref.image.delete_from_disk_and_database(session=session, commit=False)
-            if sa.inspect(ref).persistent:
-                session.delete(ref.provenance)  # should also delete the reference
-            session.commit()
+    if 'ref_image' in locals():
+        ref_image.delete_from_disk_and_database()   # Should also delete the Reference
+
+    # Deleting exposure should cascade to images
+    for exp in exposures:
+        exp.delete_from_disk_and_database()
+
+    with SmartSession() as session:
+        session.execute( sa.delete( Provenance ).where( Provenance._id.in_([coaddprov.id, refprov.id]) ) )
+        session.commit()
 
 
 @pytest.fixture
@@ -322,31 +329,30 @@ def sim_sources(sim_image1):
         [x, y, flux, flux_err, rhalf],
         dtype=([('x', 'f4'), ('y', 'f4'), ('flux', 'f4'), ('flux_err', 'f4'), ('rhalf', 'f4')])
     )
-    s = SourceList(image=sim_image1, data=data, format='sepnpy')
+    s = SourceList(image_id=sim_image1.id, data=data, format='sepnpy')
 
+    iprov = Provenance.get( sim_image1.provenance_id )
     prov = Provenance(
-        code_version=sim_image1.provenance.code_version,
+        code_version_id=iprov.code_version_id,
         process='extraction',
         parameters={'test_parameter': 'test_value'},
-        upstreams=[sim_image1.provenance],
+        upstreams=[ iprov ],
         is_testing=True,
     )
+    prov.insert()
+    s.provenance_id=prov.id
 
-    with SmartSession() as session:
-        s.provenance = prov
-        s.save()
-        s = session.merge(s)
-        session.commit()
+    s.save()
+    s.insert()
 
     yield s
-
-    with SmartSession() as session:
-        s = s.merge_all(session)
-        s.delete_from_disk_and_database(session=session, commit=True)
+    # No need to delete, it will be deleted
+    #   as a downstream of the exposure parent
+    #   of sim_image1
 
 
 @pytest.fixture
-def sim_image_list(
+def sim_image_list_datastores(
         provenance_preprocessing,
         provenance_extraction,
         provenance_extra,
@@ -362,93 +368,88 @@ def sim_image_list(
     _, _, _, _, psf, psfxml = ztf_filepaths_image_sources_psf
 
     # make images with all associated data products
-    images = []
-    with SmartSession() as session:
-        for i in range(num):
-            exp = make_sim_exposure()
-            add_file_to_exposure(exp)
-            exp.update_instrument()
-            im = Image.from_exposure(exp, section_id=0)
-            im.data = np.float32(im.raw_data)  # this replaces the bias/flat preprocessing
-            im.flags = np.random.uniform(0, 1.01, size=im.raw_data.shape)  # 1% bad pixels
-            im.flags = np.floor(im.flags).astype(np.uint16)
-            im.weight = np.full(im.raw_data.shape, 4., dtype=np.float32)
-            # TODO: remove ZTF depenedence and make a simpler PSF model (issue #242)
+    dses = []
 
-            # save the images to disk and database
-            im.provenance = session.merge(provenance_preprocessing)
+    for i in range(num):
+        ds = DataStore()
+        exp = make_sim_exposure()
+        ds.exposure = exp
+        ds.exposure_id = exp.id
+        add_file_to_exposure(exp)
+        exp.update_instrument()
 
-            # add some additional products we may need down the line
-            im.sources = SourceList(format='filter', data=fake_sources_data)
-            # must randomize the sources data to get different MD5sum
-            im.sources.data['x'] += np.random.normal(0, .1, len(fake_sources_data))
-            im.sources.data['y'] += np.random.normal(0, .1, len(fake_sources_data))
+        im = Image.from_exposure(exp, section_id=0)
+        im.data = np.float32(im.raw_data)  # this replaces the bias/flat preprocessing
+        im.flags = np.random.uniform(0, 1.01, size=im.raw_data.shape)  # 1% bad pixels
+        im.flags = np.floor(im.flags).astype(np.uint16)
+        im.weight = np.full(im.raw_data.shape, 4., dtype=np.float32)
+        # TODO: remove ZTF depenedence and make a simpler PSF model (issue #242)
 
-            for j in range(len(im.sources.data)):
-                dx = im.sources.data['x'][j] - im.raw_data.shape[1] / 2
-                dy = im.sources.data['y'][j] - im.raw_data.shape[0] / 2
-                gaussian = make_gaussian(imsize=im.raw_data.shape, offset_x=dx, offset_y=dy, norm=1, sigma_x=width)
-                gaussian *= np.random.normal(im.sources.data['flux'][j], im.sources.data['flux_err'][j])
-                im.data += gaussian
+        # save the images to disk and database
+        im.provenance_id = provenance_preprocessing.id
 
-            im.save()
+        # add some additional products we may need down the line
+        ds.sources = SourceList(format='filter', data=fake_sources_data)
+        # must randomize the sources data to get different MD5sum
+        ds.sources.data['x'] += np.random.normal(0, .1, len(fake_sources_data))
+        ds.sources.data['y'] += np.random.normal(0, .1, len(fake_sources_data))
 
-            im.sources.provenance = provenance_extraction
-            im.sources.image = im
-            im.sources.save()
-            im.psf = PSF(filepath=str(psf.relative_to(im.local_path)), format='psfex')
-            im.psf.load(download=False, psfpath=psf, psfxmlpath=psfxml)
-            # must randomize to get different MD5sum
-            im.psf.data += np.random.normal(0, 0.001, im.psf.data.shape)
-            im.psf.info = im.psf.info.replace('Emmanuel Bertin', uuid.uuid4().hex)
+        for j in range(len(ds.sources.data)):
+            dx = ds.sources.data['x'][j] - ds.raw_data.shape[1] / 2
+            dy = ds.sources.data['y'][j] - ds.raw_data.shape[0] / 2
+            gaussian = make_gaussian(imsize=im.raw_data.shape, offset_x=dx, offset_y=dy, norm=1, sigma_x=width)
+            gaussian *= np.random.normal(ds.sources.data['flux'][j], ds.sources.data['flux_err'][j])
+            im.data += gaussian
 
-            im.psf.fwhm_pixels = width * 2.3  # this is a fake value, but we need it to be there
-            im.psf.provenance = provenance_extraction
-            im.psf.image = im
-            im.psf.save()
-            im.zp = ZeroPoint()
-            im.zp.zp = np.random.uniform(25, 30)
-            im.zp.dzp = np.random.uniform(0.01, 0.1)
-            im.zp.aper_cor_radii = [1.0, 2.0, 3.0, 5.0]
-            im.zp.aper_cors = np.random.normal(0, 0.1, len(im.zp.aper_cor_radii))
-            im.zp.provenance = provenance_extra
-            im.wcs = WorldCoordinates()
-            im.wcs.wcs = WCS()
-            # hack the pixel scale to reasonable values (0.3" per pixel)
-            im.wcs.wcs.wcs.pc = np.array([[0.0001, 0.0], [0.0, 0.0001]])
-            im.wcs.wcs.wcs.crval = np.array([ra, dec])
-            im.wcs.provenance = provenance_extra
-            im.wcs.provenance_id = im.wcs.provenance.id
-            im.wcs.sources = im.sources
-            im.wcs.sources_id = im.sources.id
-            im.wcs.save()
-            im.sources.zp = im.zp
-            im.sources.wcs = im.wcs
-            im = im.merge_all(session)
-            images.append(im)
+        im.save()
+        ds.image = im
 
-        session.commit()
+        ds.sources.provenance = provenance_extraction.id
+        im.sources.image_id = im.id
+        im.sources.save()
+        ds.psf = PSF(filepath=str(psf.relative_to(im.local_path)), format='psfex')
+        im.psf.load(download=False, psfpath=psf, psfxmlpath=psfxml)
+        # must randomize to get different MD5sum
+        ds.psf.data += np.random.normal(0, 0.001, im.psf.data.shape)
+        ds.psf.info = im.psf.info.replace('Emmanuel Bertin', uuid.uuid4().hex)
 
-    yield images
+        ds.psf.fwhm_pixels = width * 2.3  # this is a fake value, but we need it to be there
+        ds.psf.provenance_id = provenance_extraction.id
+        ds.psf.sources_id = ds.sources.id
+        im.psf.save()
+        ds.zp = ZeroPoint()
+        ds.zp.zp = np.random.uniform(25, 30)
+        ds.zp.dzp = np.random.uniform(0.01, 0.1)
+        ds.zp.aper_cor_radii = [1.0, 2.0, 3.0, 5.0]
+        ds.zp.aper_cors = np.random.normal(0, 0.1, len(im.zp.aper_cor_radii))
+        ds.zp.provenance_id = provenance_extra.id
+        ds.zp.sources_id = provenance_extra.id
+        ds.wcs = WorldCoordinates()
+        ds.wcs.wcs = WCS()
+        # hack the pixel scale to reasonable values (0.3" per pixel)
+        ds.wcs.wcs.wcs.pc = np.array([[0.0001, 0.0], [0.0, 0.0001]])
+        ds.wcs.wcs.wcs.crval = np.array([ra, dec])
+        ds.wcs.provenance_id = im.wcs.provenance.id
+        ds.wcs.sources_id = ds.sources.id
+        ds.wcs.save()
 
-    with SmartSession() as session, warnings.catch_warnings():
-        warnings.filterwarnings(
-            action='ignore',
-            message=r'.*DELETE statement on table .* expected to delete \d* row\(s\).*',
-        )
-        for im in images:
-            im = im.merge_all(session)
-            exp = im.exposure
-            im.delete_from_disk_and_database(session=session, commit=False, remove_downstreams=True)
-            exp.delete_from_disk_and_database(session=session, commit=False)
-        session.commit()
+        ds.image.insert()
+        ds.sources.insert()
+        ds.psf.insert()
+        ds.zp.insert()
+        ds.wcs.insert()
+
+    yield dses
+
+    for ds in dses:
+        ds.delete_everything()
 
 
 @pytest.fixture
 def provenance_subtraction(code_version, subtractor):
     with SmartSession() as session:
         prov = Provenance(
-            code_version=code_version,
+            code_version_id=code_version.id,
             process='subtraction',
             parameters=subtractor.pars.get_critical_pars(),
             upstreams=[],
@@ -470,7 +471,7 @@ def provenance_subtraction(code_version, subtractor):
 def provenance_detection(code_version, detector):
     with SmartSession() as session:
         prov = Provenance(
-            code_version=code_version,
+            code_version_id=code_version.id,
             process='detection',
             parameters=detector.pars.get_critical_pars(),
             upstreams=[],
@@ -492,7 +493,7 @@ def provenance_detection(code_version, detector):
 def provenance_cutting(code_version, cutter):
     with SmartSession() as session:
         prov = Provenance(
-            code_version=code_version,
+            code_version_id=code_version.id,
             process='cutting',
             parameters=cutter.pars.get_critical_pars(),
             upstreams=[],
@@ -514,7 +515,7 @@ def provenance_cutting(code_version, cutter):
 def provenance_measuring(code_version, measurer):
     with SmartSession() as session:
         prov = Provenance(
-            code_version=code_version,
+            code_version_id=code_version.id,
             process='measuring',
             parameters=measurer.pars.get_critical_pars(),
             upstreams=[],
@@ -562,9 +563,13 @@ def fake_sources_data():
     yield data
 
 
+# You will have trouble if you try to use this fixture
+#   at the same time as sim_image_list_datastores,
+#   because this one just adds things to the former's
+#   elements.
 @pytest.fixture
-def sim_sub_image_list(
-        sim_image_list,
+def sim_sub_image_list_datastores(
+        sim_image_list_datastores,
         sim_reference,
         fake_sources_data,
         cutter,
@@ -572,60 +577,54 @@ def sim_sub_image_list(
         provenance_detection,
         provenance_measuring,
 ):
-    sub_images = []
-    with SmartSession() as session:
-        for im in sim_image_list:
-            im.filter = sim_reference.image.filter
-            im.target = sim_reference.image.target
-            sub = Image.from_ref_and_new(sim_reference.image, im)
-            sub.is_sub = True
-            # we are not actually doing any subtraction here, just copying the data
-            # TODO: if we ever make the simulations more realistic we may want to actually do subtraction here
-            sub.data = im.data.copy()
-            sub.flags = im.flags.copy()
-            sub.weight = im.weight.copy()
-            sub.provenance = session.merge(provenance_subtraction)
-            sub.save()
-            sub.sources = SourceList(format='filter', num_sources=len(fake_sources_data))
-            sub.sources.provenance = session.merge(provenance_detection)
-            sub.sources.image = sub
-            # must randomize the sources data to get different MD5sum
-            fake_sources_data['x'] += np.random.normal(0, 1, len(fake_sources_data))
-            fake_sources_data['y'] += np.random.normal(0, 1, len(fake_sources_data))
-            sub.sources.data = fake_sources_data
-            sub.sources.save()
+    sub_dses = []
+    for ds in sub_image_list_datastores:
+        ds.reference = sim_reference
+        ds.image.filter = ds.ref_image.filter
+        ds.image.target = ds.ref_image.target
+        ds.image.upsert()
+        ds.sub_image = Image.from_ref_and_new( ds.ref_image, ds.image)
+        assert sub.is_sub == True
+        # we are not actually doing any subtraction here, just copying the data
+        # TODO: if we ever make the simulations more realistic we may want to actually do subtraction here
+        ds.sub_image.data = im.data.copy()
+        ds.sub_image.flags = im.flags.copy()
+        ds.sub_image.weight = im.weight.copy()
+        ds.sub_image.insert()
 
-            # hack the images as though they are aligned
-            sim_reference.image.info['alignment_parameters'] = sub.provenance.parameters['alignment']
-            sim_reference.image.info['original_image_filepath'] = sim_reference.image.filepath
-            sim_reference.image.info['original_image_id'] = sim_reference.image.id
-            im.info['alignment_parameters'] = sub.provenance.parameters['alignment']
-            im.info['original_image_filepath'] = im.filepath
-            im.info['original_image_id'] = im.id
+        ds.detections = SourceList(format='filter', num_sources=len(fake_sources_data))
+        ds.detections.provenance_id = provenance_detection.id
+        ds.detections.image_id = ds.sub_image.id
+        # must randomize the sources data to get different MD5sum
+        fake_sources_data['x'] += np.random.normal(0, 1, len(fake_sources_data))
+        fake_sources_data['y'] += np.random.normal(0, 1, len(fake_sources_data))
+        ds.detections.data = fake_sources_data
+        ds.detections.save()
+        ds.detections.insert()
 
-            sub.aligned_images = [sim_reference.image, im]
+        # hack the images as though they are aligned
+        # sim_reference.image.info['alignment_parameters'] = sub.provenance.parameters['alignment']
+        # sim_reference.image.info['original_image_filepath'] = sim_reference.image.filepath
+        # sim_reference.image.info['original_image_id'] = sim_reference.image.id
+        # im.info['alignment_parameters'] = sub.provenance.parameters['alignment']
+        # im.info['original_image_filepath'] = im.filepath
+        # im.info['original_image_id'] = im.id
 
-            ds = cutter.run(sub.sources)
-            sub.sources.cutouts = ds.cutouts
-            ds.cutouts.save()
+        # sub.aligned_images = [sim_reference.image, im]
 
-            sub = sub.merge_all(session)
-            ds.detections = sub.sources
+        ds = cutter.run( ds )
+        ds.cutouts.save()
+        ds.cutouts.insert()
 
-            sub_images.append(sub)
+        sub_dses.append( ds )
 
-        session.commit()
-
-    yield sub_images
-
-    with SmartSession() as session:
-        for sub in sub_images:
-            sub.delete_from_disk_and_database(session=session, commit=False, remove_downstreams=True)
-        session.commit()
+    # The sim_image_list_datastores cleanup will clean our new mess up
+    return sub_dses
 
 
+# This fixture is broken until we do Issue #346
 @pytest.fixture
-def sim_lightcurves(sim_sub_image_list, measurer):
+def sim_lightcurves(sim_sub_image_list_datastores, measurer):
     # a nested list of measurements, each one for a different part of the images,
     # for each image contains a list of measurements for the same source
     measurer.pars.thresholds['bad pixels'] = 100  # avoid losing measurements to random bad pixels
@@ -635,16 +634,15 @@ def sim_lightcurves(sim_sub_image_list, measurer):
     measurer.pars.association_radius = 5.0  # make it harder for random offsets to dis-associate the measurements
     lightcurves = []
 
-    with SmartSession() as session:
-        for im in sim_sub_image_list:
-            ds = measurer.run(im.sources.cutouts)
-            ds.save_and_commit(session=session)
+    for ds in sim_sub_image_list_datastores:
+        ds = measurer.run( ds )
+        ds.save_and_commit()
 
         # grab all the measurements associated with each Object
         for m in ds.measurements:
             m = session.merge(m)
-            lightcurves.append(m.object.measurements)
+            lightcurves.append(m.object.measurements)  # <--- need to update with obejct measurement list
 
-    yield lightcurves
+    # sim_sub_image_list_datastores cleanup will clean up our mess too
+    return lightcurves
 
-    # no cleanup for this one

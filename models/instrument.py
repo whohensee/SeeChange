@@ -16,7 +16,7 @@ from astropy.io import fits
 import astropy.units as u
 from astropy.coordinates import SkyCoord, Distance
 
-from models.base import Base, SmartSession, AutoIDMixin
+from models.base import Base, SmartSession, UUIDMixin
 
 from pipeline.catalog_tools import Bandpass
 from util.util import parse_dateobs, read_fits_image, get_inheritors
@@ -123,7 +123,7 @@ def get_instrument_instance(instrument_name):
     return INSTRUMENT_INSTANCE_CACHE[instrument_name]
 
 
-class SensorSection(Base, AutoIDMixin):
+class SensorSection(Base, UUIDMixin):
     """
     A class to represent a section of a sensor.
     This is most often associated with a CCD chip, but could be any
@@ -251,7 +251,7 @@ class SensorSection(Base, AutoIDMixin):
     defective = sa.Column(
         sa.Boolean,
         nullable=False,
-        default=False,
+        server_default='false',
         index=True,
         doc='Whether this section is defective (i.e., if True, do not use it!). '
     )
@@ -1474,7 +1474,7 @@ class Instrument:
             if calibtype in self.preprocessing_nofile_steps:
                 continue
 
-            # SCLogger.debug( f'Looking for calibrators for {section} type {calibtype}' )
+            SCLogger.debug( f'Looking for calibrators for {section} type {calibtype}' )
 
             calib = None
             with CalibratorFileDownloadLock.acquire_lock(
@@ -1494,7 +1494,8 @@ class Instrument:
                     if calibtype == 'flat':
                         calibquery = calibquery.filter( CalibratorFile.flat_type == flattype )
                     if ( calibtype in [ 'flat', 'fringe', 'illumination' ] ) and ( filter is not None ):
-                        calibquery = calibquery.join( Image ).filter( Image.filter == filter )
+                        calibquery = ( calibquery.join( Image, CalibratorFile.image_id==Image._id )
+                                       .filter( Image.filter == filter ) )
 
                     if calibquery.count() > 1:
                         SCLogger.warning( f"Found {calibquery.count()} valid {calibtype}s for "

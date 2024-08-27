@@ -122,7 +122,7 @@ class Preprocessor:
                     f'Missing some preprocessing steps {needed_steps - known_steps} '
                     f'for instrument {self.instrument.name}'
                 )
-            
+
             # Get the calibrator files
             SCLogger.debug("preprocessing: getting calibrator files")
             preprocparam = self.instrument.preprocessing_calibrator_files( self.pars.calibset,
@@ -158,7 +158,7 @@ class Preprocessor:
             needed_steps -= filter_skips
 
             if image._data is None:  # in case we skip all preprocessing steps
-                image.data = image.raw_data 
+                image.data = image.raw_data
 
             # the image keeps track of the steps already done to it in image.preproc_bitflag,
             # which is translated into a list of keywords when calling image.preprocessing_done
@@ -283,10 +283,10 @@ class Preprocessor:
                     image._flags[ wsat ] |= string_to_bitflag( "saturated", flag_image_bits_inverse )
                     image._weight[ wsat ] = 0.
 
-            if image.provenance is None:
-                image.provenance = prov
+            if image.provenance_id is None:
+                image.provenance_id = prov.id
             else:
-                if image.provenance.id != prov.id:
+                if image.provenance_id != prov.id:
                     # Logically, this should never happen
                     raise ValueError('Provenance mismatch for image and provenance!')
 
