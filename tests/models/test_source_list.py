@@ -12,11 +12,11 @@ import sqlalchemy as sa
 import astropy.table
 import astropy.io.fits
 
-from models.base import SmartSession, FileOnDiskMixin
+from models.base import SmartSession, FileOnDiskMixin, CODE_ROOT
 from models.exposure import Exposure
 from models.image import Image
 from models.source_list import SourceList
-
+from util.util import env_as_bool
 
 def test_source_list_bitflag(sim_sources):
     # all these data products should have bitflag zero
@@ -331,6 +331,24 @@ def test_calc_apercor( decam_datastore ):
     # assert sources.calc_aper_cor( inf_aper_num=2 ) == pytest.approx( -0.425, abs=0.001 )
     # assert sources.calc_aper_cor( aper_num=2 ) == pytest.approx( -0.025, abs=0.001 )
     # assert sources.calc_aper_cor( aper_num=2, inf_aper_num=7 ) == pytest.approx( -0.024, abs=0.001 )
+
+
+def test_lim_mag_estimate( ptf_datastore_through_zp ):
+    ds = ptf_datastore_through_zp
+
+    # make and save a Magnitude vs SNR (limiting mag) plot
+    if env_as_bool('INTERACTIVE'):
+        limMagEst = ds.sources.estimate_lim_mag( aperture=1, zp=ds.zp,
+                                                 savePlot=os.path.join(CODE_ROOT, 'tests/plots/snr_mag_plot.png' ) )
+    else:
+        limMagEst = ds.sources.estimate_lim_mag( aperture=1, zp=ds.zp )
+
+    #check the limiting magnitude is consistent with previous runs
+    assert limMagEst == pytest.approx(20.04, abs=0.05)
+
+    # Make sure that it can auto-get the zp if you don't pass one
+    redo = ds.sources.estimate_lim_mag( aperture=1 )
+    assert redo == limMagEst
 
 
 # ROB TODO : check this test once you've updated DataStore and the associated fixtures
