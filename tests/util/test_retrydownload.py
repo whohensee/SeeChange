@@ -65,6 +65,18 @@ def test_404():
     with pytest.raises( RuntimeError, match='3 exceptions trying to download.*, failing.' ):
         retry_download( url_nonexistent, f'{nonexistent}.dat', retries=3, sleeptime=1, exists_ok=False )
 
+def test_mismatch_md5():
+    fname = "".join( random.choices( string.ascii_lowercase, k=10 ) )
+    fpath = pathlib.Path( fname )
+    assert not fpath.exists()
+    try:
+        with pytest.raises( RuntimeError, match="5 exceptions trying to download.*failing." ):
+            retry_download( url1, fpath, exists_ok=False, md5sum="wrong" )
+    finally:
+        fpath.unlink( missing_ok=True )
+        assert not fpath.exists()
+
+
 def test_overwrite_misc_file():
     fname = "".join( random.choices( string.ascii_lowercase, k=10 ) )
     fpath = pathlib.Path( fname )
