@@ -127,12 +127,12 @@ def datastore_factory(data_dir, pipeline_factory, request):
         augments = {} if augments is None else augments
 
         stepstodo = [ 'preprocessing', 'extraction', 'bg', 'wcs', 'zp',
-                      'subtraction', 'detection', 'cutting', 'measuring' ]
+                      'subtraction', 'detection', 'cutting', 'measuring', 'scoring' ]
         if through_step is None:
             if skip_sub:
                 through_step = 'zp'
             else:
-                through_step = 'measuring'
+                through_step = 'scoring'
         dex = stepstodo.index( through_step )
         stepstodo = stepstodo[:dex+1]
 
@@ -589,7 +589,20 @@ def datastore_factory(data_dir, pipeline_factory, request):
                 if use_cache:
                     copy_list_to_cache(ds.all_measurements, cache_dir, all_measurements_cache_name)
                     copy_list_to_cache(ds.measurements, cache_dir, measurements_cache_name)
-
+                    
+        if 'scoring' in stepstodo:
+            all_deepscores_cache_name = os.path.join( cache_dir,
+                                                        cache_sub_name +
+                                                        f'.all_deepscores_{ds.prov_tree["scoring"].id[:6]}.json')
+            deepscores_cache_name = os.path.join(cache_dir, cache_sub_name +
+                                                   f'.deepscores_{ds.prov_tree["scoring"].id[:6]}.json')
+            
+            if 0: # WHPR change this to be the case where the cache is utilized
+                True
+            else: # cannot find scores on cache
+                SCLogger.debug( "make_datastore running scorer to create scores" )
+                ds = p.scorer.run(ds)
+                # add the case starting with if use_cache:     here
 
 
         # Make sure there are no residual exceptions caught in the datastore

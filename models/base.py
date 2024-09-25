@@ -273,6 +273,7 @@ def get_all_database_objects(display=False, session=None):
     from models.zero_point import ZeroPoint
     from models.cutouts import Cutouts
     from models.measurements import Measurements
+    from models.deepscore import DeepScore
     from models.object import Object
     from models.calibratorfile import CalibratorFile, CalibratorFileDownloadLock
     from models.catalog_excerpt import CatalogExcerpt
@@ -283,9 +284,9 @@ def get_all_database_objects(display=False, session=None):
 
     models = [
         CodeHash, CodeVersion, Provenance, ProvenanceTag, DataFile, Exposure, Image,
-        SourceList, PSF, WorldCoordinates, ZeroPoint, Cutouts, Measurements, Object,
-        CalibratorFile, CalibratorFileDownloadLock, CatalogExcerpt, Reference, RefSet,
-        SensorSection, AuthUser, PasswordLink, KnownExposure, PipelineWorker
+        SourceList, PSF, WorldCoordinates, ZeroPoint, Cutouts, Measurements, DeepScore,
+        Object, CalibratorFile, CalibratorFileDownloadLock, CatalogExcerpt, Reference,
+        RefSet, SensorSection, AuthUser, PasswordLink, KnownExposure, PipelineWorker
     ]
 
     output = {}
@@ -334,7 +335,7 @@ class SeeChangeBase:
 
         if hasattr(self, '_bitflag'):
             self._bitflag = 0
-        if hasattr(self, 'upstream__bitflag'):
+        if hasattr(self, 'upstream_bitflag'):
             self._upstream_bitflag = 0
 
         for k, v in kwargs.items():

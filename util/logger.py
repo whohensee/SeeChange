@@ -2,8 +2,8 @@ import sys
 import multiprocessing
 import logging
 
-_default_log_level = logging.WARNING
-# _default_log_level = logging.DEBUG
+# _default_log_level = logging.WARNING
+_default_log_level = logging.DEBUG
 
 _default_datefmt = '%Y-%m-%d %H:%M:%S'
 # Normally you don't want to show milliseconds, because it's additional gratuitous information
