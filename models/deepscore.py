@@ -1,7 +1,9 @@
 import sqlalchemy as sa
 from sqlalchemy import orm
+from sqlalchemy.schema import UniqueConstraint
 from sqlalchemy.ext.hybrid import hybrid_property
 from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.ext.declarative import declared_attr
 
 import numpy as np
 
@@ -20,16 +22,16 @@ class DeepScore(Base, UUIDMixin, HasBitFlagBadness):
 
     __tablename__ = 'deepscores'
 
-    # IMPORTANT
-    # Do I need to add any table constraints here, and how should I write them?
+    @declared_attr
+    def __table_args__( cls ):
+        return (
+            UniqueConstraint('measurements_id', '_algorithm', 'provenance_id',
+                             name='_algorithm_measurements_provenance_uc'),
+        )
 
     _algorithm = sa.Column(
         sa.SMALLINT,
         nullable=False,
-        # QUESTION: Definitely never want a deepscore being pushed without an algorithm -
-        #    would it be better to have no default, or an obviously bad default, with
-        #    nullable=False?
-        # server_default=sa.sql.elements.TextClause( '-1' )
         doc=("Integer which represents which of the ML/DL algorithms was used "
         "for this object. Also specifies necessary parameters for a given "
         "algorithm."
@@ -38,10 +40,10 @@ class DeepScore(Base, UUIDMixin, HasBitFlagBadness):
 
     info = sa.Column(
         JSONB,
-        nullable=False,
-        server_default='{}',
+        nullable=True,
+        server_default=None,
         doc=(
-            "Additional information on this DeepScore. "
+            "Optional additional information on this DeepScore. "
         )
     )
 

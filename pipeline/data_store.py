@@ -494,8 +494,18 @@ class DataStore:
             if len(wrongtypes) > 0:
                 raise TypeError( f"Datastore.scores must be a list of DeepScores, but the passed list "
                                  f"included {wrongtypes}" )
-            self._scores = val
-            # WHPR it is nontrivial to attempt to set the IDs here.
+
+            # ensure that there is a score for each measurement, otherwise reject
+            if ( len( val ) != len(self._measurements) ):
+                raise ValueError( "Score and measurements list not the same length" )
+            
+            if ( set([str(score.measurements_id) for score in val])
+                    .issubset(set([str(m.id) for m in self._measurements])) ):
+                self._scores = val
+            else:
+                raise RuntimeError( "Attempted to set scores corresponding to wrong measurements")
+                
+
 
     @staticmethod
     def from_args(*args, **kwargs):
@@ -1978,6 +1988,7 @@ class DataStore:
             SCLogger.debug( "save_and_commit measurements" )
             commits.append( 'measurements' )
 
+        # scores
         if ( self.scores is not None ) and ( len(self.scores) > 0 ):
             if ( self.measurements is not None ) and ( len(self.measurements) > 0 ):
                 for i, s in enumerate(self.scores):
