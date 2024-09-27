@@ -1651,7 +1651,6 @@ class DataStore:
         return self._get_data_product( "measurements", Measurements, "cutouts", Measurements.cutouts_id, "measuring",
                                        is_list=True, provenance=provenance, reload=reload, session=session )
 
-    # WHPR fully understand what is going on here
     def get_deepscores(self, provenance=None, reload=False, session=None):
         """Get a list of DeepScores, either from memory or from database"""
         return self._get_data_product( "scores", DeepScore, "measurements", DeepScore.measurements_id,
@@ -1963,22 +1962,12 @@ class DataStore:
             if ( len( self.scores ) != len(self.measurements) ):
                 raise ValueError(f"Score and measurements list not the same length")
 
-            # SIMPLEST OPTION: just make sure they are sorted the same
-            # if the first score corresponds to the first measurements, it makes the scoring
-            # section much much easier
-            # for i, s in enumerate(self.scores):
-            #     if s.measurements_id != self.measurements[i].id:
-            #         breakpoint()
-            #         raise ValueError("ds measurements and scores not sorted properly")
-                
-            # Simplest option didn't work.
             sm_index_list = []
-            m_ids = [m.id for m in self.measurements]
+            m_ids = [str(m.id) for m in self.measurements]
             for i, s in enumerate(self.scores):
-                if not s.measurements_id in m_ids:
+                if not str(s.measurements_id) in m_ids:
                     raise ValueError("score points to nonexistant measurement")
-                # breakpoint()
-                sm_index_list.append(m_ids.index(s.measurements_id))
+                sm_index_list.append(m_ids.index(str(s.measurements_id)))
 
         # measurements
         if ( self.measurements is not None ) and ( len(self.measurements) > 0 ):
@@ -1989,15 +1978,10 @@ class DataStore:
             SCLogger.debug( "save_and_commit measurements" )
             commits.append( 'measurements' )
 
-        # WHPR need to figure out how to connect the right score to the right measurement
-        # SOLN: add a step before measurements that connects each score to an index in the
-        # measurements list
         if ( self.scores is not None ) and ( len(self.scores) > 0 ):
             if ( self.measurements is not None ) and ( len(self.measurements) > 0 ):
                 for i, s in enumerate(self.scores):
-                    # s.measurements_id = self.measurements[i].id
                     s.measurements_id = m_ids[sm_index_list[i]]
-                    # somehow update s.measurements_id = correct_measurement.id
             DeepScore.upsert_list( self.scores, load_defaults=True )
             SCLogger.debug( "save_and_commit scores" )
             commits.append( 'scores' )

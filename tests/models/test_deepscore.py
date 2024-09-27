@@ -8,7 +8,6 @@ from models.deepscore import DeepScore
 
 def test_deepscore_saving(ptf_datastore, scorer):
     # scorer.pars.test_parameter = uuid.uuid4().hex   # this might not be necessary/possible anymore
-
     ds = ptf_datastore
     ##  delete the scores from the datastore
     ds.scores = None

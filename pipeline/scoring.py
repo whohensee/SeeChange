@@ -74,18 +74,7 @@ class Scorer:
             # find if these deepscores have already been made
             scores = ds.get_deepscores( prov, session = session, reload=True )
 
-            # compare whether the scores and measurements agree with each other
-            # if each score goes to the corresponding measurement, should not need
-            # to redo.
-            # needs_redo = False
-            # if scores is not None and len(scores) != 0:
-            #     for i, s in enumerate(scores):
-            #         if s.measurements_id != measurements[i].id:
-            #             needs_redo = True
-
-
-            if scores is None or len(scores) == 0: # or needs_redo:
-                # recalculate
+            if scores is None or len(scores) == 0:
                 self.has_recalculated = True
 
                 # go over each measurements object and produce a DeepScore object
@@ -99,10 +88,34 @@ class Scorer:
                     # add it to the list
                     scorelist.append( d )
 
-                ds.scores = scorelist
+                scores = scorelist
 
-            else:
-                ds.scores = scores
+            #   regardless of whether we loaded or calculated the scores, we need
+            # to update the bitflag
+            #   note that this bitflag update feels expensive. Bitflag IS updated
+            # inside of from_measurements when the score is created, but
+            # perhaps this is still necessary for the case where a flag is
+            # changed upstream and then the pipeline is reran
+            for score in scores:
+                upstream_m_bitflag = [m.bitflag for m in measurements if m.id == score.measurements_id]
+                if not len(upstream_m_bitflag) == 1:
+                    raise RuntimeError( f"Expected 1 matching measurements, got {len(upstream_m_bitflag)}")
+                score._upstream_bitflag = 0
+                score._upstream_bitflag |= upstream_m_bitflag[0]
+
+            # add the resulting scores to the ds
+
+            for score in scores:
+                if score.provenance_id is None:
+                    score.provenance_id = prov.id
+                else:
+                    if score.provenance_id != prov.id:
+                        raise ValueError(
+                                f'Provenance mismatch for cutout {score.provenance.id[:6]} '
+                                f'and preset provenance {prov.id[:6]}!'
+                            )
+
+            ds.scores = scores
 
             ds.runtimes['scoring'] = time.perf_counter() - t_start
             if env_as_bool('SEECHANGE_TRACEMALLOC'):

@@ -797,6 +797,10 @@ class SeeChangeBase:
                 if isinstance(value, list):
                     value = [v.hex if isinstance(v, UUID) else v for v in value]
 
+            if key == '_id' and value is not None:
+                if isinstance(value, UUID):
+                    value = value.hex
+
             if isinstance(value, np.ndarray) and key in [
                 'aper_rads', 'aper_radii', 'aper_cors', 'aper_cor_radii',
                 'flux_apertures', 'flux_apertures_err', 'area_apertures',
@@ -829,6 +833,10 @@ class SeeChangeBase:
     def from_dict(cls, dictionary):
         """Convert a dictionary into a new object. """
         dictionary.pop('modified', None)  # we do not want to recreate the object with an old "modified" time
+
+        obj_id = dictionary.get('_id')
+        if obj_id is not None:
+            dictionary['_id'] = UUID(obj_id)
 
         md5sum = dictionary.get('md5sum', None)
         if md5sum is not None:

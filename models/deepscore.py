@@ -1,17 +1,18 @@
 import sqlalchemy as sa
 from sqlalchemy import orm
 from sqlalchemy.ext.hybrid import hybrid_property
+from sqlalchemy.dialects.postgresql import JSONB
 
 import numpy as np
 
-from models.base import Base, UUIDMixin, SeeChangeBase, SmartSession
+from models.base import Base, UUIDMixin, SeeChangeBase, SmartSession, HasBitFlagBadness
 from models.enums_and_bitflags import DeepscoreAlgorithmConverter
 from models.provenance import Provenance
 from models.measurements import Measurements
 
 
 
-class DeepScore(Base, UUIDMixin):
+class DeepScore(Base, UUIDMixin, HasBitFlagBadness):
     """Contains the Deep Learning/Machine Learning algorithm score assigned to
     the corresponding measurements object. Each DeepScore object contains the
     result of a single algorithm, which is identified by the ___ attribute.
@@ -25,10 +26,22 @@ class DeepScore(Base, UUIDMixin):
     _algorithm = sa.Column(
         sa.SMALLINT,
         nullable=False,
-        server_default=sa.sql.elements.TextClause( '-1' ),   # WHPR remove this; negative could cause issue?
+        # QUESTION: Definitely never want a deepscore being pushed without an algorithm -
+        #    would it be better to have no default, or an obviously bad default, with
+        #    nullable=False?
+        # server_default=sa.sql.elements.TextClause( '-1' )
         doc=("Integer which represents which of the ML/DL algorithms was used "
         "for this object. Also specifies necessary parameters for a given "
         "algorithm."
+        )
+    )
+
+    info = sa.Column(
+        JSONB,
+        nullable=False,
+        server_default='{}',
+        doc=(
+            "Additional information on this DeepScore. "
         )
     )
 
@@ -74,6 +87,7 @@ class DeepScore(Base, UUIDMixin):
     def __init__(self, *args, **kwargs):
         SeeChangeBase.__init__(self) # don't pass kwargs as they could contain
                                      # non-column key-values
+        HasBitFlagBadness.__init__(self)
 
         # manually set all properties (columns or not)
         self.set_attributes_from_dict(kwargs)
@@ -85,12 +99,11 @@ class DeepScore(Base, UUIDMixin):
 
     def __repr__(self):
         return (
-            f"<DeepScore {self.id} "  # WHPR check its still .id not ._id
+            f"<DeepScore {self.id} "
             f"from Measurements {self.measurements_id} "
             f"with algorithm {self.algorithm}>"
         )
 
-    # WHPR need to review how to pass this a measurements after refactor
     @staticmethod
     def from_measurements(measurements, provenance=None, **kwargs):
         """Create a DeepScore object from a single measurements object, using 
@@ -99,9 +112,9 @@ class DeepScore(Base, UUIDMixin):
 
         score = DeepScore()
         score.measurements_id = measurements.id
-        if provenance is not None:
-            score.provenance_id = provenance.id  # WHPR double check if its okay this can
-                                            # be none with no provenance provided
+        score.provenance_id = None if provenance is None else provenance.id
+
+        score._upstream_bitflag = measurements.bitflag
 
         return score
 
