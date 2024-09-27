@@ -9,7 +9,6 @@ from models.deepscore import DeepScore
 from pipeline.top_level import Pipeline
 
 def test_deepscore_saving(ptf_datastore, scorer):
-    # scorer.pars.test_parameter = uuid.uuid4().hex   # this might not be necessary/possible anymore
     ds = ptf_datastore
     ##  delete the scores from the datastore
     ds.scores = None
@@ -59,6 +58,7 @@ def test_multiple_algorithms(decam_exposure, decam_reference, decam_default_cali
         ds2 = p2.run(exposure, sec_id)
 
         with SmartSession() as session:
+            # commit and check the proper number of scores are saved to db
             ds2.save_and_commit(session=session)
             m_ids = [m.id for m in ds2.measurements]
             dbscores = session.query( DeepScore ).filter( DeepScore.measurements_id.in_( m_ids )).all()

@@ -15,7 +15,6 @@ class ParsScorer(Parameters):
     def __init__(self, **kwargs):
         super().__init__()
 
-        # would we rather this be the integer in the enum list instead?
         self.algorithm = self.add_par(
             'algorithm',
             'random',

@@ -273,6 +273,7 @@ class BackgroundMethodConverter( EnumConverter ):
     _dict_inverse = None
 
 class DeepscoreAlgorithmConverter( EnumConverter ):
+    # These algorithms are implemented in models/deepscore.py
     _dict = {
         0: 'random',  # for testing only
         1: 'allperfect', # for testing only

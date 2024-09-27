@@ -499,13 +499,12 @@ class DataStore:
             if ( len( val ) != len(self._measurements) ):
                 raise ValueError( "Score and measurements list not the same length" )
             
+            # ensure that the scores relate to measurements in the datascore
             if ( set([str(score.measurements_id) for score in val])
                     .issubset(set([str(m.id) for m in self._measurements])) ):
                 self._scores = val
             else:
                 raise RuntimeError( "Attempted to set scores corresponding to wrong measurements")
-                
-
 
     @staticmethod
     def from_args(*args, **kwargs):
