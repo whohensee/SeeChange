@@ -71,11 +71,12 @@ def test_exposure_no_null_values():
     required = {
         'mjd': 58392.1,
         'exp_time': 30,
-        'filter': 'r',
         'md5sum': uuid.UUID('00000000-0000-0000-0000-000000000000'),
         'ra': np.random.uniform(0, 360),
         'dec': np.random.uniform(-90, 90),
         'instrument': 'DemoInstrument',
+        # 'filter': 'r',    # Filter now requires an instrument: this made the test hard
+                            # to fix
         'project': 'foo',
         'target': 'bar',
     }

@@ -253,15 +253,37 @@ class Exposure(Base, UUIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagBad
 
     exp_time = sa.Column(sa.REAL, nullable=False, index=True, doc="Exposure time in seconds. ")
 
-    filter = sa.Column(sa.Text, nullable=True, index=True, doc="Name of the filter used to make this exposure. ")
+    # WHPR make sure this doc is still accurate before pushing
+    _filter = sa.Column(sa.Text,
+                        nullable=True,
+                        index=True,
+                        doc=("Name of the filter used to make this exposure. "
+                             "This is generally the short filter name - conversion "
+                             "to the proper name for each instument happens in its code."))
 
     airmass = sa.Column(sa.REAL, nullable=True, index=True, doc="Airmass taken from the header of the exposure. ")
 
     @property
-    def filter_short(self):
-        if self.filter is None:
+    def filter( self ):
+        if self._filter is None:
             return None
-        return self.instrument_object.get_short_filter_name(self.filter)
+        else:
+            if self.instrument_object is None:
+                raise ValueError( "Exposure must have an instrument to set a filter" )
+            return self.instrument_object.get_full_filter_name( self._filter )
+        
+    @filter.setter
+    def filter( self, val ):
+        if self.instrument_object is None:
+                raise ValueError( "Exposure must have an instrument to set a filter" )
+        self._filter = self.instrument_object.get_short_filter_name( val )
+
+    # WHPR consider how to use this to fix everything to use new logic easily
+    @property
+    def filter_short(self):
+        if self._filter is None:
+            return None
+        return self._filter
 
     filter_array = sa.Column(
         ARRAY(sa.Text, zero_indexes=True),
@@ -362,6 +384,10 @@ class Exposure(Base, UUIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagBad
 
         if 'header' in kwargs:
             kwargs['_header'] = kwargs.pop('header')
+
+        # filter needs to be set after instrument - this will be rerun
+        if 'filter' in kwargs:
+            kwargs.pop('filter')
 
         # manually set all properties (columns or not, but don't
         # overwrite instance methods) Do this once here, because some of
@@ -481,6 +507,7 @@ class Exposure(Base, UUIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagBad
                         f"Header telescope {v} does not match Exposure telescope {self.telescope}"
                     )
             elif k == 'filter' and isinstance(v, list):
+                # WHPR convert filter array to use short filter names too
                 self.filter_array = v
             elif k == 'filter' and isinstance(v, str):
                 self.filter = v
@@ -595,7 +622,7 @@ class Exposure(Base, UUIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagBad
         date = t.strftime('%Y%m%d')
         time = t.strftime('%H%M%S')
 
-        filter = self.instrument_object.get_short_filter_name(self.filter)
+        filter = self.filter_short
 
         ra = self.ra
         ra_int, ra_frac = str(float(ra)).split('.')

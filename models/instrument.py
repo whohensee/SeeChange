@@ -1156,6 +1156,16 @@ class Instrument:
         """
 
         return filter
+    
+    @classmethod
+    def get_full_filter_name(cls, shortfilter):
+        """
+        Translate the short filter name into the full version,
+        The default is to just return the short filter name,
+        unless an instrument subclass has overridden these functions.
+        """
+
+        return filter
 
     @classmethod
     def standard_apertures( cls ):
