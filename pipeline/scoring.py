@@ -111,7 +111,8 @@ class Scorer:
 
             #   regardless of whether we loaded or calculated the scores, we need
             # to update the bitflag
-
+            
+            # NOTE: zip only works since get_scores ensures score are sorted to measurements
             for score, measurement in zip( scores, measurements ):
                 score._upstream_bitflag = 0
                 score._upstream_bitflag |= measurement.bitflag
