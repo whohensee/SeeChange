@@ -1660,11 +1660,29 @@ class DataStore:
         return self._get_data_product( "measurements", Measurements, "cutouts", Measurements.cutouts_id, "measuring",
                                        is_list=True, provenance=provenance, reload=reload, session=session )
 
-    def get_deepscores(self, provenance=None, reload=False, session=None):
+    def get_scores(self, provenance=None, reload=False, session=None):
         """Get a list of DeepScores, either from memory or from database"""
-        return self._get_data_product( "scores", DeepScore, "measurements", DeepScore.measurements_id,
+        scores =  self._get_data_product( "scores", DeepScore, "measurements", DeepScore.measurements_id,
                                       "scoring", is_list=True, upstream_is_list=True,
                                       provenance=provenance, reload=reload, session=session)
+        
+        # sort the scores so the list order matches measurements
+        if scores is not None and len(scores) > 0:
+            if len(scores) != len(self.measurements):
+                raise RuntimeError(f"get_scores found {len(scores)} scores for {len(self.measurements)} measurements")
+            m_ids = [str(m.id) for m in self.measurements]
+            sorted_scores = [None]*len(self.scores)
+            for score in scores:
+                idx = m_ids.index(str(score.measurements_id))
+                sorted_scores[idx] = score
+
+            if not all(scores):  # check if any None still remain
+                raise RuntimeError(f"get_scores did not replace all None values when sorting list")
+
+            scores = sorted_scores
+            self.scores = scores  # update the order in ds to be sorted too.
+
+        return scores
 
 
     def get_all_data_products(self, output='dict', omit_exposure=False):

@@ -4,8 +4,12 @@ import time
 from pipeline.parameters import Parameters
 from pipeline.data_store import DataStore
 
+import numpy as np
+
 from models.measurements import Measurements
 from models.deepscore import DeepScore
+from models.provenance import Provenance
+from models.enums_and_bitflags import DeepscoreAlgorithmConverter
 
 from util.util import env_as_bool
 from util.logger import SCLogger
@@ -71,7 +75,7 @@ class Scorer:
                 )
             
             # find if these deepscores have already been made
-            scores = ds.get_deepscores( prov, session = session, reload=True )
+            scores = ds.get_scores( prov, session = session, reload=True )
 
             if scores is None or len(scores) == 0:
                 self.has_recalculated = True
@@ -82,7 +86,23 @@ class Scorer:
                 for m in measurements:
                     d = DeepScore.from_measurements( m, provenance=prov )
 
-                    d.evaluate_scores() # calculate the rb and ml scores
+                    # Calculate the deepscore
+
+                    algo = Provenance.get( d.provenance_id ).parameters['algorithm']
+
+                    if algo == 'random':
+                        d.score = np.random.default_rng().random()
+                        d.algorithm = algo
+
+                    elif algo == 'allperfect':
+                        d.score = 1.0
+                        d.algorithm = algo
+                    
+                    elif algo in DeepscoreAlgorithmConverter.dict_inverse:
+                        raise NotImplementedError(f"algorithm {algo} isn't yet implemented")
+                    
+                    else:
+                        raise ValueError(f"{algo} is not a valid ML algorithm.")
 
                     # add it to the list
                     scorelist.append( d )
@@ -91,16 +111,10 @@ class Scorer:
 
             #   regardless of whether we loaded or calculated the scores, we need
             # to update the bitflag
-            #   note that this bitflag update feels expensive. Bitflag IS updated
-            # inside of from_measurements when the score is created, but
-            # perhaps this is still necessary for the case where a flag is
-            # changed upstream and then the pipeline is reran
-            for score in scores:
-                upstream_m_bitflag = [m.bitflag for m in measurements if m.id == score.measurements_id]
-                if not len(upstream_m_bitflag) == 1:
-                    raise RuntimeError( f"Expected 1 matching measurements, got {len(upstream_m_bitflag)}")
+
+            for score, measurement in zip( scores, measurements ):
                 score._upstream_bitflag = 0
-                score._upstream_bitflag |= upstream_m_bitflag[0]
+                score._upstream_bitflag |= measurement.bitflag
 
             # add the resulting scores to the ds
 

@@ -103,7 +103,7 @@ class DeepScore(Base, UUIDMixin, HasBitFlagBadness):
         return (
             f"<DeepScore {self.id} "
             f"from Measurements {self.measurements_id} "
-            f"with algorithm {self.algorithm}>"
+            f"with algorithm {self.algorithm}; score={self.score}>"
         )
 
     @staticmethod
