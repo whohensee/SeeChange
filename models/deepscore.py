@@ -120,31 +120,6 @@ class DeepScore(Base, UUIDMixin, HasBitFlagBadness):
 
         return score
 
-    def evaluate_scores(self):
-        """Evaluate the ML/DL score for the associated measurement, using the 
-        appropriate algorithm.
-        """
-        # consider doing cases or another solution, for now just if-else block
-
-        algo = Provenance.get( self.provenance_id ).parameters['algorithm']
-
-        if algo == 'random':
-            self.score = np.random.default_rng().random()
-            self.algorithm = algo
-
-        elif algo == 'allperfect':
-            self.score = 1.0
-            self.algorithm = algo
-        
-        elif algo in DeepscoreAlgorithmConverter.dict_inverse:
-            raise NotImplementedError(f"algorithm {algo} isn't yet implemented")
-        
-        else:
-            raise ValueError(f"{algo} is not a valid ML algorithm.")
-        
-        return None
-    
-
     def get_upstreams(self, session=None):
         """Get the measurements that was used to make this deepscore. """
         with SmartSession(session) as session:
