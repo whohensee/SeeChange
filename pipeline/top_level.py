@@ -70,6 +70,20 @@ class ParsPipeline(Parameters):
             critical=False,
         )
 
+        self.save_on_exception = self.add_par(
+            'save_on_exception',
+            False,
+            bool,
+            "If there's an exception, normally data products won't be saved "
+            "(unless the exception is subtraction or later and save_before_subtraction "
+            "is set, in which case the pre-subtraction ones will be saved).  If this is "
+            "true, then the save_and_commit() method of the DataStore will be called, "
+            "saving everything that it has.  WARNING: it could be that the thing that "
+            "caused the exception will end up saved and committed!  Generally you only "
+            "want to set this when testing, developing, or debugging.",
+            critical=False,
+        )
+
         self.save_at_finish = self.add_par(
             'save_at_finish',
             True,
@@ -93,7 +107,8 @@ class ParsPipeline(Parameters):
             None,
             ( None, str ),
             "Stop after this step.  None = run the whole pipeline.  String values can be "
-            "any of preprocessing, backgrounding, extraction, wcs, zp, subtraction, detection, cutting, measuring",
+            "any of preprocessing, backgrounding, extraction, wcs, zp, subtraction, detection, "
+            "cutting, measuring, scoring",
             critical=False
         )
 
@@ -205,7 +220,7 @@ class Pipeline:
             else:
                 self.pars.augment({key: value})
 
-    def setup_datastore(self, *args, **kwargs):
+    def setup_datastore(self, *args, no_provtag=False, ok_no_ref_provs=False, **kwargs):
         """Initialize a datastore, including an exposure and a report, to use in the pipeline run.
 
         Will raise an exception if there is no valid Exposure,
@@ -217,18 +232,41 @@ class Pipeline:
 
         Parameters
         ----------
-        Inputs should include the exposure and section_id, or a datastore
-        with these things already loaded. If a session is passed in as
-        one of the arguments, it will be used as a single session for
-        running the entire pipeline (instead of opening and closing
-        sessions where needed).
+          Positional parameters:
+            Inputs should include the exposure and section_id, or a
+            datastore with these things already loaded.
+
+            If a session is passed in as one of the arguments, it will
+            be used as a single session for running the entire pipeline
+            (instead of opening and closing sessions where needed).
+            Usually you don't want to do this.
+
+          no_provtag: bool, default False
+            If True, won't create a provenance tag, and won't ensure
+            that the provenances created match the provenance_tag
+            parameter to the pipeline.  If False, will create the
+            provenance tag if it doesn't exist.  If it does exist, will
+            verify that all the provenances in the created provenance
+            tree are what's tagged.
+
+          ok_no_ref_provs: bool, default False
+            Normally, if a refeset can't be found, or no image
+            provenances associated with that refset can be found, an
+            execption will be raised.  Set this to True to indicate that
+            that's OK; in that case, the returned prov_tree will not
+            have any provenances for steps other than preprocessing and
+            extraction.
+
+          All other keyword arguments are passed to DataStore.from_args
 
         Returns
         -------
         ds : DataStore
             The DataStore object that was created or loaded.
+
         session: sqlalchemy.orm.session.Session
-            An optional session. If not given, this will be None
+            An optional session. If not given, this will be None.  You usually don't want to give this.
+
         """
         ds, session = DataStore.from_args(*args, **kwargs)
 
@@ -240,7 +278,9 @@ class Pipeline:
             raise RuntimeError( "Exposure must be loaded into the database." )
 
         try:  # create (and commit, if not existing) all provenances for the products
-            provs = self.make_provenance_tree( ds.exposure )
+            provs = self.make_provenance_tree( ds.exposure,
+                                               no_provtag=no_provtag,
+                                               ok_no_ref_provs=ok_no_ref_provs )
             ds.prov_tree = provs
         except Exception as e:
             raise RuntimeError( f'Failed to create the provenance tree: {str(e)}' ) from e
@@ -418,6 +458,9 @@ class Pipeline:
                 return ds
 
         except Exception as e:
+            if self.pars.save_on_exception:
+                SCLogger.error( "DataStore saving data products on pipeline exception" )
+                ds.save_and_commit()
             ds.catch_exception(e)
         finally:
             # make sure the DataStore is returned in case the calling scope want to debug the pipeline run
@@ -493,7 +536,7 @@ class Pipeline:
         dict
             A dictionary of all the provenances that were created in this function,
             keyed according to the different steps in the pipeline.
-            The provenances are all merged to the session.
+            The provenance will all be inserted into the database if necessary.
 
         """
         if overrides is None:
@@ -518,7 +561,7 @@ class Pipeline:
                 code_version = CodeVersion.get_by_id( passed_image_provenance.code_version_id, session=session )
             is_testing = passed_image_provenance.is_testing
         else:
-            raise TypeError( f"The first parameter to make_provenance_tree msut be an Exposure or Image, "
+            raise TypeError( f"The first parameter to make_provenance_tree must be an Exposure or Image, "
                              f"not a {exposure.__class__.__name__}" )
 
         # Get the reference

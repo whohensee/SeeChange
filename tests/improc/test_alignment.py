@@ -3,6 +3,7 @@ import warnings
 import pytest
 import random
 import re
+import subprocess
 
 import numpy as np
 import astropy.wcs
@@ -19,6 +20,46 @@ from models.enums_and_bitflags import string_to_bitflag, flag_image_bits_inverse
 
 from improc.alignment import ImageAligner
 from pipeline.coaddition import Coadder
+from util.util import env_as_bool
+
+# Putting this in RUN_SLOW_TESTS because there are a couple of 60-second timeouts.
+# Good to have this test to run sometimes, but basic functionality of swarp_fodder_wcs
+#   *will* get testsed in test_warp_decam below.
+@pytest.mark.skipif( not env_as_bool('RUN_SLOW_TESTS'), reason="Set RUN_SLOW_TESTS to run this test" )
+def test_get_swarp_fodder_wcs( decam_datastore_through_zp, decam_elais_e1_two_refs_datastore ):
+    refds0, refds1 = decam_elais_e1_two_refs_datastore
+    ds = decam_datastore_through_zp
+    aligner = ImageAligner()
+
+    wcs = aligner.get_swarp_fodder_wcs( ds.image, ds.sources, ds.wcs, ds.zp, refds0.sources )
+
+    # target WCS should be close, but not identical, to the old target wcs
+    x, y = np.meshgrid( np.array( [ 0.05, 0.5, 0.75, 0.95 ] ) * refds0.image.data.shape[1],
+                        np.array( [ 0.05, 0.5, 0.75, 0.95 ] ) * refds0.image.data.shape[0] )
+    oldsc = refds0.wcs.wcs.pixel_to_world( x, y )
+    newsc = wcs.pixel_to_world( x, y )
+    dra = np.fabs( ( oldsc.ra - newsc.ra ).value ) * np.cos( oldsc.dec.value * np.pi / 180. )
+    ddec = np.fabs( ( oldsc.dec - newsc.dec ).value )
+    assert ( dra < 1./3600. ).all()
+    assert ( ddec < 1./3600. ).all()
+    assert ( dra > 0.001/3600. ).all()
+    assert ( ddec > 0.001/3600. ).all()
+
+    # Make sure it fails if it shouldn't succeed
+    # (The two refs are different chips from the same exposure, so don't overlap.)
+    # Make sure we can find a solution.  (This is a gratuitous 60 second delay in tests....)
+    with pytest.raises( subprocess.TimeoutExpired ):
+        wcs = aligner.get_swarp_fodder_wcs( refds1.image, refds1.sources, refds1.wcs, refds1.zp, refds0.sources )
+
+    # Make sure it falls back if we tell it to.  (Another 60 second delay in tests....)
+    wcs = aligner.get_swarp_fodder_wcs( refds1.image, refds1.sources, refds1.wcs, refds1.zp, refds0.sources,
+                                        fall_back_wcs=refds0.wcs.wcs )
+    newsc = wcs.pixel_to_world( x, y )
+    dra = np.fabs( ( oldsc.ra - newsc.ra ).value ) * np.cos( oldsc.dec.value * np.pi / 180. )
+    ddec = np.fabs( ( oldsc.dec - newsc.dec ).value )
+    # Same WCS, should be *really* close.  (Ideally identical, in fact.)
+    assert ( dra < 0.001/3600. ).all()
+    assert ( ddec < 0.001/3600. ).all()
 
 
 def test_warp_decam( decam_datastore_through_zp, decam_reference ):
@@ -134,17 +175,17 @@ def test_warp_decam( decam_datastore_through_zp, decam_reference ):
 def test_alignment_in_image( ptf_reference_image_datastores, code_version ):
     try:  # cleanup at the end
         # ptf_reference_images = ptf_reference_images[:4]  # speed things up using fewer images
-        coaddparams = { 'alignment': { 'method': 'swarp', 'to_index': 'last' } }
+        coaddparams = { 'alignment': { 'method': 'swarp' }, 'alignment_index': 'last' }
 
         coadder = Coadder( **coaddparams )
         prov, _ = coadder.get_coadd_prov( ptf_reference_image_datastores, code_version_id=code_version.id )
         prov.insert_if_needed()
-        if prov.parameters['alignment']['to_index'] == 'last':
+        if prov.parameters['alignment_index'] == 'last':
             index = -1
-        elif prov.parameters['alignment']['to_index'] == 'first':
+        elif prov.parameters['alignment_index'] == 'first':
             index = 0
         else:
-            raise ValueError(f"Unknown alignment reference index: {prov.parameters['alignment']['to_index']}")
+            raise ValueError(f"Unknown alignment reference index: {prov.parameters['alignment_index']}")
 
         new_image = Image.from_images( [ d.image for d in ptf_reference_image_datastores ], index=index )
         new_image.provenance_id = prov.id

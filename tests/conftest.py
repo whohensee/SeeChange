@@ -219,11 +219,6 @@ def download_url():
     return 'https://portal.nersc.gov/cfs/m4616/SeeChange_testing_data'
 
 
-@pytest.fixture(scope='session')
-def download_url():
-    return 'https://portal.nersc.gov/cfs/m4616/SeeChange_testing_data'
-
-
 # data that is included in the repo and should be available for tests
 @pytest.fixture(scope="session")
 def persistent_dir():
@@ -426,6 +421,7 @@ def archive(test_config, archive_path):
     archive_specs = test_config.value('archive')
     if archive_specs is None:
         raise ValueError( "archive in config is None" )
+    archive_specs[ 'logger' ] = SCLogger
     archive = Archive( **archive_specs )
 
     archive.test_folder_path = archive_path  # track the place where these files actually go in the test suite

@@ -23,6 +23,7 @@ from pipeline.detection import Detector
 from pipeline.astro_cal import AstroCalibrator
 from pipeline.photo_cal import PhotCalibrator
 
+from util.util import env_as_bool
 
 def estimate_psf_width(data, sz=7, upsampling=50, num_stars=20):
     """Extract a few bright stars and estimate their median FWHM.
@@ -352,7 +353,8 @@ def test_coaddition_run(coadder, ptf_reference_image_datastores, ptf_aligned_ima
     upstrims = ref_image.get_upstreams( only_images=True )
     assert [ i.id for i in upstrims ] == [ d.image.id for d in ptf_reference_image_datastores ]
     assert ref_image.ref_image_id == refimlast.id
-    assert ref_image.new_image_id is None
+    with pytest.raises( RuntimeError, match="new_image_id is not defined for images that aren't subtractions" ):
+        assert ref_image.new_image_id is None
 
     assert ref_image.data is not None
     assert ref_image.data.shape == refimlast.data.shape
@@ -535,4 +537,73 @@ def test_coadded_reference(ptf_ref):
     assert ref_prov.process == 'referencing'
 
     assert ref_prov.parameters['test_parameter'] == 'test_value'
+
+
+def test_coadd_partial_overlap_swarp( decam_four_offset_refs, decam_four_refs_alignment_target ):
+
+    coadder = Coadder( method='swarp',
+                       alignment_index='other',
+                       alignment={ 'min_frac_matched': 0.025, 'min_matched': 50 }
+                      )
+    img = coadder.run( data_store_list=decam_four_offset_refs,
+                       alignment_target_datastore=decam_four_refs_alignment_target )
+
+    assert img.data.shape == ( 4096, 2048 )
+    assert img.flags.shape == img.data.shape
+    assert img.weight.shape == img.data.shape
+
+    # What else to check?
+
+    # Spot check a few points on the image.
+    # (I manually looked at the image and picked out a few spots)
+
+    # Check that the weight is higher in a region where two images actually overlapped
+    assert img.weight[ 550:640, 975:1140 ].mean() == pytest.approx( 0.021, abs=0.001 )
+    assert img.weight[ 690:770, 930:1050 ].mean() == pytest.approx( 0.013, abs=0.001 )
+
+    # Look at a spot with a star, and a nearby sky, in a place where there was only
+    #   one image in the coadd
+    assert img.data[ 3217:3231, 479:491 ].sum() == pytest.approx( 82561., abs=25. )
+    assert img.data[ 3217:3231, 509:521 ].sum() == pytest.approx( 205., abs=25. )
+    # ...for reasons I don't understand, the actual numbers that github actions was
+    #   getting did not quite match the numbers I got on my local machine.  (I did
+    #   make sure I'd cleared the cache on my local machine.)  This is concerning,
+    #   and needs investigation: Issue #361
+    # For now, just verify that the spot with the star is a lot brighter
+    #   than the neighboring spot
+    assert ( img.data[ 17:3231, 479:491 ].sum() / img.data[ 3217:3231, 509:521 ].sum() ) >= 400.
+
+    # Look at a spot with a galaxy and a nearby sky, in a place where there were
+    #   two images in the sum
+    assert img.data[ 237:266, 978:988 ].sum() == pytest.approx( 7950., abs=10. )
+    assert img.data[ 237:266, 1008:1018 ].sum() == pytest.approx( 51., abs=10. )
+
+# This next test is very slow (9 minutes on github), and also perhaps a
+#   bit much given that it downloads and swarps together 17 images.  As
+#   such, put in two conditions to skip it; this means it won't be run
+#   by default either when you just do "pytest -v" or on github (where
+#   SKIP_BIG_MEMORY and RUN_SLOW_TESTS are both 1).  To actually run it,
+#   use
+#           RUN_SLOW_TESTS=1 pytest ...
+#
+# (The same code is tested in the previous test, so it's not a big deal
+#   to routinely skip this test.  It's here because I wanted an example
+#   of an actual ref that might approximate something we'd use, and I
+#   wanted to have the code to generate the image so I could look at
+#   it.)
+@pytest.mark.skipif( ( not env_as_bool('RUN_SLOW_TESTS') ) or ( env_as_bool('SKIP_BIG_MEMORY' ) ),
+                     reason="Set RUN_SLOW_TESTS and unset SKIP_BIG_MEMORY to run this test" )
+def test_coadd_17_decam_images_swarp( decam_17_offset_refs, decam_four_refs_alignment_target ):
+    coadder = Coadder( method='swarp',
+                       alignment_index='other',
+                       alignment={ 'min_frac_matched': 0.025,
+                                   'min_matched': 50,
+                                   'max_arcsec_residual': 0.25 },
+                      )
+    img = coadder.run( data_store_list=decam_17_offset_refs,
+                       alignment_target_datastore=decam_four_refs_alignment_target )
+
+    assert img.data.shape == ( 4096, 2048 )
+    assert img.flags.shape == img.data.shape
+    assert img.weight.shape == img.weight.shape
 
