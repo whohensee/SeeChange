@@ -162,7 +162,7 @@ def ptf_datastore_through_cutouts( datastore_factory, ptf_exposure, ptf_ref, ptf
         ptf_exposure,
         11,
         cache_dir=ptf_cache_dir,
-        cache_base_name='187/PTF_20110429_040004_11_R_Sci_BNKEKA',
+        cache_base_name='187/PTF_20110429_040004_11_R_Sci_EM7WTT',
         overrides={'extraction': {'threshold': 5}, 'subtraction': {'refset': 'test_refset_ptf'}},
         bad_pixel_map=ptf_bad_pixel_map,
         provtag='ptf_datastore',
@@ -191,7 +191,7 @@ def ptf_datastore_through_zp( datastore_factory, ptf_exposure, ptf_ref, ptf_cach
         ptf_exposure,
         11,
         cache_dir=ptf_cache_dir,
-        cache_base_name='187/PTF_20110429_040004_11_R_Sci_BNKEKA',
+        cache_base_name='187/PTF_20110429_040004_11_R_Sci_LYQY3W',
         overrides={'extraction': {'threshold': 5}, 'subtraction': {'refset': 'test_refset_ptf'}},
         bad_pixel_map=ptf_bad_pixel_map,
         provtag='ptf_datastore',
@@ -221,7 +221,7 @@ def ptf_datastore(datastore_factory, ptf_exposure, ptf_ref, ptf_cache_dir, ptf_b
         ptf_exposure,
         11,
         cache_dir=ptf_cache_dir,
-        cache_base_name='187/PTF_20110429_040004_11_R_Sci_BNKEKA',
+        cache_base_name='187/PTF_20110429_040004_11_R_Sci_LYQY3W',
         overrides={'extraction': {'threshold': 5}, 'subtraction': {'refset': 'test_refset_ptf'}},
         bad_pixel_map=ptf_bad_pixel_map,
         provtag='ptf_datastore'
@@ -395,7 +395,7 @@ def ptf_aligned_image_datastores(request, ptf_reference_image_datastores, ptf_ca
             ( os.path.isfile(os.path.join(cache_dir, 'manifest.txt')) )
         ):
 
-        aligner = ImageAligner( method='swarp', to_index='last' )
+        aligner = ImageAligner( method='swarp' )
         # Going to assume that the upstream provenances are the same for all
         # of the images.  That will be true here by construction... I think.
         ds = ptf_reference_image_datastores[0]
@@ -426,7 +426,7 @@ def ptf_aligned_image_datastores(request, ptf_reference_image_datastores, ptf_ca
         # ref: https://stackoverflow.com/a/75337251
         # ptf_reference_image_datastores = request.getfixturevalue('ptf_reference_image_datastores')
 
-        coadder = Coadder( alignment={ 'method': 'swarp', 'to_index': 'last' } )
+        coadder = Coadder( alignment_index='last', alignment={ 'method': 'swarp' } )
         coadder.run_alignment( ptf_reference_image_datastores, len(ptf_reference_image_datastores)-1 )
 
         for ds in coadder.aligned_datastores:

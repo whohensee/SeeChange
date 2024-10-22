@@ -7,10 +7,12 @@ import hashlib
 import pathlib
 import uuid
 import time
+import warnings
 
 import numpy as np
 
 from astropy.io import fits
+from astropy.utils.exceptions import AstropyWarning
 
 import sqlalchemy as sa
 from sqlalchemy.exc import IntegrityError
@@ -586,14 +588,20 @@ def test_image_from_exposure_filter_array(sim_exposure_filter_array):
 
 
 def test_image_from_reduced_exposure( decam_reduced_origin_exposure_loaded_in_db ):
-    decam = get_instrument_instance( 'DECam' )
-    exp = decam_reduced_origin_exposure_loaded_in_db
+    # We get a whole bunch of annoying AstropyUserWarning about an invalid
+    #  header record.  It's hard to work up a care.
+    with warnings.catch_warnings():
+        warnings.simplefilter( 'ignore', AstropyWarning )
+        decam = get_instrument_instance( 'DECam' )
+        exp = decam_reduced_origin_exposure_loaded_in_db
 
-    img = Image.from_exposure( exp, section_id='N16' )
+        img = Image.from_exposure( exp, section_id='N16' )
+
     assert img.format == 'fits'
     assert img.exposure_id == exp.id
     assert img.ref_image_id is None
-    assert img.new_image_id is None
+    with pytest.raises( RuntimeError, match="new_image_id is not defined for images that aren't subtractions" ):
+        assert img.new_image_id is None
     assert img.upstream_image_ids == []
     assert not img.is_sub
     assert not img.is_coadd
@@ -615,7 +623,7 @@ def test_image_from_reduced_exposure( decam_reduced_origin_exposure_loaded_in_db
     assert img.lim_mag_estimate is None
     assert img.bkg_mean_estimate is None
     assert img.bkg_rms_estimate is None
-    ra, dec = decam.get_ra_dec_for_section( exp, 'N16' )
+    ra, dec = decam.get_ra_dec_for_section_of_exposure( exp, 'N16' )
     assert img.ra == pytest.approx( ra , 10./3600. / np.cos( exp.dec * np.pi / 180. ) )
     assert img.dec == pytest.approx( dec, 10./3600. )
     assert img._data.shape == ( 4094, 2046 )

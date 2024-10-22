@@ -138,9 +138,9 @@ subtraction:
   # to start running subtractions, first make a ref set and use the name of that
   # in this field.
   refset: null
+  alignment_index: new
   alignment:
     method: swarp
-    to_index: new
   reference:
     minovfrac: 0.85
     must_match_instrument: true
@@ -155,8 +155,9 @@ detection:
   threshold: 5.0
 
 # how to make the cutouts
+# Note: the RBbot models we're using require a 41×41 cutout
 cutting:
-  cutout_size: 25
+  cutout_size: 41
 
 # how to measure things like fluxes and centroids, and make analytical cuts
 measuring:
@@ -182,6 +183,10 @@ measuring:
     offsets: 5.0
     filter bank: 1
 
+scoring:
+  algorithm: RBbot-quiet-shadow-131
+  rbbot_model_dir: /seechange/share/RBbot_models
+
 
 # use these parameters when running the coaddition pipeline, e.g., for making weekly coadds
 # the coaddition pipeline will load the regular configuration first, then the coaddition config:
@@ -194,9 +199,9 @@ coaddition:
     method: zogy
     noise_estimator: sep
     flag_fwhm_factor: 1.0
+    alignment_index: last
     alignment:
       method: swarp
-      to_index: last
     inpainting:
       multi_image_method: median
       feather_width: 2
@@ -234,7 +239,7 @@ referencing:
     start_time: null  # only grab images after this time
     end_time: null  # only grab images before this time
     instrument: null  # only grab images from this instrument (if list, will make cross-instrument references)
-    filter: null  # only grab images with this filter
+    # filter: null  # only grab images with this filter
     project: null  # only grab images with this project
     min_airmass: null  # only grab images with airmass above this
     max_airmass: null  # only grab images with airmass below this
@@ -248,6 +253,10 @@ referencing:
     max_exp_time: null  # only grab images with exposure time below this
     min_number: 7  # only create a reference if this many images can be found
     max_number: 30  # do not add more than this number of images to the reference
+    corner_distance: 0.8  # see the docs
+    overlap_fraction: 0.9
+    coadd_overlap_fraction: 0.1
+    min_only_center: False
     seeing_quality_factor: 3.0  # linear coefficient for adding lim_mag and seeing to get the "image quality"
     save_new_refs: true  # should the new references be saved to disk and committed to the database?
   pipeline:  # The following are used to override the regular "extraction" parameters
@@ -276,7 +285,7 @@ referencing:
 
   coaddition:  # override the coaddition parameters in the general "coaddition" config
     coaddition:  # override the way coadds are made, from the general "coaddition" config
-      method: zogy
+      method: swarp
     extraction:  # override the coaddition/regular pipeline config, when extracting for the coadd images
       sources: # override the regular source and psf extraction parameters and the coadd extraction parameters
         measure_psf: true

@@ -62,7 +62,7 @@
 
 FROM rknop/devuan-daedalus-rknop AS base
 
-MAINTAINER Rob Knop <raknop@lbl.gov>
+LABEL maintainer="Rob Knop <raknop@lbl.gov>"
 
 SHELL ["/bin/bash", "-c"]
 
@@ -119,23 +119,23 @@ RUN ln -sf /usr/bin/SWarp /usr/bin/swarp
 # astromatic files if needed.
 RUN mkdir /home/seechange
 RUN mkdir /home/seechange/.astropy
-ENV HOME /home/seechange
+ENV HOME=/home/seechange
 RUN chmod -R 777 /home/seechange
 
 RUN cat /etc/locale.gen | perl -pe 's/# en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' > /etc/locale.gen.new \
     && mv /etc/locale.gen.new /etc/locale.gen
 RUN locale-gen en_US.UTF-8
-ENV LANG en_US.UTF-8
-ENV LANGUAGE en_US:en
-ENV LC_ALL en_US.UTF-8
+ENV LANG=en_US.UTF-8
+ENV LANGUAGE=en_US:en
+ENV LC_ALL=en_US.UTF-8
 
-ENV PYTHONSTARTUP ""
-ENV PYTHONNOUSERSITE "1"
-ENV PYTHONUSERBASE "/tmp"
-ENV PYTHONPATH ""
+ENV PYTHONSTARTUP=""
+ENV PYTHONNOUSERSITE="1"
+ENV PYTHONUSERBASE="/tmp"
+ENV PYTHONPATH=""
 
 # Some final setups for sanity
-ENV LESS -XLRi
+ENV LESS=-XLRi
 
 # ======================================================================
 # Use a multistage Docker file so that we can install the packages
@@ -222,6 +222,24 @@ RUN source /venv/bin/activate \
     && pip install --upgrade pip setuptools wheel \
     && pip install  -r /seechange/requirements.txt
 
+# Pytorch
+RUN source /venv/bin/activate \
+    && uv pip install torch==2.3.0+cpu --find-links https://download.pytorch.org/whl/torch_stable.html
+
+# RBbot
+# Remove the requirements.txt file because it will install
+# a GPU version of pytorch, and we've already installed
+# a CPU version above.
+COPY extern/RBbot_inference /usr/src/seechange/RBbot_inference
+RUN cd RBbot_inference \
+    && rm -f requirements.txt \
+    && touch requirements.txt \
+    && source /venv/bin/activate \
+    && pip install . \
+    && cd .. \
+    && rm -rf RBbot_inference
+
+
 # ======================================================================
 # A small addendum to build that adds selenium-firefox to /venv
 # (I hope it works to pip install selenium-firefox when firefox
@@ -269,8 +287,11 @@ ADD improc/ /usr/src/seechange/seechange/improc/
 ADD models/ /usr/src/seechange/seechange/models/
 ADD pipeline/ /usr/src/seechange/seechange/pipeline/
 ADD util/ /usr/src/seechange/seechange/util/
+ADD share/ /usr/src/seechange/seechange/share/
 # archive.py needs special treatment because it's a symbolic link in the repo
 ADD util/archive.py /usr/src/seechange/seechange/util/archive.py
+# special treatment for share/RBbot_inference/models because of sybmolic links
+ADD share/RBbot_models/* /usr/src/seechange/seechange/share/RBbot_models/
 
 WORKDIR /usr/src/seechange/seechange
 RUN autoreconf --install
@@ -308,7 +329,7 @@ COPY --from=build /usr/bin/hotpants /usr/bin/hotpants
 COPY --from=build /venv/ /venv/
 ENV PATH=/venv/bin:$PATH
 
-ENV PYTHONPATH "/seechange"
+ENV PYTHONPATH="/seechange"
 WORKDIR /seechange
 
 # A gratuitous command so that the container will persist
@@ -326,8 +347,8 @@ ENV PATH=/venv/bin:$PATH
 COPY --from=included_code_build /seechange/lib /seechange/lib
 COPY default_config.yaml /seechange/default_config.yaml
 COPY docker/application/local_overrides.yaml /seechange/local_overrides.yaml
-ENV SEECHANGE_CONFIG /seechange/default_config.yaml
-ENV PYTHONPATH "/seechange/lib"
+ENV SEECHANGE_CONFIG=/seechange/default_config.yaml
+ENV PYTHONPATH="/seechange/lib"
 
 RUN mkdir /seechange/data
 RUN mkdir /seechange/temp
@@ -361,8 +382,8 @@ COPY docker/application/conductor_bogus_key.pem /webservice_code/
 COPY docker/application/conductor_bogus_cert.pem /webservice_code/
 RUN chmod a+r /webservice_code/conductor*pem
 
-ENV SEECHANGE_CONFIG /seechange/seechange_conductor.yaml
-ENV PYTHONPATH "/seechange/lib"
+ENV SEECHANGE_CONFIG=/seechange/seechange_conductor.yaml
+ENV PYTHONPATH="/seechange/lib"
 
 CMD [ "./run_conductor.sh", "8080" ]
 
@@ -372,7 +393,7 @@ CMD [ "./run_conductor.sh", "8080" ]
 # conductor target is that it doesn't COPY the conductor code from the
 # conductor_build target.
 
-FROM bindmount_code as conductor_bindmount
+FROM bindmount_code AS conductor_bindmount
 
 RUN mkdir /webservice_code
 WORKDIR /webservice_code
@@ -383,8 +404,8 @@ RUN chmod 777 /sessions
 ADD conductor/seechange_conductor.yaml /seechange/seechange_conductor.yaml
 ADD conductor/local_overrides.yaml /seechange/local_overrides.yaml
 ADD conductor/local_augments.yaml /seechange/local_augments.yaml
-ENV SEECHANGE_CONFIG /seechange/seechange_conductor.yaml
-ENV PYTHONPATH "/seechange/lib"
+ENV SEECHANGE_CONFIG=/seechange/seechange_conductor.yaml
+ENV PYTHONPATH="/seechange/lib"
 
 CMD [ "./run_conductor.sh", "8080" ]
 
@@ -415,13 +436,13 @@ ENV PATH=/venv/bin:$PATH
 COPY --from=included_code_build /seechange/lib /seechange/lib
 COPY default_config.yaml /seechange/default_config.yaml
 COPY docker/application/local_overrides.yaml /seechange/local_overrides.yaml
-ENV SEECHANGE_CONFIG /seechange/default_config.yaml
-ENV PYTHONPATH "/seechange/lib"
+ENV SEECHANGE_CONFIG=/seechange/default_config.yaml
+ENV PYTHONPATH="/seechange/lib"
 
 RUN mkdir /seechange/data
 RUN mkdir /seechange/temp
 
-ENV PYTHONPATH "/seechange"
+ENV PYTHONPATH="/seechange"
 
 # A gratuitous command so that the container will persist
 CMD ["tail", "-f", "/etc/issue"]
@@ -437,7 +458,7 @@ COPY --from=build_selenium /usr/bin/hotpants /usr/bin/hotpants
 COPY --from=build_selenium /venv/ /venv/
 ENV PATH=/venv/bin:$PATH
 
-ENV PYTHONPATH "/seechange"
+ENV PYTHONPATH="/seechange"
 WORKDIR /seechange
 
 # A gratuitous command so that the container will persist
