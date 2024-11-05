@@ -1,8 +1,8 @@
-"""short filter names
+"""short-filter-names
 
-Revision ID: c2071a691bf8
-Revises: 147e28b89b99
-Create Date: 2024-09-30 17:28:08.770031
+Revision ID: 1f6d5466990c
+Revises: 0df35a4a7925
+Create Date: 2024-10-22 15:13:02.378548
 
 """
 from alembic import op
@@ -10,8 +10,8 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision = 'c2071a691bf8'
-down_revision = '147e28b89b99'
+revision = '1f6d5466990c'
+down_revision = '0df35a4a7925'
 branch_labels = None
 depends_on = None
 

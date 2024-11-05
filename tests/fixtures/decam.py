@@ -58,7 +58,11 @@ def decam_default_calibrators(cache_dir, data_dir):
 
         decam = get_instrument_instance( 'DECam' )
         sections = [ 'S3', 'N16' ]
-        filters = [ 'r', 'i', 'z', 'g']
+        # filters = [ decam.get_full_filter_name('r'),
+                    # decam.get_full_filter_name('i'),
+                    # decam.get_full_filter_name('z'),
+                    # decam.get_full_filter_name('g')]
+        filters = [ 'r', 'i', 'z', 'g' ]
         for sec in sections:
             for calibtype in [ 'flat', 'fringe' ]:
                 for filt in filters:

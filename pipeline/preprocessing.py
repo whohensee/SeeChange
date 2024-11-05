@@ -132,12 +132,13 @@ class Preprocessor:
                     f'for instrument {self.instrument.name}'
                 )
 
+            # breakpoint()
             # Get the calibrator files
             SCLogger.debug("preprocessing: getting calibrator files")
             preprocparam = self.instrument.preprocessing_calibrator_files( self.pars.calibset,
                                                                            self.pars.flattype,
                                                                            ds.section_id,
-                                                                           ds.exposure.filter_short,
+                                                                           ds.exposure.filter,
                                                                            ds.exposure.mjd,
                                                                            session=session )
 

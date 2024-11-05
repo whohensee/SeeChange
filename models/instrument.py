@@ -1206,7 +1206,7 @@ class Instrument:
         unless an instrument subclass has overridden these functions.
         """
 
-        return filter
+        return shortfilter
 
     @classmethod
     def standard_apertures( cls ):
@@ -1532,6 +1532,7 @@ class Instrument:
         from models.calibratorfile import CalibratorFile, CalibratorFileDownloadLock
         from models.image import Image
 
+        # breakpoint()
         params = {}
 
         expdatetime = pytz.utc.localize( astropy.time.Time( mjd, format='mjd' ).datetime )

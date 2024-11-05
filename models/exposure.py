@@ -54,6 +54,13 @@ EXPOSURE_COLUMN_NAMES = [
 # but are still useful to keep around inside the "info" JSONB column.
 EXPOSURE_HEADER_KEYS = ['gain']  # TODO: add more here
 
+ALLOWED_DEFAULT_FILTER_NAMES = [
+    'r',
+    'g',
+    'i',
+    'z',
+]
+
 
 class SectionData:
     """A helper class that lazy loads the section data from the database.
@@ -259,7 +266,7 @@ class Exposure(Base, UUIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagBad
                         index=True,
                         doc=("Name of the filter used to make this exposure. "
                              "This is generally the short filter name - conversion "
-                             "to the proper name for each instument happens in its code."))
+                             "to the proper name for each instrument happens in its code."))
 
     airmass = sa.Column(sa.REAL, nullable=True, index=True, doc="Airmass taken from the header of the exposure. ")
 
@@ -269,14 +276,20 @@ class Exposure(Base, UUIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagBad
             return None
         else:
             if self.instrument_object is None:
-                raise ValueError( "Exposure must have an instrument to set a filter" )
-            return self.instrument_object.get_full_filter_name( self._filter )
-        
+                # raise ValueError( "Exposure must have an instrument to set a filter" )
+                return self._filter
+            else:
+                return self.instrument_object.get_full_filter_name( self._filter )
+
     @filter.setter
     def filter( self, val ):
         if self.instrument_object is None:
-                raise ValueError( "Exposure must have an instrument to set a filter" )
-        self._filter = self.instrument_object.get_short_filter_name( val )
+            # raise ValueError( "Exposure must have an instrument to set a filter" )
+            if val[0] not in ALLOWED_DEFAULT_FILTER_NAMES:
+                raise ValueError(f"attempted to set invalid filter without instrument: {val}")
+            self._filter = val[0]
+        else:
+            self._filter = self.instrument_object.get_short_filter_name( val )
 
     # WHPR consider how to use this to fix everything to use new logic easily
     @property
@@ -386,8 +399,10 @@ class Exposure(Base, UUIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagBad
             kwargs['_header'] = kwargs.pop('header')
 
         # filter needs to be set after instrument - this will be rerun
-        if 'filter' in kwargs:
-            kwargs.pop('filter')
+        
+        # filtername = kwargs.pop('filter') if 'filter' in kwargs else None
+        # if 'filter' in kwargs:
+        #     filtername = kwargs.pop('filter')
 
         # manually set all properties (columns or not, but don't
         # overwrite instance methods) Do this once here, because some of
@@ -420,6 +435,13 @@ class Exposure(Base, UUIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagBad
             prov = self.make_provenance(self.instrument)  # a default provenance for exposures
             self.provenance_id = prov.id
 
+        # if filtername is not None:  #this has to happen after instrument but before using the filepath
+        #     self.filter = filtername
+
+        #     # make a proper filepath now that filter is set
+        #     if invent_filepath:
+        #         oldfilepath = self.filepath
+        #         self.filepath = self.invent_filepath()
 
         # instrument_obj is lazy loaded when first getting it
         if current_file is None:
@@ -429,6 +451,10 @@ class Exposure(Base, UUIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagBad
 
         # Allow passed keywords to override what's detected from the header
         self.set_attributes_from_dict( kwargs )
+
+        # # create a proper filepath now that filter is loaded
+        # if invent_filepath:
+        #     self.filepath = self.invent_filepath()
 
         self.calculate_coordinates()  # galactic and ecliptic coordinates
 
