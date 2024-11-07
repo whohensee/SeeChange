@@ -293,7 +293,9 @@ subtraction:
 #    actual code run in both cases may well be the same.
 #
 # method : str
-#    For the ZOGY subtraction method, the detection method must be filter
+#    For the ZOGY subtraction method, the detection method must be
+#    filter.  For the hotpants method, the detection method must be
+#    sextractor.
 #
 # See pipline/subtraction.py for parameter definitions
 

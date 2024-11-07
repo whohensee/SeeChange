@@ -262,7 +262,9 @@ def ptf_urls(download_url):
 @pytest.fixture(scope='session')
 def ptf_images_datastore_factory(ptf_urls, ptf_downloader, datastore_factory, ptf_cache_dir, ptf_bad_pixel_map):
 
-    def factory(start_date='2009-04-04', end_date='2013-03-03', max_images=None, provtag='ptf_images_factory'):
+    def factory( start_date='2009-04-04', end_date='2013-03-03',
+                 max_images=None, provtag='ptf_images_factory',
+                 overrides={'extraction': {'threshold': 5}} ):
         # see if any of the cache names were saved to a manifest file
         cache_names = {}
         if (   ( not env_as_bool( "LIMIT_CACHE_USAGE" ) ) and
@@ -300,7 +302,7 @@ def ptf_images_datastore_factory(ptf_urls, ptf_downloader, datastore_factory, pt
                     11,
                     cache_dir=ptf_cache_dir,
                     cache_base_name=cache_names.get(url, None),
-                    overrides={'extraction': {'threshold': 5}},
+                    overrides=overrides,
                     bad_pixel_map=ptf_bad_pixel_map,
                     provtag=provtag,
                     skip_sub=True
@@ -385,6 +387,7 @@ def ptf_supernova_image_datastores(ptf_images_datastore_factory):
     with SmartSession() as session:
         session.execute( sa.text( "DELETE FROM provenance_tags WHERE tag=:tag" ), {'tag': 'ptf_supernova_images' } )
         session.commit()
+
 
 @pytest.fixture(scope='session')
 def ptf_aligned_image_datastores(request, ptf_reference_image_datastores, ptf_cache_dir, data_dir, code_version):
