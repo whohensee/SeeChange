@@ -486,7 +486,7 @@ class DataStore:
         if val is None:
             self._scores = None
         else:
-            if ( self._measurements is None or len(self._measurements) == 0 ):
+            if ( self._measurements is None ):
                 raise RuntimeError( " Can't set DataStore scores until it has measurements" )
             if not isinstance( val, list ):
                 raise TypeError( f"Datastore.scores must be a list of scores, not a {type(val)}" )
@@ -801,13 +801,16 @@ class DataStore:
 
     def update_report(self, process_step, session=None):
         """Update the report object with the latest results from a processing step that just finished. """
-        self.report.scan_datastore( self, process_step=process_step )
+        if self.report is not None:
+            self.report.scan_datastore( self, process_step=process_step )
 
     def finalize_report( self ):
         """Mark the report as successful and set the finish time."""
-        self.report.success = True
-        self.report.finish_time = datetime.datetime.utcnow()
-        self.report.upsert()
+        if self.report is not None:
+            self.report.scan_datastore( self, process_step='finalize' )
+            self.report.success = True
+            self.report.finish_time = datetime.datetime.now( datetime.timezone.utc )
+            self.report.upsert()
 
 
     def get_inputs(self):
@@ -2089,12 +2092,12 @@ class DataStore:
 
 
     def delete_everything(self):
-        """Delete everything associated with this DataStore.
+        """Delete (almost) everything associated with this DataStore.
 
         All data products in the data store are removed from the DB,
         and all files on disk and in the archive are deleted.
 
-        NOTE: does *not* delete the exposure.  (There may well be other
+        Does *not* delete the exposure.  (There may well be other
         data stores out there with different images from the same
         exposure.)
 
@@ -2103,6 +2106,16 @@ class DataStore:
         Clears out all data product fields in the datastore.
 
         """
+
+        # Special case handling for report, since it was never in
+        #   products_to_save.  We don't want it there, because it's
+        #   handled differently from the actual data products.  (Most
+        #   notably: although there are exceptions (image and WCS), the
+        #   default idea for our data products is that once a database
+        #   entry is written, it stays the same.  The reports database
+        #   entry is very much a "update with status" thing, though.)
+        if self.report is not None:
+            self.report.delete_from_disk_and_database()
 
         # Not just deleting the image and allowing it to recurse through its
         #   downstreams because it's possible that the data products weren't
@@ -2130,6 +2143,9 @@ class DataStore:
 
         for att in self.products_to_clear:
             setattr(self, att, None)
+
+        self.report = None
+
 
     def free( self, not_zogy_specific_products=False ):
         """Set lazy-loaded data product fields to None in an attempt to save memory.

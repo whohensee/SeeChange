@@ -1,5 +1,6 @@
 import time
 import re
+import io
 import json
 import base64
 import hashlib
@@ -12,12 +13,14 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.declarative import declared_attr
 from sqlalchemy.schema import UniqueConstraint
+import psycopg2.extras
+import psycopg2.errors
 
 from util.util import get_git_hash
 from util.logger import SCLogger
 
 import models.base
-from models.base import Base, UUIDMixin, SeeChangeBase, SmartSession
+from models.base import Base, UUIDMixin, SeeChangeBase, SmartSession, Psycopg2Connection
 
 
 class CodeHash(Base):
@@ -93,7 +96,7 @@ class CodeVersion(Base):
         hash_obj = CodeHash( _id=git_hash, code_version_id=self.id )
         try:
             hash_obj.insert( session=session )
-        except IntegrityError as ex:
+        except psycopg2.errors.UniqueViolation as ex:
             if 'duplicate key value violates unique constraint "code_hashes_pkey"' in str(ex):
                 # It's already there, so we don't care.
                 pass
@@ -595,108 +598,120 @@ class ProvenanceTag(Base, UUIDMixin):
                  f'provenance_id={self.provenance_id}>' )
 
     @classmethod
-    def newtag( cls, tag, provs, session=None ):
-        """Add a new ProvenanceTag.  Will thrown an error if it already exists.
+    def addtag( cls, tag, provs, add_missing_processes_to_provtag=True ):
+        """Tag provenances with a given (string) tag.
 
-        Usually, this is called from pipeline.top_level.make_provenance_tree, not directly.
+        If the provenance tag does not exist at all, create it, tagging
+        provs.
 
-        Always commits.
+        Ensures that there are no conflicts.  If a provenance already
+        exists for a given process tagged with tag, and that provenance
+        doesn't match the provenance for that process in provs, raise an
+        exception.
+
+        If the provenance tag exists, and there is no currently-tagged
+        provenance for a given process in provs, then do one of two
+        things.  If add_missing_proceses_to_provtag is False, raise an
+        Exception.  If it's true, add that provenance to the provenance
+        tag as a process.
+
+        Locks the provenance_tags table to avoid race conditions of
+        multiple different instances of the pipeline trying to tag
+        provenances all at the same time.
 
         Parameters
         ----------
           tag: str
-            The human-readable provenance tag.  For cleanliness, should be ASCII, no spaces.
+            The provenance tag
 
-          provs: list of str, UUID, or Provenance
-            The provenances to include in this tag.  Usually, you want to make sure to include
-            a provenance for every process in the pipeline: exposure, referencing, preprocessing,
-            extraction, subtraction, detection, cutting, measuring, [TODO MORE: deepscore, alert]
+          provs: list of Provenance
+            The provenances to tag
 
-            -oo- load_exposure, download, import_image, alignment or aligning, coaddition
+          add_missing_processes_to_provtag: bool, default True
+            See above.
 
         """
 
-        # The debug comments in this function are for debugging database
-        #   deadlocks.  Uncomment them if you're trying to deal with
-        #   that.  Normally they're commented out because they make the
-        #   debug output much more verbose.
+        # First, make sure that provs doesn't have multiple entries for
+        #   processes other than 'referencing'
+        seen = set()
+        missing = []
+        conflict = []
+        for p in provs:
+            if ( p.process != 'referencing' ) and ( p.process in seen ):
+                raise ValueError( f"Process {p.process} is in the list of provenances more than once!" )
+            seen.add( p.process )
 
-        with SmartSession( session ) as sess:
-            # Get all the provenance IDs we're going to insert
-            provids = set()
-            for prov in provs:
-                if isinstance( prov, Provenance ):
-                    provids.add( prov.id )
-                elif isinstance( prov, str ) or isinstance( prov, uuid.UUID ):
-                    provobj = sess.get( Provenance, prov )
-                    if provobj is None:
-                        raise ValueError( f"Unknown Provenance ID {prov}" )
-                    provids.add( provobj.id )
+        # Use direct postgres connection rather than SQLAlchemy so that we can
+        # lock tables without a world of hurt.  (See massive comment in
+        # base.SmartSession.)
+        with Psycopg2Connection() as conn:
+            cursor = conn.cursor( cursor_factory=psycopg2.extras.RealDictCursor )
+            cursor.execute( "LOCK TABLE provenance_tags" )
+            cursor.execute( "SELECT t.tag,p._id,p.process FROM provenance_tags t "
+                            "INNER JOIN provenances p ON t.provenance_id=p._id "
+                            "WHERE t.tag=%(tag)s",
+                            { 'tag': tag } )
+            known = {}
+            for row in cursor.fetchall():
+                if row['process'] == 'referencing':
+                    if 'referencing' not in known:
+                        known['referencing'] = [ row['_id'] ]
+                    else:
+                        known['referencing'].append( row['_id'] )
                 else:
-                    raise TypeError( f"Everything in the provs list must be Provenance or str, not {type(prov)}" )
+                    if row['process'] in known:
+                        raise RuntimeError( f"Database corruption error!  The process {row['process']} "
+                                            f"has more than one entry for provenance tag {tag}." )
+                    known[row['process']] = row['_id']
+            if len(known) == 0:
+                # If the provenance tag didn't exist at all, then create it even
+                # if add_missing_process_to_provtag is False
+                add_missing_process_to_provtag = True
 
-            try:
-                # Make sure that this tag doesn't already exist.  To avoid race
-                #  conditions of two processes creating it at once (which,
-                #  given how we expect the code to be used, should probably
-                #  not happen in practice), lock the table before searching
-                #  and only unlock after inserting.
-                cls._get_table_lock( sess )
-                current = sess.query( ProvenanceTag ).filter( ProvenanceTag.tag == tag )
-                if current.count() != 0:
-                    # SCLogger.debug( "ProvenanceTag rolling back" )
-                    sess.rollback()
-                    raise ProvenanceTagExistsError( f"ProvenanceTag {tag} already exists." )
+            addedsome = False
+            for prov in provs:
+                # Special case handling for 'referencing', because there we do allow
+                #   multiple provenances tagged with the same tag.
+                if prov.process == 'referencing':
+                    if 'referencing' not in known:
+                        known['referencing'] = []
+                    if prov.id not in known['referencing']:
+                        if not add_missing_processes_to_provtag:
+                            missing.append( prov )
+                        else:
+                            cursor.execute( "INSERT INTO provenance_tags(tag,provenance_id,_id) "
+                                            "VALUES (%(tag)s,%(provid)s,%(uuid)s)",
+                                            { 'tag': tag, 'provid': prov.id, 'uuid': uuid.uuid4() } )
+                            known['referencing'].append( prov.id )
+                            addedsome = True
+                else:
+                    if prov.process not in known:
+                        if not add_missing_processes_to_provtag:
+                            missing.append( prov )
+                        else:
+                            cursor.execute( "INSERT INTO provenance_tags(tag,provenance_id,_id) "
+                                            "VALUES (%(tag)s,%(provid)s,%(uuid)s)",
+                                            { 'tag': tag, 'provid': prov.id, 'uuid': uuid.uuid4() } )
+                            known[prov.process] = prov.id
+                            addedsome = True
+                    elif known[prov.process] != prov.id:
+                        conflict.append( prov )
+            if ( addedsome ) and ( len(missing) == 0 ) and ( len(conflict) == 0 ):
+                conn.commit()
 
-                for provid in provids:
-                    sess.add( ProvenanceTag( tag=tag, provenance_id=provid ) )
+        if len( conflict ) != 0:
+            strio = io.StringIO()
+            strio.write( f"The following provenances do not match the existing provenance for tag {tag}:\n " )
+            for prov in conflict:
+                strio.write( f"   {prov.process}: {prov.id}  (existing: {known[prov.process]})\n" )
+            SCLogger.error( strio.getvalue() )
+            raise RuntimeError( strio.getvalue() )
 
-                # SCLogger.debug( "ProvenanceTag comitting" )
-                sess.commit()
-            finally:
-                # Make sure no lock is left behind; exiting the with block
-                #   ought to do this, but be paranoid.
-                # SCLogger.debug( "ProvenanceTag rolling back" )
-                sess.rollback()
-
-    @classmethod
-    def validate( cls, tag, processes=None, session=None ):
-        """Verify that a given tag doesn't have multiply defined processes.
-
-        One exception: referenceing can have multiply defined processes.
-
-        Raises an exception if things don't work.
-
-        Parameters
-        ----------
-          tag: str
-            The tag to validate
-
-          processes: list of str
-            The processes to make sure are present.  If None, won't make sure
-            that any processes are present, will just make sure there are no
-            duplicates.
-
-        """
-
-        repeatok = { 'referencing' }
-
-        with SmartSession( session ) as sess:
-            ptags = ( sess.query( (ProvenanceTag._id,Provenance.process) )
-                      .filter( ProvenanceTag.provenance_id==Provenance._id )
-                      .filter( ProvenanceTag.tag==tag )
-                     ).all()
-
-        count = defaultdict( lambda: 0 )
-        for ptagid, process in ptags:
-            count[ process ] += 1
-
-        multiples = [ i for i in count.keys() if count[i] > 1 and i not in repeatok ]
-        if len(multiples) > 0:
-            raise ValueError( f"Database integrity error: ProcessTag {tag} has more than one "
-                              f"provenance for processes {multiples}" )
-
-        if processes is not None:
-            missing = [ i for i in processes if i not in count.keys() ]
-            if len( missing ) > 0:
-                raise ValueError( f"Some processes missing from ProcessTag {tag}: {missing}" )
+        if len( missing ) != 0:
+            strio = io.StringIO()
+            strio.write( f"The following provenances are not associated with provenance tag {tag}:\n " )
+            for prov in missing:
+                strio.write( f"   {prov.process}: {prov.id}\n" )
+            SCLogger.error( strio.getvalue() )
+            raise RuntimeError( strio.getvalue() )

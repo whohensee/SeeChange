@@ -17,6 +17,9 @@ import shapely
 
 from astropy.coordinates import SkyCoord
 
+import psycopg2
+from psycopg2.errors import UniqueViolation
+
 import sqlalchemy as sa
 import sqlalchemy.dialects.postgresql
 from sqlalchemy import func, orm
@@ -28,7 +31,6 @@ from sqlalchemy.dialects.postgresql import UUID as sqlUUID
 from sqlalchemy.dialects.postgresql import array as sqlarray
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.exc import IntegrityError, OperationalError
-from psycopg2.errors import UniqueViolation
 
 from sqlalchemy.schema import CheckConstraint
 
@@ -107,7 +109,7 @@ setup_warning_filters()  # need to call this here and also call it explicitly wh
 
 _engine = None
 _Session = None
-
+_psycopg2params = None
 
 def Session():
     """Make a session if it doesn't already exist.
@@ -127,6 +129,9 @@ def Session():
 
     if _Session is None:
         cfg = config.Config.get()
+
+        if cfg.value("db.engine") != "postgresql":
+            raise ValueError( "This pipeline only supports PostgreSQL as a database engine" )
 
         password = cfg.value( "db.password" )
         if password is None:
@@ -242,6 +247,75 @@ def SmartSession(*args):
 
             session.close()
             session.invalidate()
+
+@contextmanager
+def Psycopg2Connection( current=None ):
+    """Get a direct psycopg2 connection to the database; use this in a with statement.
+
+    Useful if you don't want to fight with SQLAlchemy, e.g. if you
+    want to use table locks (see comment above in SmartSession).
+
+    Parameters
+    ----------
+      current : psycopg2.extensions.connection or None (default None)
+         Pass an existing connection, get it back.  Useful if you are in
+         nested functions that might want to be working within the same
+         transaction.
+
+    Returns
+    -------
+       psycopg2.extensions.connection
+
+       After the with block, the connection will be rolled back and
+       closed.  So, if you want what you've done committed, make sure to
+       call the commit() method on the return value before the with
+       block exits.
+
+    """
+    global _psycopg2params
+
+    if current is not None:
+        if not isinstance( current, psycopg2.extensions.connection ):
+            raise TypeError( f"Must pass a psycopg2.extensions.connection or None to Pyscopg2Conection" )
+        yield current
+        # Don't roll back or close, because whoever created it in the
+        #   first place is responsible for that.
+        return
+
+    # If a connection wasn't passed, make one, and then be sure to roll it back and close it when we're done
+
+    if _psycopg2params is None:
+        cfg = config.Config.get()
+        if cfg.value( "db.engine" ) != "postgresql":
+            raise ValueError( "This pipeline only supports PostgreSQL as a database engine" )
+
+        password = cfg.value( 'db.password' )
+        if password is None:
+            if cfg.value( "db.password_file" ) is None:
+                raise RuntimeError( "Must specify either db.password or db.password_file in config" )
+            with open( cfg.value( "db.password_file" ) ) as ifp:
+                password = ifp.readline().strip()
+
+        _psycopg2params = { 'host': cfg.value('db.host'),
+                            'port': cfg.value('db.port'),
+                            'dbname': cfg.value('db.database'),
+                            'user': cfg.value('db.user'),
+                            'password': password }
+
+    try:
+        conn = psycopg2.connect( **_psycopg2params )
+        yield conn
+
+    finally:
+        # Just in case things were done, roll back.  Often, the caller
+        #   will have done a conn.commit() (which it must if it wants to
+        #   keep things that were done) or conn.rollback(), in which
+        #   case this rollback is gratuitous.  However, we can't count
+        #   on the caller having done that.  (E.g., if there's an
+        #   exception, the caller may have short-circuited, which is why
+        #   the yield is in a try and this cleaup is in a finally.)
+        conn.rollback()
+        conn.close()
 
 
 def db_stat(obj):
@@ -489,16 +563,16 @@ class SeeChangeBase:
 
         Parameters
         ----------
-          session: SQLALchemy Session, or None
+          session: SQLALchemy Session, or psycopg2.extensions.connection, or None
             Usually you do not want to pass this; it's mostly for other
             upsert etc. methods that cascade to this.
 
           nocommit: bool, default False
-            If True, run the statement to insert the object, but
-            don't actually commit the database.  Do this if you
-            want the insert to be inside a transaction you've
-            started on session.  It doesn't make sense to use
-            nocommit without passing a session.
+            If True, run the statement to insert the object, but don't
+            actually commit the database.  Do this if you want the
+            insert to be inside a transaction you've started on session.
+            It doesn't make sense to set nocommit=True unless you've
+            passed either a Session or a psycopg2 connection.
 
         """
 
@@ -520,15 +594,33 @@ class SeeChangeBase:
         #
         # In any event, doing this manually dodges any weirdness associated
         #  with objects attached, or not attached, to sessions.
+        #
+        # (Even better, unless a sa Session is passed, bypass sqlalchemy
+        # altogether.)
 
         cols, values = self._get_cols_and_vals_for_insert()
         notmod = [ c for c in cols if c != 'modified' ]
-        q = f'INSERT INTO {self.__tablename__}({",".join(notmod)}) VALUES (:{",:".join(notmod)}) '
+
+        if ( session is not None ) and ( isinstance( session, sa.orm.session.Session ) ):
+            q = f'INSERT INTO {self.__tablename__}({",".join(notmod)}) VALUES (:{",:".join(notmod)}) '
+            subdict = { c: v for c, v in zip( cols, values ) if c != 'modified' }
+            with SmartSession( session ) as sess:
+                sess.execute( sa.text( q ), subdict )
+                if not nocommit:
+                    sess.commit()
+            return
+
+        if ( session is not None ) and ( not isinstance( session, psycopg2.extensions.connection ) ):
+            raise TypeError( f"session must be a sa Session or psycopg2.extensions.connection or None, "
+                             f"not a {type(session)}" )
+
+        q = f'INSERT INTO {self.__tablename__}({",".join(notmod)}) VALUES (%({")s,%(".join(notmod)})s) '
         subdict = { c: v for c, v in zip( cols, values ) if c != 'modified' }
-        with SmartSession( session ) as sess:
-            sess.execute( sa.text( q ), subdict )
+        with Psycopg2Connection( session ) as conn:
+            cursor = conn.cursor()
+            cursor.execute( q, subdict )
             if not nocommit:
-                sess.commit()
+                conn.commit()
 
 
     def upsert( self, session=None, load_defaults=False ):
@@ -779,7 +871,8 @@ class SeeChangeBase:
         be lazy loaded anyway, as they are not persisted.
 
         Will convert non-standard data types:
-        UUID will be converted to string (using the .hex attribute).
+        md5sum UUIDS will be converted to string (using .hex)
+        _id UUIDS will be converted to string (using str())
         Numpy arrays are replaced by lists.
 
         To reload, use the from_dict() method:
@@ -807,7 +900,7 @@ class SeeChangeBase:
 
             if key == '_id' and value is not None:
                 if isinstance(value, UUID):
-                    value = value.hex
+                    value = str(value)
 
             if isinstance(value, np.ndarray) and key in [
                 'aper_rads', 'aper_radii', 'aper_cors', 'aper_cor_radii',
@@ -822,11 +915,13 @@ class SeeChangeBase:
             if isinstance(value, np.number):
                 value = value.item()
 
-            # 'claim_time' is from knownexposure, lastheartbeat is from PipelineWorker
+            # 'claim_time' is from KnownExposure, lastheartbeat is from PipelineWorker
+            # 'start_time' and 'finish_time' are from Report
             # We should probably define a class-level variable "_datetimecolumns" and list them
             #   there, other than adding to what's hardcoded here.  (Likewise for the ndarray aper stuff
             #   above.)
-            if (   ( key in ['modified', 'created_at', 'claim_time', 'lastheartbeat'] ) and
+            if (   ( key in [ 'modified', 'created_at', 'claim_time', 'lastheartbeat',
+                              'start_time', 'finish_time' ] ) and
                    isinstance(value, datetime.datetime) ):
                 value = value.isoformat()
 

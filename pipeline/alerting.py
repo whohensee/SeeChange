@@ -1,5 +1,6 @@
 import io
 import uuid
+import time
 import random
 import datetime
 
@@ -19,6 +20,7 @@ from models.measurements import Measurements
 from models.deepscore import DeepScore
 from models.object import Object
 from util.config import Config
+from util.util import env_as_bool
 
 
 # Alerting doesn't work with the Parameters system because there's no Provenance associated with it,
@@ -90,6 +92,11 @@ class Alerting:
         if not self.send_alerts:
             return
 
+        t_start = time.perf_counter()
+        if env_as_bool('SEECHANGE_TRACEMALLOC'):
+            import tracemalloc
+            tracemalloc.reset_peak()  # start accounting for the peak memory usage from here
+
         # TODO: verify that datastore has measurements and scores
 
         # If any of the methods are kafka, we will need to build avro alerts
@@ -107,6 +114,11 @@ class Alerting:
 
             else:
                 raise RuntimeError( "This should never happen." )
+
+        ds.runtimes[ 'alerting' ] = time.perf_counter() - t_start
+        if env_as_bool('SEECHANGE_TRACEMALLOC'):
+            import tracemalloc
+            ds.memory_usages['alerting'] = tracemalloc.get_traced_memory()[1] / 1024 ** 2 # in MB
 
 
     def dia_source_alert( self, meas, score, img, zp=None, aperdex=None, fluxscale=None ):
