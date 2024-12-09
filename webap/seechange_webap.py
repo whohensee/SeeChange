@@ -729,15 +729,23 @@ class PngCutoutsForSubImage( BaseView ):
                                             / cutoutsfiles[subid], 'r' )
 
         def append_to_retval( subid, index_in_sources, section_id, row ):
+            retval['cutouts']['source_index'].append( index_in_sources )
             grp = hdf5files[ subid ][f'source_index_{index_in_sources}']
+            # In our subtractions, we scale the ref image to the new
+            #   image so they share the same zeropoint.  When making
+            #   cutouts, we background-subtract both the ref and the
+            #   new.  So, we want to share the flux-to-greyscale mapping
+            #   for ref and new as that way they can be meaningfully
+            #   compared visually.
             vmin, vmax = scaler.get_limits( grp['new_data'] )
             scalednew = ( grp['new_data'] - vmin ) * 255. / ( vmax - vmin )
-            # TODO : there's an assumption here that the ref is background
-            #   subtracted. They probably usually will be -- that tends to be
-            #   part of a coadd process.
-            vmin -= newbkgs[subid]
-            vmax -= newbkgs[subid]
             scaledref = ( grp['ref_data'] - vmin ) * 255. / ( vmax - vmin )
+            # However, use a different mapping for the sub image.  It's
+            #   possible that the transient will be a lot dimmer than
+            #   the host galaxy, so if we use the same scaling we used
+            #   for the new, then the transient won't be visible (all of
+            #   the transient data will get mapped to near-sky-level
+            #   greys.)
             vmin, vmax = scaler.get_limits( grp['sub_data'] )
             scaledsub = ( grp['sub_data'] - vmin ) * 255. / ( vmax - vmin )
 
