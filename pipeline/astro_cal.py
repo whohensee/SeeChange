@@ -7,7 +7,6 @@ from util.exceptions import CatalogNotFoundError, SubprocessFailure, BadMatchExc
 from util.logger import SCLogger
 from util.util import env_as_bool
 
-from models.catalog_excerpt import CatalogExcerpt
 from models.world_coordinates import WorldCoordinates
 
 from pipeline.parameters import Parameters
@@ -130,7 +129,7 @@ class ParsAstroCalibrator(Parameters):
         self.override(kwargs)
 
     def get_process_name(self):
-        return 'astro_cal'
+        return 'astrocal'
 
     def require_siblings(self):
         return True
@@ -215,7 +214,7 @@ class AstroCalibrator:
 
         sources = ds.get_sources( session=session )
         if sources is None:
-            raise ValueError(f'Cannot find a source list corresponding to the datastore inputs: {ds.get_inputs()}')
+            raise ValueError(f'Cannot find a source list corresponding to the datastore inputs: {ds.inputs_str}')
 
         success = False
         exceptions = []
@@ -316,21 +315,21 @@ class AstroCalibrator:
                     image.set_corners_from_header_wcs(wcs=ds.wcs.wcs, setradec=True)
                     image.astro_cal_done = True
 
-                ds.runtimes['astro_cal'] = time.perf_counter() - t_start
+                ds.runtimes['astrocal'] = time.perf_counter() - t_start
                 if env_as_bool('SEECHANGE_TRACEMALLOC'):
                     import tracemalloc
-                    ds.memory_usages['astro_cal'] = tracemalloc.get_traced_memory()[1] / 1024 ** 2  # in MB
+                    ds.memory_usages['astrocal'] = tracemalloc.get_traced_memory()[1] / 1024 ** 2  # in MB
 
             # update the bitflag with the upstreams
             sources = ds.get_sources(session=session)
             if sources is None:
-                raise ValueError(f'Cannot find a source list corresponding to the datastore inputs: {ds.get_inputs()}')
+                raise ValueError(f'Cannot find a source list corresponding to the datastore inputs: {ds.inputs_str}')
             psf = ds.get_psf(session=session)
             if psf is None:
-                raise ValueError(f'Cannot find a PSF corresponding to the datastore inputs: {ds.get_inputs()}')
+                raise ValueError(f'Cannot find a PSF corresponding to the datastore inputs: {ds.inputs_str}')
             bg = ds.get_background(session=session)
             if bg is None:
-                raise ValueError(f'Cannot find a background corresponding to the datastore inputs: {ds.get_inputs()}')
+                raise ValueError(f'Cannot find a background corresponding to the datastore inputs: {ds.inputs_str}')
 
             ds.wcs._upstream_bitflag = 0
             ds.wcs._upstream_bitflag |= sources.bitflag  # includes badness from Image as well
@@ -342,4 +341,3 @@ class AstroCalibrator:
         finally:
             # make sure datastore is returned to be used in the next step
             return ds
-

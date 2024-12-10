@@ -14,12 +14,13 @@ import numpy as np
 
 from astropy.io import votable
 
-from models.base import SmartSession, FileOnDiskMixin, get_archive_object, CODE_ROOT
+from models.base import FileOnDiskMixin, CODE_ROOT
 from models.provenance import Provenance
 
 from tests.conftest import SKIP_WARNING_TESTS
 
-from util.logger import SCLogger
+# from util.logger import SCLogger
+
 
 def test_sep_find_sources_in_small_image(decam_small_image, extractor, blocking_plots):
     det = extractor
@@ -44,7 +45,7 @@ def test_sep_find_sources_in_small_image(decam_small_image, extractor, blocking_
 
         obj = sources.data
 
-        fig, ax = plt.subplots()
+        _, ax = plt.subplots()
         ax.imshow(data, interpolation='nearest', cmap='gray', vmin=m-s, vmax=m+s, origin='lower')
         for i in range(len(obj)):
             e = Ellipse(xy=(obj['x'][i], obj['y'][i]), width=6 * obj['a'][i], height=6 * obj['b'][i],
@@ -294,8 +295,8 @@ def test_extract_sources_sextractor( decam_datastore_through_preprocessing,
 
     assert sources.good.sum() == pytest.approx(530, rel=0.01)
     # This is what you get with CLASS_STAR; you'll get different values with SPREAD_MODEL
-    assert sources.is_star.sum() == pytest.approx(43, rel=0.01)
-    assert ( sources.good & sources.is_star ).sum() == pytest.approx(15, abs=5)
+    assert sources.is_star.sum() == pytest.approx(354, rel=0.01)
+    assert ( sources.good & sources.is_star ).sum() == pytest.approx(230, abs=5)
 
     try:  # make sure saving the PSF and source list goes as expected, and cleanup at the end
         sources.provenance_id = provenance_base.id

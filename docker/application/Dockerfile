@@ -27,28 +27,30 @@
 #   build
 #     included_code_build
 #       conductor_build
+#       webap_build
 #     build_selenium
 #   included_code
 #     conductor
+#     webap
 #   bindmount_code
-#     conductor_bindmount
 #   base_selenium
 #     test_included    ** Image used in tests to run the tests
 #     test_bindmount
 #
-# As of 2024-06-10, the sizes of images from the various stages are as follows:
-#   base                1.18GB
-#   build               2.82GB
-#   included_code_build 2.82GB
-#   conductor_build     2.82GB
-#   build_selenium      2.89GB
-#   included_code       2.06GB
-#   conductor           2.06GB
-#   bindmount_code      2.06GB
-#   conductor_bindmount 2.06GB
-#   base_selenium       1.80GB
-#   test_bindmount      2.73GB
-#   test_included       2.73GB
+# As of 2024-11-08, the sizes of images from the various stages are as follows:
+#   base                0.86GB
+#   build               3.41GB
+#   included_code_build 3.49GB
+#   conductor_build     3.49GB
+#   webap_build
+#   build_selenium      3.48GB
+#   included_code       2.55GB
+#   conductor           2.55GB
+#   webap
+#   bindmount_code      2.54GB
+#   base_selenium       1.22GB
+#   test_bindmount      2.92GB
+#   test_included       2.93GB
 #
 # The "smallest usable image" is bindmount_code, as it includes all the
 # pip requirements, but does not include firefox or selenium.
@@ -72,7 +74,7 @@ SHELL ["/bin/bash", "-c"]
 
 RUN apt-get update && \
     DEBIAN_FRONTEND="noninteractive" apt-get -y upgrade && \
-    DEBIAN_FRONTEND="nonintearctive" TZ="UTC" apt-get -y install -y \
+    DEBIAN_FRONTEND="nonintearctive" TZ="UTC" apt-get -y install -y --no-install-recommends \
       lsb-release \
       curl \
       emacs-nox \
@@ -149,7 +151,7 @@ ENV LESS=-XLRi
 FROM base AS build
 
 RUN apt-get update && \
-    DEBIAN_FRONTEND="nonintearctive" TZ="UTC" apt-get -y install -y \
+    DEBIAN_FRONTEND="nonintearctive" TZ="UTC" apt-get -y install -y --no-install-recommends \
       autoconf \
       automake \
       build-essential \
@@ -172,6 +174,7 @@ RUN apt-get update && \
       python3-ipykernel \
       python3-pip \
       python3-venv \
+      python3-dev \
     && apt-get -y purge python3-cffi-backend python3-requests python3-dateutil && \
     apt-get -y autoremove && \
     apt-get clean && \
@@ -288,8 +291,9 @@ ADD models/ /usr/src/seechange/seechange/models/
 ADD pipeline/ /usr/src/seechange/seechange/pipeline/
 ADD util/ /usr/src/seechange/seechange/util/
 ADD share/ /usr/src/seechange/seechange/share/
-# archive.py needs special treatment because it's a symbolic link in the repo
+# archive.py and rkauth_client.py need special treatment because they're symbolic links in the repo
 ADD util/archive.py /usr/src/seechange/seechange/util/archive.py
+ADD util/rkauth_client.py /usr/src/seechange/seechange/util/rkauth_client.py
 # special treatment for share/RBbot_inference/models because of sybmolic links
 ADD share/RBbot_models/* /usr/src/seechange/seechange/share/RBbot_models/
 
@@ -300,12 +304,13 @@ RUN make install
 
 # ======================================================================
 # This is the target used to do a make install for the conductor's
-#   specific webap code.
+#   specific server and client code.
 
 FROM included_code_build AS conductor_build
 
 RUN mkdir -p /usr/src/seechange/conductor
 ADD conductor/ /usr/src/seechange/conductor/
+
 # Need special handling of symlinks, because the
 #  ADD above copied the links as is, but they point
 #  to something that won't exist at the destination.
@@ -314,9 +319,22 @@ ADD conductor/static/rkwebutil.js /usr/src/seechange/conductor/static/rkwebutil.
 ADD conductor/static/rkauth.js /usr/src/seechange/conductor/static/rkauth.js
 ADD conductor/static/seechange.css /usr/src/seechange/conductor/static/seechange.css
 ADD conductor/static/resetpasswd_start.js /usr/src/seechange/conductor/static/resetpasswd_start.js
+
 WORKDIR /usr/src/seechange/conductor
 
 RUN make INSTALLDIR=/webservice_code install
+
+# ======================================================================
+# This is the target used to do a make install for the webap's
+#   specific server and client code.
+
+FROM included_code_build AS webap_build
+
+RUN mkdir -p /usr/src/seechange/webap
+ADD webap/ /usr/src/seechange/webap/
+
+WORKDIR /usr/src/seechange/webap
+RUN make INSTALLDIR=/webap_code install
 
 # ======================================================================
 # This target is for an image that will not include any
@@ -360,7 +378,7 @@ CMD ["tail", "-f", "/etc/issue"]
 
 
 # ======================================================================
-# This is the target for the conductor as used in production.
+# This is the target for the conductor
 
 FROM included_code AS conductor
 
@@ -387,27 +405,34 @@ ENV PYTHONPATH="/seechange/lib"
 
 CMD [ "./run_conductor.sh", "8080" ]
 
+
 # ======================================================================
-# This is the target for the conductor as used in tests It expects to
-# bind-mount its code at /webservice_code The only diference from the
-# conductor target is that it doesn't COPY the conductor code from the
-# conductor_build target.
+# This is the target for the webap
 
-FROM bindmount_code AS conductor_bindmount
+FROM included_code AS webap
 
-RUN mkdir /webservice_code
-WORKDIR /webservice_code
+COPY --from=webap_build /webap_code/ /webap_code/
+WORKDIR /webap_code/
+RUN chmod 755 run_webap.sh
 
 RUN mkdir /sessions
 RUN chmod 777 /sessions
 
-ADD conductor/seechange_conductor.yaml /seechange/seechange_conductor.yaml
-ADD conductor/local_overrides.yaml /seechange/local_overrides.yaml
-ADD conductor/local_augments.yaml /seechange/local_augments.yaml
-ENV SEECHANGE_CONFIG=/seechange/seechange_conductor.yaml
+ADD webap/seechange_webap.yaml /seechange/seechange_webap.yaml
+ADD webap/local_overrides.yaml /seechange/local_overrides.yaml
+ADD webap/local_augments.yaml /seechange/local_augments.yaml
+
+# Copy in the self-signed certificate we need to use in tests.
+# This should *not* be used in production, even though it's
+# sitting there in the image.
+COPY docker/application/conductor_bogus_key.pem /webap_code/bogus_key.pem
+COPY docker/application/conductor_bogus_cert.pem /webap_code/bogus_cert.pem
+RUN chmod a+r /webap_code/bogus*pem
+
+ENV SEECHANGE_CONFIG=/seechange/seechange_webap.yaml
 ENV PYTHONPATH="/seechange/lib"
 
-CMD [ "./run_conductor.sh", "8080" ]
+CMD [ "./run_webap.sh", "8080" ]
 
 
 # ======================================================================
@@ -417,10 +442,11 @@ FROM base AS base_selenium
 
 RUN apt-get update \
     && DEBIAN_FRONTEND="noninteractive" apt-get -y upgrade \
-    && DEBIAN_FRONTEND="noninteractive" apt-get -y install firefox-esr \
+    && DEBIAN_FRONTEND="noninteractive" apt-get -y install firefox-esr --no-install-recommends \
     && apt-get -y autoremove \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
+
 
 # ======================================================================
 # This is the image that includes a web browser and includes the code

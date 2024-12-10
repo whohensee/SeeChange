@@ -5,11 +5,8 @@ from sqlalchemy.ext.hybrid import hybrid_property
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.declarative import declared_attr
 
-import numpy as np
-
 from models.base import Base, UUIDMixin, SeeChangeBase, SmartSession, HasBitFlagBadness
 from models.enums_and_bitflags import DeepscoreAlgorithmConverter
-from models.provenance import Provenance
 from models.measurements import Measurements
 
 
@@ -23,7 +20,7 @@ class DeepScore(Base, UUIDMixin, HasBitFlagBadness):
     __tablename__ = 'deepscores'
 
     @declared_attr
-    def __table_args__( cls ):
+    def __table_args__( cls ):  # noqa: N805
         return (
             UniqueConstraint('measurements_id', '_algorithm', 'provenance_id',
                              name='_algorithm_measurements_provenance_uc'),
@@ -53,7 +50,7 @@ class DeepScore(Base, UUIDMixin, HasBitFlagBadness):
 
 
     @algorithm.expression
-    def algorithm(cls):
+    def algorithm(cls):  # noqa: N805
         return sa.case( DeepscoreAlgorithmConverter.dict, value=cls._algorithm )
 
     @algorithm.setter
@@ -108,7 +105,7 @@ class DeepScore(Base, UUIDMixin, HasBitFlagBadness):
 
     @staticmethod
     def from_measurements(measurements, provenance=None, **kwargs):
-        """Create a DeepScore object from a single measurements object, using 
+        """Create a DeepScore object from a single measurements object, using
         the parameters described in the given provenance.
         """
 
@@ -126,7 +123,22 @@ class DeepScore(Base, UUIDMixin, HasBitFlagBadness):
             return session.scalars(sa.select(Measurements)
                                    .where(Measurements._id ==
                                           self.measurements_id)).all()
-        
+
     def get_downstreams(self, session=None, siblings=False):
         """Get the downstreams of this DeepScore"""
         return []
+
+    @classmethod
+    def get_rb_cut( cls, method ):
+        """Return the nominal cutoff for 'real' objects for a given method."""
+
+        method = DeepscoreAlgorithmConverter.to_string( method )
+        cuts = {
+            'random': 0.5,
+            'allperfect': 0.99,
+            'RBbot-quiet-shadow-131-cut0.55': 0.55    # Dunno if this is a good cutoff, but it's what we use in tests
+        }
+        if method not in cuts:
+            raise ValueError( f"Unknown deepscore method {method}" )
+
+        return cuts[ method ]

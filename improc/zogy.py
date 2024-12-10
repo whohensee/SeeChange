@@ -3,7 +3,6 @@
 # also got some useful ideas from the implementation here: https://github.com/pmvreeswijk/ZOGY/blob/main/zogy.py#L15721
 
 import numpy as np
-import scipy
 from scipy.stats.distributions import norm, chi2
 
 from improc.bitmask_tools import dilate_bitflag
@@ -321,7 +320,8 @@ def pad_to_shape(arr, shape, value=0):
     return new_arr
 
 
-def zogy_add_weights_flags(ref_weight, new_weight, ref_flags, new_flags, ref_psf_fwhm, new_psf_fwhm):
+def zogy_add_weights_flags( ref_weight, new_weight, ref_flags, new_flags,
+                            ref_zp, new_zp, sub_zp, ref_psf_fwhm, new_psf_fwhm ):
     """Combine the weight and flags images of the reference and new in a reasonable way,
     accounting for PSF widening of the new image.
 
@@ -336,35 +336,66 @@ def zogy_add_weights_flags(ref_weight, new_weight, ref_flags, new_flags, ref_psf
     ----------
     ref_weight: numpy.ndarray
         The weight image of the reference image.
+
     new_weight: numpy.ndarray
         The weight image of the new image.
+
     ref_flags: numpy.ndarray
         The flag image of the reference image.
+
     new_flags: numpy.ndarray
         The flag image of the new image.
+
+    ref_zp: float
+         Zeropoint for the reference (m=-2.5*log(data) + zp)
+
+    new_zp: float
+         Zeropoint for the new.
+
+    sub_zp: float
+         Zeropoint for the difference image (and the returned weights)
+
     ref_psf_fwhm: float
         The FWHM of the PSF of the reference image, in pixels!
+
     new_psf_fwhm: float
         The FWHM of the PSF of the new image, in pixels!
 
     Returns
     -------
     outwt: numpy.ndarray
-        The combined weight image.
+        The combined weight image, with effective magnitude zeropoint sub_zp.
+
     outfl: numpy.ndarray
         The combined flag image.
     """
-    # combine the weights
-    mask = (ref_weight == 0) | (new_weight == 0)
+
+    # Turn weights into variances
     # divide without dividing by zero (ref: https://stackoverflow.com/a/37977222)
     w1 = np.divide(1, ref_weight, out=np.zeros_like(ref_weight), where=ref_weight != 0)
     w2 = np.divide(1, new_weight, out=np.zeros_like(new_weight), where=new_weight != 0)
-    outwt = np.divide(1, w1 + w2, out=np.zeros_like(w1), where=(mask != 0) & ((w1 + w2) != 0))
+
+    # Scale the variances so that they're on the same zeropoint as the sub image.
+    # variances have units equivalent to i², where i is a data pixel value in adu.
+    #
+    # For two fluxes to have the same magnitude:
+    #   m = -2.5*log(f1) + zp1 = -2.5*log(f2) + zp2
+    #   -2.5*log(f1/f2) = zp2 - zp1
+    #   f1/f2 = 10**(-0.4*(zp2-zp1))
+    #   σ1²/σ2² = 10**(-0.8*(zp2-zp1))
+    w1 *= 10 ** ( -0.8 * ( ref_zp - sub_zp ) )
+    w2 *= 10 ** ( -0.8 * ( new_zp - sub_zp ) )
+
+    # combine the weights
+    mask = (ref_weight == 0) | (new_weight == 0) | ( new_flags !=0 ) | ( ref_flags != 0 )
+    outwt = np.divide( 1, w1 + w2, out=np.zeros_like(w1, dtype=np.float32),
+                       where=(mask==0) & ((w1 + w2) != 0) )
 
     # expand the flags of the new image
     splash_pixels = int(np.ceil(max(ref_psf_fwhm, new_psf_fwhm)))
     new_flags = dilate_bitflag(new_flags, iterations=splash_pixels)
-    outfl = mask | ref_flags | new_flags  # xor the flags (add zero-weight flag where needed)
+    outfl = mask | ref_flags | new_flags  # or the flags (add zero-weight flag where needed)
+    outwt[ outfl != 0 ] = 0
 
     return outwt, outfl
 
@@ -374,8 +405,9 @@ if __name__ == "__main__":
     for i in range(10):
         B_r = 10.0
         B_n = 10.0
-        R = np.random.normal(0, np.sqrt(B_r), size=(1000, 1000))
-        N = np.random.normal(0, np.sqrt(B_n), size=(1000, 1000))
+        rng = np.random.default_rng()
+        R = rng.normal(0, np.sqrt(B_r), size=(1000, 1000))
+        N = rng.normal(0, np.sqrt(B_n), size=(1000, 1000))
         P_r = make_gaussian(2.0)
         P_r /= np.sum(P_r)
         P_n = make_gaussian(3.0)
@@ -388,4 +420,3 @@ if __name__ == "__main__":
             f'std(S)= {np.std(output["score"])}, '
             f'std(Sc)= {np.std(output["Score_corr"])}'
         )
-

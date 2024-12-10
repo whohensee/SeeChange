@@ -1,4 +1,3 @@
-import io
 import datetime
 import time
 import warnings
@@ -18,7 +17,7 @@ from pipeline.measuring import Measurer
 from pipeline.scoring import Scorer
 
 from models.base import SmartSession
-from models.provenance import CodeVersion, Provenance, ProvenanceTag, ProvenanceTagExistsError
+from models.provenance import CodeVersion, Provenance, ProvenanceTag
 from models.refset import RefSet
 from models.exposure import Exposure
 from models.image import Image
@@ -288,7 +287,7 @@ class Pipeline:
 
         try:  # must make sure the report is on the DB
             report = Report( exposure_id=ds.exposure.id, section_id=ds.section_id )
-            report.start_time = datetime.datetime.now( tz=datetime.timezone.utc )
+            report.start_time = datetime.datetime.now( tz=datetime.UTC )
             report.provenance_id = provs['report'].id
             with SmartSession(session) as dbsession:
                 # check how many times this report was generated before
@@ -368,7 +367,7 @@ class Pipeline:
                 # run dark/flat preprocessing, cut out a specific section of the sensor
 
                 if 'preprocessing' in stepstodo:
-                    SCLogger.info(f"preprocessor")
+                    SCLogger.info("preprocessor")
                     ds = self.preprocessor.run(ds, session)
                     ds.update_report('preprocessing', session=None)
                     SCLogger.info(f"preprocessing complete: image id = {ds.image.id}, filepath={ds.image.filepath}")
@@ -383,19 +382,19 @@ class Pipeline:
                 if 'backgrounding' in stepstodo:
                     SCLogger.info(f"backgrounder for image id {ds.image.id}")
                     ds = self.backgrounder.run(ds, session)
-                    ds.update_report('extraction', session=None)
+                    ds.update_report('backgrounding', session=None)
 
                 # find astrometric solution, save WCS into Image object and FITS headers
                 if 'wcs' in stepstodo:
                     SCLogger.info(f"astrometor for image id {ds.image.id}")
                     ds = self.astrometor.run(ds, session)
-                    ds.update_report('extraction', session=None)
+                    ds.update_report('astrocal', session=None)
 
                 # cross-match against photometric catalogs and get zero point, save into Image object and FITS headers
                 if 'zp' in stepstodo:
                     SCLogger.info(f"photometor for image id {ds.image.id}")
                     ds = self.photometor.run(ds, session)
-                    ds.update_report('extraction', session=None)
+                    ds.update_report('photocal', session=None)
 
                 if self.pars.save_before_subtraction:
                     t_start = time.perf_counter()
@@ -466,16 +465,12 @@ class Pipeline:
             # make sure the DataStore is returned in case the calling scope want to debug the pipeline run
             return ds
 
-    def run_with_session(self):
-        """
-        Run the entire pipeline using one session that is opened
-        at the beginning and closed at the end of the session,
-        just to see if that causes any problems with too many open sessions.
-        """
-        with SmartSession() as session:
-            self.run(session=session)
-
-    def make_provenance_tree( self, exposure, overrides=None, no_provtag=False, ok_no_ref_provs=False ):
+    def make_provenance_tree( self,
+                              exposure,
+                              overrides=None,
+                              no_provtag=False,
+                              add_missing_processes_to_provtag=True,
+                              ok_no_ref_provs=False ):
         """Create provenances for all steps in the pipeline.
 
         Use the current configuration of the pipeline and all the
@@ -522,6 +517,15 @@ class Pipeline:
             provenance tag if it doesn't exist.  If it does exist, will
             verify that all the provenances in the created provenance
             tree are what's tagged.
+
+        add_missing_processes_to_provtag: bool, default True
+            If the provenance tag already exists in the database, and
+            the provenance tag for a given provenance does not match the
+            provenance derived by this function for that process, an
+            exception will be raised.  If the provenance tag already
+            exists but there is no current provenance tag for a given
+            process, then if this is True, that provenance will be
+            added; if this is False, an exception will be raised.
 
         ok_no_ref_provs: bool, default False
             Normally, if a refeset can't be found, or no image
@@ -652,40 +656,14 @@ class Pipeline:
         )
         provs['report'].insert_if_needed()
 
-        # Ensure that the provenance tag is right, creating it if it doesn't exist
         if not no_provtag:
-            provtag = self.pars.provenance_tag
-            try:
-                provids = []
-                for prov in provs.values():
-                    if isinstance( prov, list ):
-                        provids.extend( [ i.id for i in prov ] )
-                    else:
-                        provids.append( prov.id )
-                ProvenanceTag.newtag( provtag, provids )
-            except ProvenanceTagExistsError as ex:
-                pass
-
-            # The rest of this could be inside the except block,
-            #   but leaving it outside verifies that the
-            #   ProvenanceTag.newtag worked properly.
-            missing = []
-            with SmartSession() as sess:
-                ptags = sess.query( ProvenanceTag ).filter( ProvenanceTag.tag==provtag ).all()
-                ptag_pids = [ pt.provenance_id for pt in ptags ]
-            for step, prov in provs.items():
-                if isinstance( prov, list ):
-                    missing.extend( [ i for i in prov if i.id not in ptag_pids ] )
-                elif prov.id not in ptag_pids:
-                    missing.append( prov )
-            if len( missing ) != 0:
-                strio = io.StringIO()
-                strio.write( f"The following provenances are not associated with provenance tag {provtag}:\n " )
-                for prov in missing:
-                    strio.write( f"   {prov.process}: {prov.id}\n" )
-                SCLogger.error( strio.getvalue() )
-                raise RuntimeError( strio.getvalue() )
+            # Gotta package up the provenances for what
+            # ProvenanceTag.addtag wants (i.e. just a single list)
+            allprovs = [ p for p in provs.values() if not isinstance( p, list ) ]
+            for p in provs.values():
+                if isinstance( p, list ):
+                    allprovs.extend( p )
+            ProvenanceTag.addtag( self.pars.provenance_tag, allprovs,
+                                  add_missing_processes_to_provtag=add_missing_processes_to_provtag )
 
         return provs
-
-

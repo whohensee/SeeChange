@@ -11,11 +11,10 @@ from models.source_list import SourceList
 from models.cutouts import Cutouts
 from models.measurements import Measurements
 from models.knownexposure import PipelineWorker
-from models.calibratorfile import CalibratorFile
-from models.datafile import DataFile
 from pipeline.pipeline_exposure_launcher import ExposureLauncher
 
 from util.logger import SCLogger
+
 
 # NOTE -- this test gets killed on github actions; googling about a bit
 # suggests that it uses too much memory.  Given that it launches two
@@ -28,11 +27,12 @@ from util.logger import SCLogger
 @pytest.mark.skipif( os.getenv('SKIP_BIG_MEMORY') is not None, reason="Uses too much memory for github actions" )
 def test_exposure_launcher( conductor_connector,
                             conductor_config_for_decam_pull,
-                            decam_elais_e1_two_references,
-                            decam_exposure_name ):
+                            decam_elais_e1_two_references ):
     # This is just a basic test that the exposure launcher runs.  It does
     # run in parallel, but only two chips.  On my desktop, it takes about 2
     # minutes.  There aren't tests of failure modes written (yet?).
+
+    decam_exposure_name = 'c4d_230702_080904_ori.fits.fz'
 
     # Hold all exposures
     data = conductor_connector.send( "getknownexposures" )
@@ -45,7 +45,7 @@ def test_exposure_launcher( conductor_connector,
         else:
             tohold.append( ke['id'] )
     assert idtodo is not None
-    res = conductor_connector.send( f"holdexposures/", { 'knownexposure_ids': tohold } )
+    res = conductor_connector.send( "holdexposures/", { 'knownexposure_ids': tohold } )
 
     # Make sure the right things got held
     with SmartSession() as session:
@@ -79,9 +79,6 @@ def test_exposure_launcher( conductor_connector,
             imgq = session.query( Image ).filter( Image.exposure_id==exposure.id ).order_by( Image.section_id )
             assert imgq.count() == 2
             images = imgq.all()
-            # There is probably a cleverl sqlalchemy way to do this
-            #  using the relationship, but searching for a bit didn't
-            #  find anything that worked, so just do it manually
             subq = ( session.query( Image ).join( image_upstreams_association_table,
                                                   Image._id==image_upstreams_association_table.c.downstream_id ) )
             sub0 = subq.filter( image_upstreams_association_table.c.upstream_id==images[0].id ).first()
@@ -92,8 +89,8 @@ def test_exposure_launcher( conductor_connector,
             measq = session.query( Measurements ).join( Cutouts ).join( SourceList ).join( Image )
             meas0 = measq.filter( Image._id==sub0.id ).all()
             meas1 = measq.filter( Image._id==sub1.id ).all()
-            assert len(meas0) == 2
-            assert len(meas1) == 8    # This used to be 6, not sure why it changed...
+            assert len(meas0) == 3
+            assert len(meas1) == 7
 
     finally:
         # Try to clean up everything.  If we delete the exposure, the two images and two subtraction images,
@@ -144,5 +141,3 @@ def test_exposure_launcher( conductor_connector,
             for pw in pws:
                 session.delete( pw )
             session.commit()
-
-

@@ -3,14 +3,10 @@ import hashlib
 import os
 import pathlib
 
-import sqlalchemy as sa
-from sqlalchemy.exc import IntegrityError
+import psycopg2.errors
 
-from astropy.io import fits
 from astropy.wcs import WCS
 
-from models.base import SmartSession
-from models.provenance import Provenance
 from models.world_coordinates import WorldCoordinates
 
 
@@ -59,7 +55,7 @@ def test_world_coordinates( ztf_datastore_uncommitted, provenance_base, provenan
         wcobj2.sources_id = ds.sources.id
         wcobj2.save( image=ds.image, sources=ds.sources ) # overwrite the save of wcobj
 
-        with pytest.raises( IntegrityError,
+        with pytest.raises( psycopg2.errors.UniqueViolation,
                             match='duplicate key value violates unique constraint "ix_world_coordinates_filepath"' ):
             wcobj2.insert()
 

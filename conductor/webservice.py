@@ -1,13 +1,9 @@
 import sys
 import pathlib
-import os
 import re
-import time
 import copy
 import datetime
 import logging
-import subprocess
-import multiprocessing
 import socket
 import json
 
@@ -23,17 +19,19 @@ from models.knownexposure import PipelineWorker, KnownExposure
 
 # Need to make sure to load any instrument we might conceivably use, so
 #   that models.instrument's cache of instrument classes has them
-import models.decam
+import models.decam  # noqa: F401
 # Have to import this because otherwise the Exposure foreign key in KnownExposure doesn't work
-import models.exposure
+import models.exposure  # noqa: F401
 
 from util.config import Config
 from util.util import asUUID
+
 
 class BadUpdaterReturnError(Exception):
     pass
 
 # ======================================================================
+
 
 class BaseView( flask.views.View ):
     def __init__( self, *args, **kwargs ):
@@ -99,7 +97,7 @@ class BaseView( flask.views.View ):
 
     def dispatch_request( self, *args, **kwargs ):
         if not self.check_auth():
-            return f"Not logged in", 500
+            return "Not logged in", 500
         try:
             return self.do_the_things( *args, **kwargs )
         except BadUpdaterReturnError as ex:
@@ -115,12 +113,14 @@ class BaseView( flask.views.View ):
 # has its own dispatch_request method rather than calling the
 # do_the_things method in BaseView's dispatch_request.)
 
+
 class MainPage( BaseView ):
     def dispatch_request( self ):
         return flask.render_template( "conductor_root.html" )
 
 # ======================================================================
 # /status
+
 
 class GetStatus( BaseView ):
     def do_the_things( self ):
@@ -129,12 +129,14 @@ class GetStatus( BaseView ):
 # ======================================================================
 # /forceupdate
 
+
 class ForceUpdate( BaseView ):
     def do_the_things( self ):
         return self.talk_to_updater( { 'command': 'forceupdate' } )
 
 # ======================================================================
 # /updateparameters
+
 
 class UpdateParameters( BaseView ):
     def do_the_things( self, argstr=None ):
@@ -156,7 +158,7 @@ class UpdateParameters( BaseView ):
 
         args['command'] = 'updateparameters'
         res = self.talk_to_updater( args )
-        del( curstatus['status'] )
+        del curstatus['status']
         res['oldsconfig'] = curstatus
 
         return res
@@ -175,13 +177,14 @@ class UpdateParameters( BaseView ):
 #   replace int, optional -- if non-zero, will replace an existing entry with this cluster/node
 #   nexps int, optional number of exposures this pipeline worker can do at once (default 1)
 
+
 class RegisterWorker( BaseView ):
     def do_the_things( self, argstr=None ):
         args = self.argstr_to_args( argstr, { 'node_id': None, 'replace': 0, 'nexps': 1 } )
         args['replace'] = int( args['replace'] )
         args['nexps'] = int( args['nexps'] )
         if 'cluster_id' not in args.keys():
-            return f"cluster_id is required for registerworker", 500
+            return "cluster_id is required for registerworker", 500
         with SmartSession() as session:
             existing = ( session.query( PipelineWorker )
                          .filter( PipelineWorker.cluster_id==args['cluster_id'] )
@@ -217,6 +220,7 @@ class RegisterWorker( BaseView ):
                  'node_id': newworker.node_id,
                  'nexps': newworker.nexps }
 
+
 # ======================================================================
 # /unregisterworker
 #
@@ -235,10 +239,11 @@ class UnregisterWorker( BaseView ):
                 session.commit()
         return { "status": "worker deleted" }
 
+
 # ======================================================================
 # /workerheartbeat
 #
-# Call at /workerheartbeat/n where n is the numeric id of the pipeline worker
+# Call at /workerheartbeat/n where n is the uuid of the pipeline worker
 
 class WorkerHeartbeat( BaseView ):
     def do_the_things( self, pipelineworker_id ):
@@ -256,6 +261,7 @@ class WorkerHeartbeat( BaseView ):
 # ======================================================================
 # /getworkers
 
+
 class GetWorkers( BaseView ):
     def do_the_things( self ):
         with SmartSession() as session:
@@ -266,11 +272,12 @@ class GetWorkers( BaseView ):
 # ======================================================================
 # /requestexposure
 
+
 class RequestExposure( BaseView ):
     def do_the_things( self, argstr=None ):
         args = self.argstr_to_args( argstr )
         if 'cluster_id' not in args.keys():
-            return f"cluster_id is required for RequestExposure", 500
+            return "cluster_id is required for RequestExposure", 500
         # Using direct postgres here since I don't really know how to
         #  lock tables with sqlalchemy.  There is with_for_udpate(), but
         #  then the documentation has this red-backgrounded warning
@@ -298,7 +305,7 @@ class RequestExposure( BaseView ):
                                     "WHERE _id=%(id)s",
                                     { 'id': knownexp_id, 'cluster_id': args['cluster_id'] } )
                     dbcon.commit()
-            except Exception as ex:
+            except Exception:
                 raise
             finally:
                 if cursor is not None:
@@ -313,6 +320,7 @@ class RequestExposure( BaseView ):
 
 
 # ======================================================================
+
 
 class GetKnownExposures( BaseView ):
     def do_the_things( self, argstr=None ):
@@ -338,6 +346,7 @@ class GetKnownExposures( BaseView ):
 
 # ======================================================================
 
+
 class HoldReleaseExposures( BaseView ):
     def hold_or_release( self, keids, hold ):
         # app.logger.info( f"HoldOrReleaseExposures with hold={hold} and keids={keids}" )
@@ -348,7 +357,7 @@ class HoldReleaseExposures( BaseView ):
             q = session.query( KnownExposure ).filter( KnownExposure._id.in_( keids ) )
             todo = q.all()
             # app.logger.info( f"HoldOrRelease got {len(todo)} things to {'hold' if hold else 'release'}" )
-            kes = { str(i._id) : i for i in q.all() }
+            kes = { str(i._id) : i for i in todo }
             notfound = []
             for keid in keids:
                 if keid not in kes.keys():
@@ -359,10 +368,12 @@ class HoldReleaseExposures( BaseView ):
             session.commit()
         return { 'status': 'ok', 'held': held, 'missing': notfound }
 
+
 class HoldExposures( HoldReleaseExposures ):
     def do_the_things( self ):
         args = self.argstr_to_args( None, { 'knownexposure_ids': [] } )
         return self.hold_or_release( args['knownexposure_ids'], True )
+
 
 class ReleaseExposures( HoldReleaseExposures ):
     def do_the_things( self ):
@@ -381,8 +392,14 @@ cfg = Config.get()
 app = flask.Flask( __name__, instance_relative_config=True )
 # app.logger.setLevel( logging.INFO )
 app.logger.setLevel( logging.DEBUG )
+
+secret_key = cfg.value( 'conductor.flask_secret_key' )
+if secret_key is None:
+    with open( cfg.value( 'conductor.flask_secret_key_file' ) ) as ifp:
+        secret_key = ifp.readline().strip()
+
 app.config.from_mapping(
-    SECRET_KEY='szca2ukaz4l33v13yx7asrwqudigau46n0bjcc9yc9bau1sn709c5or44rmg2ybb',
+    SECRET_KEY=secret_key,
     SESSION_COOKIE_PATH='/',
     SESSION_TYPE='filesystem',
     SESSION_PERMANENT=True,
@@ -400,19 +417,21 @@ kwargs = {
     'db_host': cfg.value( 'db.host' ),
     'db_port': cfg.value( 'db.port' ),
     'db_name': cfg.value( 'db.database' ),
-    'db_user': cfg.value( 'db.user' )
+    'db_user': cfg.value( 'db.user' ),
+    'db_password': cfg.value( 'db.password' )
 }
-password = cfg.value( 'db.password' )
-if password is None:
+if kwargs['db_password'] is None:
     if cfg.value( 'db.password_file' ) is None:
         raise RuntimeError( 'In config, one of db.password or db.password_file must be specified' )
     with open( cfg.value( 'db.password_file' ) ) as ifp:
-        password = ifp.readline().strip()
-kwargs[ 'db_password' ] = password
+        kwargs[ 'db_password' ] = ifp.readline().strip()
 
 for attr in [ 'email_from', 'email_subject', 'email_system_name',
               'smtp_server', 'smtp_port', 'smtp_use_ssl', 'smtp_username', 'smtp_password' ]:
-    kwargs[ attr ] = cfg.value( f'conductor.{attr}' )
+    kwargs[ attr ] = cfg.value( f'email.{attr}' )
+if ( kwargs['smtp_password'] ) is None and ( cfg.value('email.smtp_password_file') is not None ):
+    with open( cfg.value('email.smtp_password_file') ) as ifp:
+        kwargs['smtp_password'] = ifp.readline().strip()
 
 rkauth_flask.RKAuthConfig.setdbparams( **kwargs )
 
@@ -446,6 +465,6 @@ for url, cls in urls.items():
         name = url
     else:
         usedurls[ url ] += 1
-        name = f"url.{usedurls[usr]}"
+        name = f"url.{usedurls[url]}"
 
     app.add_url_rule( url, view_func=cls.as_view(name), methods=["GET", "POST"], strict_slashes=False )

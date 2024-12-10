@@ -2,14 +2,14 @@ import time
 
 from improc.tools import make_cutouts
 
-from models.image import Image
+from models.image import Image  # noqa: F401
 from models.source_list import SourceList
 from models.cutouts import Cutouts
 
 from pipeline.parameters import Parameters
 from pipeline.data_store import DataStore
 
-from util.util import parse_session, env_as_bool
+from util.util import env_as_bool
 
 
 class ParsCutter(Parameters):
@@ -40,17 +40,20 @@ class Cutter:
         self.has_recalculated = False
 
     def run(self, *args, **kwargs):
-        """
-        Go over a list of sources and for each source position,
-        cut out a postage stamp image from the new,
-        reference and subtraction images.
-        The results are saved in a Cutouts object for each source.
+        """Create a Cutouts objects for a list of sources.
+
+        Go over a list of sources and for each source position, cut out
+        a postage stamp image from the new, reference and subtraction
+        images.  Background subtract new and ref before extracting
+        the cutout. The results are saved in a Cutouts object for each
+        source.
 
         Returns a DataStore object with the products of the processing.
+
         """
         self.has_recalculated = False
         try:  # first make sure we get back a datastore, even an empty one
-            # if isinstance(args[0], SourceList) and args[0].is_sub:  # most likely to get a SourceList detections object
+            # if isinstance(args[0], SourceList) and args[0].is_sub:  # most likely gets a SourceList detections object
             if isinstance( args[0], SourceList ):
                 raise RuntimeError( "Need to update the code for creating a Cutter from a detections list" )
                 # args, kwargs, session = parse_session(*args, **kwargs)
@@ -77,7 +80,7 @@ class Cutter:
             detections = ds.get_detections(session=session)
             if detections is None:
                 raise ValueError( f'Cannot find a detections source list corresponding to '
-                                  f'the datastore inputs: {ds.get_inputs()}' )
+                                  f'the datastore inputs: {ds.inputs_str}' )
 
             # try to find some cutouts in memory or in the database:
             cutouts = ds.get_cutouts(prov, session=session)
@@ -92,14 +95,14 @@ class Cutter:
                 x = detections.x
                 y = detections.y
                 sz = self.pars.cutout_size
-                sub_stamps_data = make_cutouts(ds.sub_image.data, x, y, sz)
-                sub_stamps_weight = make_cutouts(ds.sub_image.weight, x, y, sz, fillvalue=0)
-                sub_stamps_flags = make_cutouts(ds.sub_image.flags, x, y, sz, fillvalue=0)
+                sub_stamps_data = make_cutouts(ds.sub_image.data, x, y, sz, dtype='>f4')
+                sub_stamps_weight = make_cutouts(ds.sub_image.weight, x, y, sz, fillvalue=0, dtype='>f4')
+                sub_stamps_flags = make_cutouts(ds.sub_image.flags, x, y, sz, fillvalue=0, dtype='>u2')
 
                 # TODO: figure out if we can actually use this flux (maybe renormalize it)
                 # if ds.sub_image.psfflux is not None and ds.sub_image.psffluxerr is not None:
-                #     sub_stamps_psfflux = make_cutouts(ds.sub_image.psfflux, x, y, sz, fillvalue=0)
-                #     sub_stamps_psffluxerr = make_cutouts(ds.sub_image.psffluxerr, x, y, sz, fillvalue=0)
+                #     sub_stamps_psfflux = make_cutouts(ds.sub_image.psfflux, x, y, sz, fillvalue=0, dtype='>f4')
+                #     sub_stamps_psffluxerr = make_cutouts(ds.sub_image.psffluxerr, x, y, sz, fillvalue=0, dtype='>f4')
                 # else:
                 #     sub_stamps_psfflux = None
                 #     sub_stamps_psffluxerr = None
@@ -109,9 +112,9 @@ class Cutter:
                 # should approximately be a null operation.)
 
                 rdata = ds.aligned_ref_bg.subtract_me( ds.aligned_ref_image.data )
-                ref_stamps_data = make_cutouts(rdata, x, y, sz)
-                ref_stamps_weight = make_cutouts(ds.aligned_ref_image.weight, x, y, sz, fillvalue=0)
-                ref_stamps_flags = make_cutouts(ds.aligned_ref_image.flags, x, y, sz, fillvalue=0)
+                ref_stamps_data = make_cutouts(rdata, x, y, sz, dtype='>f4')
+                ref_stamps_weight = make_cutouts(ds.aligned_ref_image.weight, x, y, sz, fillvalue=0, dtype='>f4')
+                ref_stamps_flags = make_cutouts(ds.aligned_ref_image.flags, x, y, sz, fillvalue=0, dtype='>u2')
                 del rdata
 
                 # Rescale the reference cutouts to have the same zeropoint as the
@@ -120,9 +123,9 @@ class Cutter:
                 ref_stamps_weight *= 10 ** ( ( ds.aligned_ref_zp.zp - ds.aligned_new_zp.zp ) / 5. )
 
                 ndata = ds.aligned_new_bg.subtract_me( ds.aligned_new_image.data )
-                new_stamps_data = make_cutouts(ndata, x, y, sz)
-                new_stamps_weight = make_cutouts(ds.aligned_new_image.weight, x, y, sz, fillvalue=0)
-                new_stamps_flags = make_cutouts(ds.aligned_new_image.flags, x, y, sz, fillvalue=0)
+                new_stamps_data = make_cutouts(ndata, x, y, sz, dtype='>f4')
+                new_stamps_weight = make_cutouts(ds.aligned_new_image.weight, x, y, sz, fillvalue=0, dtype='>f4')
+                new_stamps_flags = make_cutouts(ds.aligned_new_image.flags, x, y, sz, fillvalue=0, dtype='>u2')
                 del ndata
 
                 cutouts = Cutouts.from_detections(detections, provenance=prov)

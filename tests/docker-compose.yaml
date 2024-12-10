@@ -1,6 +1,6 @@
 services:
   make-archive-directories:
-    image: ghcr.io/${GITHUB_REPOSITORY_OWNER:-c3-time-domain}/upload-connector:${IMGTAG:-test20241017}
+    image: ghcr.io/${GITHUB_REPOSITORY_OWNER:-c3-time-domain}/upload-connector:${IMGTAG:-test20241209}
     build:
       context: ../extern/nersc-upload-connector
       args:
@@ -20,7 +20,7 @@ services:
     depends_on:
       make-archive-directories:
         condition: service_completed_successfully
-    image: ghcr.io/${GITHUB_REPOSITORY_OWNER:-c3-time-domain}/upload-connector:${IMGTAG:-test20241017}
+    image: ghcr.io/${GITHUB_REPOSITORY_OWNER:-c3-time-domain}/upload-connector:${IMGTAG:-test20241209}
     build:
       context: ../extern/nersc-upload-connector
       args:
@@ -47,7 +47,7 @@ services:
     user: ${USERID:-0}:${GROUPID:-0}
 
   postgres:
-    image: ghcr.io/${GITHUB_REPOSITORY_OWNER:-c3-time-domain}/postgres:${IMGTAG:-test20241017}
+    image: ghcr.io/${GITHUB_REPOSITORY_OWNER:-c3-time-domain}/postgres:${IMGTAG:-test20241209}
     build:
       context: ../docker/postgres
     environment:
@@ -60,7 +60,7 @@ services:
       retries: 5
 
   setuptables:
-    image: ghcr.io/${GITHUB_REPOSITORY_OWNER:-c3-time-domain}/seechange:${IMGTAG:-test20241017}
+    image: ghcr.io/${GITHUB_REPOSITORY_OWNER:-c3-time-domain}/seechange:${IMGTAG:-test20241209}
     build:
       context: ../
       dockerfile: ./docker/application/Dockerfile
@@ -83,8 +83,35 @@ services:
     ports:
         - "${MAILHOG_PORT:-8025}:8025"
 
+  kafka-zookeeper:
+    image: ghcr.io/${GITHUB_REPOSITORY_OWNER:-c3-time-domain}/kafka:${IMGTAG:-test20241209}
+    build:
+      context: ../
+      dockerfile: ./docker/test_kafka/Dockerfile
+    healthcheck:
+      test: netcat -w 1 localhost 2181 || exit 1
+      interval: 5s
+      timeout: 10s
+      retries: 5
+    entrypoint: [ "bin/zookeeper-server-start.sh", "config/zookeeper.properties" ]
+
+  kafka-server:
+    depends_on:
+       kafka-zookeeper:
+         condition: service_healthy
+    image: ghcr.io/${GITHUB_REPOSITORY_OWNER:-c3-time-domain}/kafka:${IMGTAG:-test20241209}
+    build:
+      context: ../
+      dockerfile: ./docker/test_kafka/Dockerfile
+    healthcheck:
+      test: netcat -w 1 localhost 9092 || exit 1
+      interval: 5s
+      timeout: 10s
+      retries: 5
+    entrypoint: [ "bin/kafka-server-start.sh", "config/server.properties" ]
+
   conductor:
-    image: ghcr.io/${GITHUB_REPOSITORY_OWNER:-c3-time-domain}/conductor:${IMGTAG:-test20241017}
+    image: ghcr.io/${GITHUB_REPOSITORY_OWNER:-c3-time-domain}/conductor:${IMGTAG:-test20241209}
     build:
       context: ../
       dockerfile: ./docker/application/Dockerfile
@@ -114,9 +141,11 @@ services:
         condition: service_completed_successfully
       make-archive-directories:
         condition: service_completed_successfully
-    image: ghcr.io/${GITHUB_REPOSITORY_OWNER:-c3-time-domain}/seechange-webap:${IMGTAG:-test20241017}
+    image: ghcr.io/${GITHUB_REPOSITORY_OWNER:-c3-time-domain}/seechange-webap:${IMGTAG:-test20241209}
     build:
-      context: ../webap
+      context: ../
+      dockerfile: ./docker/application/Dockerfile
+      target: webap
     user: ${USERID:-0}:${GROUPID:-0}
     ports:
       - "${WEBAP_PORT:-8081}:8081"
@@ -129,13 +158,13 @@ services:
       - type: volume
         source: archive-storage
         target: /archive-storage
-      - type: bind
-        source: webap_secrets
-        target: /secrets
-    entrypoint: [ "gunicorn", "-w", "4", "-b", "0.0.0.0:8081", "--timeout", "0", "seechange_webap:app" ]
+      - type: volume
+        source: webap-sessions
+        target: /sessions
+    entrypoint: [ "./run_webap.sh", "8081", "1" ]
 
   runtests:
-    image: ghcr.io/${GITHUB_REPOSITORY_OWNER:-c3-time-domain}/seechange:${IMGTAG:-test20241017}
+    image: ghcr.io/${GITHUB_REPOSITORY_OWNER:-c3-time-domain}/seechange:${IMGTAG:-test20241209}
     build:
       context: ../
       dockerfile: ./docker/application/Dockerfile
@@ -152,6 +181,8 @@ services:
       conductor:
         condition: service_healthy
       webap:
+        condition: service_healthy
+      kafka-server:
         condition: service_healthy
     volumes:
       - type: bind
@@ -165,7 +196,7 @@ services:
     entrypoint: "pytest -v /seechange/$TEST_SUBFOLDER"
 
   runalltests:
-    image: ghcr.io/${GITHUB_REPOSITORY_OWNER:-c3-time-domain}/seechange:${IMGTAG:-test20241017}
+    image: ghcr.io/${GITHUB_REPOSITORY_OWNER:-c3-time-domain}/seechange:${IMGTAG:-test20241209}
     build:
       context: ../
       dockerfile: ./docker/application/Dockerfile
@@ -183,6 +214,8 @@ services:
         condition: service_healthy
       webap:
         condition: service_healthy
+      kafka-server:
+        condition: service_healthy
     volumes:
       - type: bind
         source: ..
@@ -194,8 +227,26 @@ services:
     user: ${USERID:-0}:${GROUPID:-0}
     entrypoint: "pytest -v /seechange/tests"
 
+  runruff:
+    image: ghcr.io/${GITHUB_REPOSITORY_OWNER:-c3-time-domain}/seechange:${IMGTAG:-test20241209}
+    build:
+      context: ../
+      dockerfile: ./docker/application/Dockerfile
+      target: test_bindmount
+    volumes:
+      - type: bind
+        source: ..
+        target: /seechange
+      - type: volume
+        source: archive-storage
+        target: /archive_storage
+    working_dir: /seechange
+    user: ${USERID:-0}:${GROUPID:-0}
+    entrypoint: [ "ruff", "check" ]
+
+
   shell:
-    image: ghcr.io/${GITHUB_REPOSITORY_OWNER:-c3-time-domain}/seechange:${IMGTAG:-test20241017}
+    image: ghcr.io/${GITHUB_REPOSITORY_OWNER:-c3-time-domain}/seechange:${IMGTAG:-test20241209}
     build:
       context: ../
       dockerfile: ./docker/application/Dockerfile
@@ -211,6 +262,8 @@ services:
       conductor:
         condition: service_healthy
       webap:
+        condition: service_healthy
+      kafka-server:
         condition: service_healthy
     volumes:
       - type: bind
@@ -231,3 +284,4 @@ secrets:
 volumes:
   archive-storage:
   conductor-sessions:
+  webap-sessions:

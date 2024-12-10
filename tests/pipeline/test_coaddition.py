@@ -19,11 +19,9 @@ from improc.tools import sigma_clipping
 
 from pipeline.data_store import DataStore
 from pipeline.coaddition import Coadder, CoaddPipeline
-from pipeline.detection import Detector
-from pipeline.astro_cal import AstroCalibrator
-from pipeline.photo_cal import PhotCalibrator
 
 from util.util import env_as_bool
+
 
 def estimate_psf_width(data, sz=7, upsampling=50, num_stars=20):
     """Extract a few bright stars and estimate their median FWHM.
@@ -201,7 +199,7 @@ def test_zogy_simulation(coadder, blocking_plots):
     assert np.all(deltas < 0.3)  # the estimator should be within 30% of the truth
 
     # now that we know the estimator is good, lets check the coadded images vs. the originals:
-    outim, outwt, outfl, outpsf, score = coadder._coadd_zogy(  # calculate the ZOGY coadd
+    outim, outwt, outfl, _, score = coadder._coadd_zogy(  # calculate the ZOGY coadd
         images,
         weights=weights,
         flags=flags,
@@ -241,7 +239,7 @@ def test_zogy_simulation(coadder, blocking_plots):
         plt.legend()
         plt.show(block=True)
 
-        fig, ax = plt.subplots(2, 2)
+        _, ax = plt.subplots(2, 2)
         ax[0, 0].imshow(images[0], vmin=0, vmax=100)
         ax[0, 0].set_title('original 0')
         ax[0, 1].imshow(images[1], vmin=0, vmax=100)
@@ -266,12 +264,12 @@ def test_zogy_vs_naive( ptf_aligned_image_datastores, coadder ):
     aligned_psfs = [ d.psf for d in ptf_aligned_image_datastores ]
     aligned_zps = [ d.zp for d in ptf_aligned_image_datastores ]
 
-    naive_im, naive_wt, naive_fl = coadder._coadd_naive( aligned_images )
+    naive_im, _, naive_fl = coadder._coadd_naive( aligned_images )
 
-    zogy_im, zogy_wt, zogy_fl, zogy_psf, zogy_score = coadder._coadd_zogy( aligned_images,
-                                                                           aligned_bgs,
-                                                                           aligned_psfs,
-                                                                           aligned_zps )
+    zogy_im, _, zogy_fl, _, _ = coadder._coadd_zogy( aligned_images,
+                                                                     aligned_bgs,
+                                                                     aligned_psfs,
+                                                                     aligned_zps )
 
     assert naive_im.shape == zogy_im.shape
 
@@ -366,91 +364,12 @@ def test_coaddition_run(coadder, ptf_reference_image_datastores, ptf_aligned_ima
     assert ref_image.zogy_score is not None
     assert ref_image.zogy_score.shape == ref_image.data.shape
 
-
-@pytest.mark.skip( reason="CoaddPipeline.parse_inputs has been removed, this test is obsolete. (Delete?)" )
-def test_coaddition_pipeline_inputs(ptf_reference_image_datastores):
-    pipe = CoaddPipeline()
-    assert pipe.pars.date_range == 7
-    assert isinstance(pipe.coadder, Coadder)
-    assert pipe.coadder.pars.method == 'zogy'
-    assert isinstance(pipe.extractor, Detector)
-    assert pipe.extractor.pars.threshold == 3.0
-    assert isinstance(pipe.astrometor, AstroCalibrator)
-    assert pipe.astrometor.pars.max_catalog_mag == [22.0]
-    assert isinstance(pipe.photometor, PhotCalibrator)
-    assert pipe.photometor.pars.max_catalog_mag == [22.0]
-
-    # make a new pipeline with modified parameters
-    pipe = CoaddPipeline(pipeline={'date_range': 5}, coaddition={'method': 'naive'})
-    assert pipe.pars.date_range == 5
-    assert isinstance(pipe.coadder, Coadder)
-    assert pipe.coadder.pars.method == 'naive'
-
-    # now modify it after initialization:
-    pipe.coadder.pars.method = 'zogy'
-    assert pipe.coadder.pars.method == 'zogy'
-
-    # now run the pipeline:
-    pipe.parse_inputs(ptf_reference_images)
-    assert pipe.images == ptf_reference_images
-
-    # make sure you can grab these using the target and other parameters:
-    pipe.parse_inputs(
-        target="100014",
-        instrument="PTF",
-        filter="R",
-        section_id="11",
-        provenance_ids=ptf_reference_images[0].provenance_id,
-    )
-
-    # without giving a start/end time, all these images will not be selected!
-    assert len(pipe.images) == 0
-
-    # try with a time too far in the past
-    pipe.parse_inputs(
-        target="100014",
-        instrument="PTF",
-        filter="R",
-        section_id="11",
-        provenance_ids=ptf_reference_images[0].provenance_id,
-        start_time='2000-01-01',
-        end_time='2007-01-01',
-    )
-    assert len(pipe.images) == 0
-
-    # without an end_time, should use "now" so it would include the images
-    pipe.parse_inputs(
-        target="100014",
-        instrument="PTF",
-        filter="R",
-        section_id="11",
-        provenance_ids=ptf_reference_images[0].provenance_id,
-        start_time='2000-01-01',
-    )
-    im_ids = set([im.id for im in pipe.images])
-    ptf_im_ids = set([im.id for im in ptf_reference_images])
-    assert ptf_im_ids.issubset(im_ids)
-
-    ptf_ras = [im.ra for im in ptf_reference_images]
-    ptf_decs = [im.dec for im in ptf_reference_images]
-    center_ra = np.mean(ptf_ras)
-    center_dec = np.mean(ptf_decs)
-
-    # make sure we can grab these images using coordinates as well:
-    pipe.parse_inputs(
-        target=None,
-        ra=center_ra,
-        dec=center_dec,
-        instrument="PTF",
-        filter="R",
-        section_id="11",
-        provenance_ids=ptf_reference_images[0].provenance_id,
-        start_time='2000-01-01',
-    )
-
-    im_ids = set([im.id for im in pipe.images])
-    ptf_im_ids = set([im.id for im in ptf_reference_images])
-    assert ptf_im_ids.issubset(im_ids)
+    # The zogy coaddition should have left the sky noise at 1, and
+    # the weights are all 1 (under the zogy assumption of sky noise
+    # domination).  Look at at a visually-selected "blank spot"
+    # on the image:
+    assert ref_image.data[ 1985:2015, 915:945 ].std() == pytest.approx( 1.0, rel=0.1 )
+    assert np.all( ref_image.weight[ ref_image.flags == 0 ] == 1 )
 
 
 def test_coaddition_pipeline_outputs(ptf_reference_image_datastores, ptf_aligned_image_datastores):
@@ -488,7 +407,8 @@ def test_coaddition_pipeline_outputs(ptf_reference_image_datastores, ptf_aligned
         # necessary to do that.
         assert np.max(coadd_ds.image.zogy_psf) == pytest.approx(np.max(coadd_ds.psf.get_clip()), abs=0.01)
         zogy_fwhm = estimate_psf_width(coadd_ds.image.zogy_psf, num_stars=1)
-        psfex_fwhm = estimate_psf_width(np.pad(coadd_ds.psf.get_clip(), 20), num_stars=1)  # pad so extract_psf_surrogate works
+        # pad so extract_psf_surrogate works
+        psfex_fwhm = estimate_psf_width(np.pad(coadd_ds.psf.get_clip(), 20), num_stars=1)
         assert zogy_fwhm == pytest.approx(psfex_fwhm, rel=0.1)
 
         # check that the S/N is consistent with a coadd
@@ -530,7 +450,7 @@ def test_coadded_reference(ptf_ref):
     assert str(ptf_ref.section_id) == str(ref_image.section_id)
 
     ref_prov = Provenance.get( ptf_ref.provenance_id )
-    refimg_prov = Provenance.get( ref_image.provenance_id )
+    # refimg_prov = Provenance.get( ref_image.provenance_id )
 
     assert ref_image.provenance_id in [ p.id for p in ref_prov.upstreams ]
     assert ref_sources.provenance_id in [ p.id for p in ref_prov.upstreams ]
@@ -558,8 +478,24 @@ def test_coadd_partial_overlap_swarp( decam_four_offset_refs, decam_four_refs_al
     # (I manually looked at the image and picked out a few spots)
 
     # Check that the weight is higher in a region where two images actually overlapped
-    assert img.weight[ 550:640, 975:1140 ].mean() == pytest.approx( 0.021, abs=0.001 )
-    assert img.weight[ 690:770, 930:1050 ].mean() == pytest.approx( 0.013, abs=0.001 )
+    wtmean1 = img.weight[ 550:640, 975:1140 ].mean()
+    wtmean2 = img.weight[ 690:770, 930:1050 ].mean()
+    assert  wtmean1 == pytest.approx( 0.021, abs=0.001 )
+    assert  wtmean2 == pytest.approx( 0.013, abs=0.001 )
+    # And, while we're here, check that those weights make sense.  (These are blank regions
+    #   on the images, so the weights should be approx 1/(sdev(image)**2).)
+    # ...but, no.  Because the pixels were resampled when warped, there
+    #   is now correlated noise between the pixels, which will (I
+    #   believe) tend to reduce the measured standard deviation.  So, we
+    #   expect the weights to be "too low" here (though, really, they're
+    #   probably right).  But, they should be in the same general range.
+    #   Somebody who knows statistics better than me can determine a
+    #   better value to use for the empirical 0.3 or 0.4 that I have
+    #   below.
+    assert wtmean1 < 1. / np.std( img.data[550:640, 957:1140] ) ** 2
+    assert wtmean1 == pytest.approx( 1. / np.std(img.data[550:640, 957:1140])**2, rel=0.4 )
+    assert wtmean2 < 1. / np.std( img.data[690:770, 930:1050] ) ** 2
+    assert wtmean2 == pytest.approx( 1. / np.std(img.data[690:770, 930:1050])**2, rel=0.3 )
 
     # Look at a spot with a star, and a nearby sky, in a place where there was only
     #   one image in the coadd
@@ -577,6 +513,7 @@ def test_coadd_partial_overlap_swarp( decam_four_offset_refs, decam_four_refs_al
     #   two images in the sum
     assert img.data[ 237:266, 978:988 ].sum() == pytest.approx( 7950., abs=10. )
     assert img.data[ 237:266, 1008:1018 ].sum() == pytest.approx( 51., abs=10. )
+
 
 # This next test is very slow (9 minutes on github), and also perhaps a
 #   bit much given that it downloads and swarps together 17 images.  As
@@ -606,4 +543,3 @@ def test_coadd_17_decam_images_swarp( decam_17_offset_refs, decam_four_refs_alig
     assert img.data.shape == ( 4096, 2048 )
     assert img.flags.shape == img.data.shape
     assert img.weight.shape == img.weight.shape
-

@@ -1,9 +1,8 @@
 import pytest
-import re
 import uuid
 
 import sqlalchemy as sa
-from sqlalchemy.exc import IntegrityError
+import psycopg2.errors
 
 from astropy.time import Time
 
@@ -17,7 +16,7 @@ from models.object import Object
 def test_object_creation():
     obj = Object(ra=1.0, dec=2.0, is_test=True, is_bad=False)
 
-    with pytest.raises( IntegrityError, match='null value in column "name"' ):
+    with pytest.raises( psycopg2.errors.NotNullViolation, match='null value in column "name"' ):
         obj.insert()
 
     obj.name = "foo"
@@ -228,6 +227,7 @@ def test_filtering_measurements_on_object(sim_lightcurves):
         # get the new and only if not found go to the old
         found = obj.get_measurements_list(prov_hash_list=[prov.id, measurements[0].provenance.id])
         assert set([m.id for m in found]) == set(new_id_list)
+
 
 @pytest.mark.xfail( reason="Issue #345" )
 def test_separate_good_and_bad_objects(measurer, ptf_datastore):

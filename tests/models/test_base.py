@@ -13,22 +13,25 @@ import numpy as np
 
 import sqlalchemy as sa
 from sqlalchemy.exc import IntegrityError
+from psycopg2.errors import UniqueViolation
 
 import util.config as config
 from util.logger import SCLogger
 import models.base
-from models.base import Base, SmartSession, UUIDMixin, FileOnDiskMixin, FourCorners
+from models.base import Base, SmartSession, Psycopg2Connection, UUIDMixin, FileOnDiskMixin, FourCorners
 from models.image import Image
 from models.datafile import DataFile
 from models.object import Object
 
+
 def test_to_dict(data_dir):
     target = uuid.uuid4().hex
-    filter = np.random.choice( ['g', 'r', 'i', 'z', 'y'] )
-    mjd = np.random.rand() * 10000
-    ra = np.random.rand() * 360
-    dec = np.random.rand() * 180 - 90
-    fwhm_estimate = np.random.rand() * 10
+    rng = np.random.default_rng()
+    filter = rng.choice( ['g', 'r', 'i', 'z', 'y'] )
+    mjd = rng.uniform() * 10000
+    ra = rng.uniform() * 360
+    dec = rng.uniform() * 180 - 90
+    fwhm_estimate = rng.uniform() * 10
 
     im1 = Image( target=target, filter=filter, mjd=mjd, ra=ra, dec=dec, fwhm_estimate=fwhm_estimate )
     output_dict = im1.to_dict()
@@ -59,6 +62,7 @@ def test_to_dict(data_dir):
     finally:
         os.remove(filename)
 
+
 # ====================
 # Test basic database operations
 #
@@ -68,11 +72,28 @@ def test_to_dict(data_dir):
 
 def test_insert( provenance_base ):
 
-    uuidstodel = [ uuid.uuid4() ]
+    def make_sure_its_there( _id, filepath ):
+        df = DataFile.get_by_id( _id )
+        assert df is not None
+        assert df.filepath == filepath
+
+    def make_sure_its_not_there( _id, filepath ):
+        df = DataFile.get_by_id( _id )
+        assert df is None
+
+    uuidstodel = []
     try:
+        curid = uuid.uuid4()
+        uuidstodel.append( curid )
+        df = DataFile( _id=curid, filepath="foo", md5sum=uuid.uuid4(), provenance_id=provenance_base.id )
+
+        # Make sure we get an error if we don't pass the right kind of thing
+        with pytest.raises( TypeError, match="session must be a sa Session or psycopg2.extensions.connection or None" ):
+            df.insert( 2 )
+
         # Make sure we can insert
-        df = DataFile( _id=uuidstodel[0], filepath="foo", md5sum=uuid.uuid4(), provenance_id=provenance_base.id )
         df.insert()
+        make_sure_its_there( curid, "foo" )
 
         founddf = DataFile.get_by_id( df.id )
         assert founddf is not None
@@ -85,14 +106,49 @@ def test_insert( provenance_base ):
 
         # Make sure we get an error if we try to insert something that already exists
         newdf = DataFile( _id=df.id, filepath='bar', md5sum=uuid.uuid4(), provenance_id=provenance_base.id )
-        with pytest.raises( IntegrityError, match='duplicate key value violates unique constraint "data_files_pkey"' ):
-            df.insert()
+        with pytest.raises( UniqueViolation, match='duplicate key value violates unique constraint "data_files_pkey"' ):
+            newdf.insert()
+
+        # Make sure we can insert using a session
+        curid = uuid.uuid4()
+        uuidstodel.append( curid )
+        df = DataFile( _id=curid, filepath="foo2", md5sum=uuid.uuid4(), provenance_id=provenance_base.id )
+        with SmartSession() as session:
+            df.insert( session )
+        make_sure_its_there( curid, "foo2" )
+
+        # Make sure nocommit with session works as expected
+        curid = uuid.uuid4()
+        uuidstodel.append( curid )
+        df = DataFile( _id=curid, filepath="foo3", md5sum=uuid.uuid4(), provenance_id=provenance_base.id )
+        with SmartSession() as sess:
+            df.insert( sess, nocommit=True )
+            sess.rollback()
+        make_sure_its_not_there( curid, "foo3" )
+
+        # Make sure we can insert passing a psycopg2 connection
+        curid = uuid.uuid4()
+        uuidstodel.append( curid )
+        df = DataFile( _id=curid, filepath="foo4", md5sum=uuid.uuid4(), provenance_id=provenance_base.id )
+        with Psycopg2Connection() as conn:
+            df.insert( conn )
+        make_sure_its_there( curid, "foo4" )
+
+        # Make sure nocommit with connection works as expected
+        curid = uuid.uuid4()
+        uuidstodel.append( curid )
+        df = DataFile( _id=curid, filepath="foo5", md5sum=uuid.uuid4(), provenance_id=provenance_base.id )
+        with Psycopg2Connection() as conn:
+            df.insert( conn, nocommit=True )
+        make_sure_its_not_there( curid, "foo5" )
+
 
     finally:
         # Clean up
         with SmartSession() as sess:
             sess.execute( sa.delete( DataFile ).where( DataFile._id.in_( uuidstodel ) ) )
             sess.commit()
+
 
 def test_upsert( provenance_base ):
 
@@ -200,6 +256,7 @@ def test_upsert( provenance_base ):
 
 # TODO : test test_upsert_list when one of the object properties is a SQL array.
 
+
 # This test also implicitly tests UUIDMixin.get_by_id and UUIDMixin.get_back_by_ids
 def test_upsert_list( code_version, provenance_base, provenance_extra ):
     # Set the logger to show the SQL emitted by SQLAlchemy for this test.
@@ -287,15 +344,14 @@ def test_upsert_list( code_version, provenance_base, provenance_extra ):
 
 
 class DiskFile(Base, UUIDMixin, FileOnDiskMixin):
-    """A temporary database table for testing FileOnDiskMixin
-
-    """
+    """A temporary database table for testing FileOnDiskMixin"""
     hexbarf = ''.join( [ random.choice( '0123456789abcdef' ) for i in range(8) ] )
     __tablename__ = f"test_diskfiles_{hexbarf}"
     nofile = True
 
     def get_downstreams( self, session=None ):
         return []
+
 
 @pytest.fixture(scope='session')
 def diskfiletable():
@@ -317,10 +373,11 @@ def diskfile( diskfiletable ):
 
 
 def test_fileondisk_save_failuremodes( diskfile ):
-    data1 = np.random.rand( 32 ).tobytes()
-    md5sum1 = hashlib.md5( data1 ).hexdigest()
-    data2 = np.random.rand( 32 ).tobytes()
-    md5sum2 = hashlib.md5( data2 ).hexdigest()
+    rng = np.random.default_rng()
+    data1 = rng.uniform( size=32 ).tobytes()
+    # md5sum1 = hashlib.md5( data1 ).hexdigest()
+    data2 = rng.uniform( size=32 ).tobytes()
+    # md5sum2 = hashlib.md5( data2 ).hexdigest()
     fname = "test_diskfile.dat"
     diskfile.filepath = fname
 
@@ -364,7 +421,7 @@ def test_fileondisk_save_failuremodes( diskfile ):
 
     # Should fail if we pass something that's not bytes, string, or Path
     with pytest.raises( TypeError, match='data must be bytes, str, or Path.*' ):
-        diskfile.save( int(42) )
+        diskfile.save( 42 )
     with pytest.raises( FileNotFoundError ):
         ifp = open( diskfile.get_fullpath(), 'rb' )
         ifp.close()
@@ -390,11 +447,12 @@ def test_fileondisk_save_failuremodes( diskfile ):
 def test_fileondisk_save_singlefile( diskfile, archive, test_config, data_dir ):
     archive_dir = archive.test_folder_path
     diskfile.filepath = 'test_fileondisk_save.dat'
-    data1 = np.random.rand( 32 ).tobytes()
+    rng = np.random.default_rng()
+    data1 = rng.uniform( size=32 ).tobytes()
     md5sum1 = hashlib.md5( data1 ).hexdigest()
-    data2 = np.random.rand( 32 ).tobytes()
+    data2 = rng.uniform( size=32 ).tobytes()
     md5sum2 = hashlib.md5( data2 ).hexdigest()
-    data3 = np.random.rand( 32 ).tobytes()
+    data3 = rng.uniform( size=32 ).tobytes()
     md5sum3 = hashlib.md5( data3 ).hexdigest()
     assert md5sum1 != md5sum2
     assert md5sum2 != md5sum3
@@ -448,7 +506,7 @@ def test_fileondisk_save_singlefile( diskfile, archive, test_config, data_dir ):
     with open( diskfile.get_fullpath(), 'wb' ) as ofp:
         ofp.write( data2 )
     with pytest.raises( ValueError, match=".*has md5sum.*on disk, which doesn't match the database value.*" ):
-        path = diskfile.get_fullpath( nofile=False, always_verify_md5=True )
+        diskfile.get_fullpath( nofile=False, always_verify_md5=True )
 
     # Clean up for further tests
     filename = diskfile.get_fullpath()
@@ -520,7 +578,8 @@ def test_fileondisk_save_singlefile_noarchive( diskfile ):
     # when the archive is null.
 
     diskfile.filepath = 'test_fileondisk_save.dat'
-    data1 = np.random.rand( 32 ).tobytes()
+    rng = np.random.default_rng()
+    data1 = rng.uniform( size=32 ).tobytes()
     md5sum1 = hashlib.md5( data1 ).hexdigest()
 
     cfg = config.Config.get()
@@ -540,11 +599,12 @@ def test_fileondisk_save_multifile( diskfile, archive, test_config):
     archive_dir = archive.test_folder_path
     try:
         diskfile.filepath = 'test_fileondisk_save'
-        data1 = np.random.rand( 32 ).tobytes()
+        rng = np.random.default_rng()
+        data1 = rng.uniform( size=32 ).tobytes()
         md5sum1 = hashlib.md5( data1 ).hexdigest()
-        data2 = np.random.rand( 32 ).tobytes()
+        data2 = rng.uniform( size=32 ).tobytes()
         md5sum2 = hashlib.md5( data2 ).hexdigest()
-        data3 = np.random.rand( 32 ).tobytes()
+        data3 = rng.uniform( size=32 ).tobytes()
         md5sum3 = hashlib.md5( data3 ).hexdigest()
         assert md5sum1 != md5sum2
         assert md5sum2 != md5sum3
@@ -669,9 +729,10 @@ def test_fileondisk_save_multifile_noarchive( diskfile ):
     # when the archive is null.
 
     diskfile.filepath = 'test_fileondisk_save.dat'
-    data1 = np.random.rand( 32 ).tobytes()
+    rng = np.random.default_rng()
+    data1 = rng.uniform( size=32 ).tobytes()
     md5sum1 = hashlib.md5( data1 ).hexdigest()
-    data2 = np.random.rand( 32 ).tobytes()
+    data2 = rng.uniform( size=32 ).tobytes()
     md5sum2 = hashlib.md5( data2 ).hexdigest()
     assert md5sum1 != md5sum2
 

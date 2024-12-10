@@ -1,6 +1,4 @@
-"""
-Here we put all the dictionaries and conversion functions for getting/setting enums and bitflags.
-"""
+"""Here we put all the dictionaries and conversion functions for getting/setting enums and bitflags."""
 
 from util.classproperty import classproperty
 
@@ -58,11 +56,14 @@ class EnumConverter:
 
     @classmethod
     def c( cls, keyword ):
-        """Convert the key to something more compatible. """
+        """Convert the key to something more compatible.
+
+        ...compatible with _what_?  Why no underscores??
+        """
         return keyword.lower().replace(' ', '').replace('_', '')
 
     @classproperty
-    def dict( cls ):
+    def dict( cls ):  # noqa: N805
         if cls._dict_filtered is None:
             if cls._allowed_values is None:
                 cls._dict_filtered = cls._dict
@@ -71,7 +72,7 @@ class EnumConverter:
         return cls._dict_filtered
 
     @classproperty
-    def dict_inverse( cls ):
+    def dict_inverse( cls ):  # noqa: N805
         if cls._dict_inverse is None:
             cls._dict_inverse = { cls.c(v): k for k, v in cls._dict.items() }
         return cls._dict_inverse
@@ -113,6 +114,7 @@ class EnumConverter:
             return value
         else:
             return cls.convert(value)
+
 
 class FormatConverter( EnumConverter ):
     # This is the master format dictionary, that contains all file types for
@@ -272,20 +274,22 @@ class BackgroundMethodConverter( EnumConverter ):
     _dict_filtered = None
     _dict_inverse = None
 
+
 class DeepscoreAlgorithmConverter( EnumConverter ):
     # These algorithms are implemented in models/deepscore.py
     _dict = {
         0: 'random',  # for testing only
         1: 'allperfect', # for testing only
-        2: 'RBbot-quiet-shadow-131'
+        2: 'RBbot-quiet-shadow-131-cut0.55',
     }
     _allowed_values = None
     _dict_filtered = None
     _dict_inverse = None
 
-def bitflag_to_string(value, dictionary):
 
-    """
+def bitflag_to_string(value, dictionary):
+    """Convert 64-bit bitflag into a comma separated string.
+
     Takes a 64-bit integer bit-flag and converts it to a comma separated string,
     using the given dictionary.
     If any of the bits are not recognized, will raise a ValueError.
@@ -328,9 +332,9 @@ def bitflag_to_string(value, dictionary):
 
 
 def string_to_bitflag(value, dictionary):
-    """
-    Takes a comma separated string, and converts it to a 64-bit integer bit-flag,
-    using the given dictionary (the inverse dictionary).
+    """Takes a comma separated string, and converts it to a 64-bit integer bit-flag.
+
+    Uses the given dictionary (the inverse dictionary).
     If any of the keywords are not recognized, will raise a ValueError.
 
     To use this function, you must first define a dictionary with the keywords as keys,
@@ -497,15 +501,20 @@ class BitFlagConverter( EnumConverter ):
 
 
 # the list of possible processing steps from a section of an exposure up to measurements, r/b scores, and report
+# Used by reports
 process_steps_dict = {
     1: 'preprocessing',  # creates an Image from a section of the Exposure
-    2: 'extraction',     # creates a SourceList, PSF, Background, WorldCoordinates, and ZeroPoint from an Image
-    5: 'subtraction',    # creates a subtraction Image
-    6: 'detection',      # creates a SourceList from a subtraction Image
-    7: 'cutting',        # creates Cutouts from a subtraction Image
-    8: 'measuring',      # creates Measurements from Cutouts
-    9: 'scoring',        # creates DeepScore from Measurements
-    # TODO: add maybe an extra step for finalizing a report
+    2: 'extraction',     # creates a SourceList and a PSF from an Image
+    3: 'backgrounding',  # creates a Background, may have actually been done during extractin.
+    4: 'astrocal',      # creates a WorldCoordinates from the SourceList and GAIA catalogs
+    5: 'photocal',      # creates s ZeroPoint from the SourceList and GAIA catalogs
+    6: 'subtraction',    # creates a subtraction Image
+    7: 'detection',      # creates a SourceList from a subtraction Image
+    8: 'cutting',        # creates Cutouts from a subtraction Image
+    9: 'measuring',      # creates Measurements from Cutouts
+    10: 'scoring',        # creates DeepScore from Measurements
+    11: 'alerting',      # send alerts
+    30: 'finalize'
 }
 process_steps_inverse = {EnumConverter.c(v): k for k, v in process_steps_dict.items()}
 

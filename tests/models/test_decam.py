@@ -7,8 +7,6 @@ import pytest
 
 import numpy as np
 
-from astropy.io import fits
-
 from models.base import SmartSession, FileOnDiskMixin
 from models.exposure import Exposure
 from models.knownexposure import KnownExposure
@@ -16,19 +14,15 @@ from models.instrument import get_instrument_instance
 from models.datafile import DataFile
 from models.calibratorfile import CalibratorFile
 from models.image import Image
-from models.instrument import Instrument
-from models.decam import DECam
+from models.decam import DECam  # noqa: F401
 
-import util.radec
 from util.logger import SCLogger
 from util.util import env_as_bool
 
 
-def test_decam_exposure(decam_filename):
-    assert os.path.isfile(decam_filename)
+def test_decam_exposure(decam_exposure):
+    e = decam_exposure
 
-    e = Exposure(filepath=decam_filename)
-    e.save()  # make sure to save it to archive, so it has an MD5 sum
     assert e.instrument == 'DECam'
     assert isinstance(e.instrument_object, DECam)
     assert e.telescope == 'CTIO 4.0-m telescope'
@@ -41,7 +35,6 @@ def test_decam_exposure(decam_filename):
     assert e.filter == 'r DECam SDSS c0002 6415.0 1480.0'
     assert not e.from_db
     assert e.info == {}
-    assert e._id is None
     assert e.target == 'ELAIS-E1'
     assert e.project == '2023A-716082'
 
@@ -65,14 +58,8 @@ def test_decam_exposure(decam_filename):
     assert e.section_headers['N4']['NAXIS2'] == 4146
 
 
-def test_image_from_decam_exposure(decam_filename, provenance_base, data_dir):
-    with fits.open( decam_filename, memmap=False ) as ifp:
-        hdr = ifp[0].header
-    exphdrinfo = Instrument.extract_header_info( hdr, [ 'mjd', 'exp_time', 'filter', 'project', 'target' ] )
-    ra = util.radec.parse_sexigesimal_degrees( hdr['RA'], hours=True )
-    dec = util.radec.parse_sexigesimal_degrees( hdr['DEC'] )
-    e = Exposure( ra=ra, dec=dec, instrument='DECam', format='fits', **exphdrinfo,
-                  filepath=os.path.join(data_dir, pathlib.Path(decam_filename).name ))
+def test_image_from_decam_exposure(decam_exposure, provenance_base, data_dir):
+    e = decam_exposure
     sec_id = 'N4'
     im = Image.from_exposure(e, section_id=sec_id)  # load the first CCD
 
@@ -243,6 +230,7 @@ def test_decam_download_reduced_origin_exposure( decam_reduced_origin_exposures,
                 if os.path.isfile( path ):
                     os.unlink( path )
 
+
 @pytest.mark.skipif( env_as_bool('SKIP_NOIRLAB_DOWNLOADS'), reason="SKIP_NOIRLAB_DOWNLOADS is set" )
 def test_decam_download_and_commit_reduced_origin_exposure( decam_reduced_origin_exposures ):
     # See test_decam_download_and_commit_exposure for downloading a raw
@@ -310,7 +298,7 @@ def test_add_to_known_exposures( decam_raw_origin_exposures ):
 
 @pytest.mark.skipif( env_as_bool('SKIP_NOIRLAB_DOWNLOADS'), reason="SKIP_NOIRLAB_DOWNLOADS is set" )
 def test_decam_download_and_commit_exposure(
-        code_version, decam_raw_origin_exposures, cache_dir, data_dir, test_config, archive, decam_exposure_name
+        code_version, decam_raw_origin_exposures, cache_dir, data_dir, test_config, archive
 ):
     # This one does a raw exposure;
     # test_decam_download_and_commit_reduced_origin_exposures downloads one
@@ -327,30 +315,9 @@ def test_decam_download_and_commit_exposure(
             # a few minutes) and leaves big files on disk (in the
             # cache), so just test it with a single exposure.  Leave
             # this commented out here in case somebody comes back and
-            # thinks, hmm, better test this with more than on exposure.
+            # thinks, hmm, better test this with more than one exposure.
             # expdexes = [ 1, 2 ]
-            # expdexes = [ 1 ]
-
-            # ...we also want to make sure we don't test on an exposure that's
-            # the same as what the decam_exposure_name fixture returns, because
-            # when we clean up, we'll be undermining that (session-scope) fixture!
-
-            expdex = None
-            for dex in range( 1, len( decam_raw_origin_exposures ) ):
-                # Looking inside the _frame property, which you aren't supposed to do....
-                match = re.search( "([^/]+)$", decam_raw_origin_exposures._frame.iloc[dex].archive_filename )
-                if match.group(1) != decam_exposure_name:
-                    expdex = dex
-                    break
-
-            if expdex is None:
-                # Empirically, the length of decam_raw_origin_exposures
-                # is 18, so there must be 17 (or, 16 if you start with
-                # the second one as we did) that don't match
-                # decam_exposure_name!
-                raise RuntimeError( "This shouldn't happen" )
-
-            expdexes = [ expdex ]
+            expdexes = [ 1 ]
 
             # get these downloaded first, to get the filenames to check against the cache
             downloaded = decam_raw_origin_exposures.download_exposures(
@@ -419,11 +386,12 @@ def test_decam_download_and_commit_exposure(
                 if os.path.isfile(d['exposure']):
                     os.unlink(d['exposure'])
 
+
 # This test really isn't *that* slow.  Not compared to so many others nowadays.
 # @pytest.mark.skipif( not env_as_bool('RUN_SLOW_TESTS'), reason="Set RUN_SLOW_TESTS to run this test" )
 def test_get_default_calibrators( decam_default_calibrators ):
     sections, filters = decam_default_calibrators
-    decam = get_instrument_instance( 'DECam' )
+    # decam = get_instrument_instance( 'DECam' )
 
     with SmartSession() as session:
         for sec in sections:
@@ -561,6 +529,7 @@ def test_overscan_and_data_sections( decam_raw_image, data_dir ):
                          'datasec' : { 'x0': 56, 'x1': 1080, 'y0': 50, 'y1': 4146 },
                          'destsec' : { 'x0': 0, 'x1': 1024, 'y0': 0, 'y1': 4096 }
                         } ]
+
 
 def test_overscan( decam_raw_image, data_dir ):
     decam = get_instrument_instance( "DECam" )

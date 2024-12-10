@@ -5,10 +5,9 @@ import numpy as np
 import h5py
 
 import sqlalchemy as sa
-import sqlalchemy.orm as orm
 from sqlalchemy.ext.hybrid import hybrid_property
 from sqlalchemy.ext.declarative import declared_attr
-from sqlalchemy.schema import UniqueConstraint, CheckConstraint
+from sqlalchemy.schema import CheckConstraint
 
 from models.base import Base, SeeChangeBase, SmartSession, UUIDMixin, FileOnDiskMixin, HasBitFlagBadness
 from models.image import Image
@@ -16,7 +15,7 @@ from models.source_list import SourceList, SourceListSibling
 
 from models.enums_and_bitflags import BackgroundFormatConverter, BackgroundMethodConverter, bg_badness_inverse
 
-from util.logger import SCLogger
+# from util.logger import SCLogger
 import warnings
 
 
@@ -24,7 +23,7 @@ class Background(SourceListSibling, Base, UUIDMixin, FileOnDiskMixin, HasBitFlag
     __tablename__ = 'backgrounds'
 
     @declared_attr
-    def __table_args__(cls):
+    def __table_args__(cls):  # noqa: N805
         return (
             CheckConstraint( sqltext='NOT(md5sum IS NULL AND '
                                '(md5sum_extensions IS NULL OR array_position(md5sum_extensions, NULL) IS NOT NULL))',
@@ -426,39 +425,15 @@ class Background(SourceListSibling, Base, UUIDMixin, FileOnDiskMixin, HasBitFlag
 
         return newbg
 
+    def to_dict( self ):
+        # Background needs special handling for to_dict, at least for the
+        #   testing cache.  Normally, only the fields that would get saved
+        #   to the database go into the dict.  However, in Background.__init__,
+        #   it needs to be passed image_shape if the image and sources
+        #   aren't already in the database (which they aren't in the test
+        #   fixtures cache).  But, image_shape isn't saved to the database.
+        #   So, add it.
 
-    # ======================================================================
-    # The fields below are things that we've deprecated; these definitions
-    #   are here to catch cases in the code where they're still used
-
-    @property
-    def image( self ):
-        raise RuntimeError( f"Background.image is deprecated, don't use it" )
-
-    @image.setter
-    def image( self, val ):
-        raise RuntimeError( f"Background.image is deprecated, don't use it" )
-
-    @property
-    def image_id( self ):
-        raise RuntimeError( f"Background.image_id is deprecated, don't use it.  (Use sources_id)" )
-
-    @image_id.setter
-    def image_id( self, val ):
-        raise RuntimeError( f"Background.image_id is deprecated, don't use it.  (Use sources_id)" )
-
-    @property
-    def provenance( self ):
-        raise RuntimeError( f"Background.provenance is deprecated, don't use it" )
-
-    @provenance.setter
-    def provenance( self, val ):
-        raise RuntimeError( f"Background.provenance is deprecated, don't use it" )
-
-    @property
-    def provenance_id( self ):
-        raise RuntimeError( f"Background.provenance_id is deprecated; use corresponding SourceList.provenance_id" )
-
-    @provenance_id.setter
-    def provenance_id( self, val ):
-        raise RuntimeError( f"Background.provenance_id is deprecated; use corresponding SourceList.provenance_id" )
+        output = super().to_dict()
+        output['image_shape'] = self.image_shape
+        return output

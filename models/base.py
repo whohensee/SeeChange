@@ -2,7 +2,6 @@ import warnings
 import os
 import time
 import math
-import copy
 import types
 import hashlib
 import pathlib
@@ -17,20 +16,18 @@ import shapely
 
 from astropy.coordinates import SkyCoord
 
+import psycopg2
+
 import sqlalchemy as sa
 import sqlalchemy.dialects.postgresql
 from sqlalchemy import func, orm
 from sqlalchemy.orm import sessionmaker, declarative_base
 from sqlalchemy.ext.declarative import declared_attr
 from sqlalchemy.ext.hybrid import hybrid_method, hybrid_property
-from sqlalchemy.orm.exc import DetachedInstanceError
 from sqlalchemy.dialects.postgresql import UUID as sqlUUID
 from sqlalchemy.dialects.postgresql import array as sqlarray
 from sqlalchemy.dialects.postgresql import ARRAY
-from sqlalchemy.exc import IntegrityError, OperationalError
-from psycopg2.errors import UniqueViolation
-
-from sqlalchemy.schema import CheckConstraint
+from sqlalchemy.exc import OperationalError
 
 from models.enums_and_bitflags import (
     data_badness_dict,
@@ -45,7 +42,30 @@ from util.logger import SCLogger
 from util.radec import radec_to_gal_ecl
 from util.util import asUUID, UUIDJsonEncoder
 
-utcnow = func.timezone("UTC", func.current_timestamp())
+# Postgres adapters to allow insertion of some numpy types
+import psycopg2.extensions
+
+
+def _adapt_numpy_float64_psycopg2( val ):
+    return psycopg2.extensions.AsIs( val )
+
+
+def _adapt_numpy_float32_psycopg2( val ):
+    return psycopg2.extensions.AsIs( val )
+
+
+def _adapt_numpy_int64_psycopg2( val ):
+    return psycopg2.extensions.AsIs( val )
+
+
+def _adapt_numpy_int32_psycopg2( val ):
+    return psycopg2.extensions.AsIs( val )
+
+
+psycopg2.extensions.register_adapter( np.float64, _adapt_numpy_float64_psycopg2 )
+psycopg2.extensions.register_adapter( np.float32, _adapt_numpy_float32_psycopg2 )
+psycopg2.extensions.register_adapter( np.int64, _adapt_numpy_int64_psycopg2 )
+psycopg2.extensions.register_adapter( np.int32, _adapt_numpy_int32_psycopg2 )
 
 
 # this is the root SeeChange folder
@@ -100,6 +120,7 @@ setup_warning_filters()  # need to call this here and also call it explicitly wh
 
 _engine = None
 _Session = None
+_psycopg2params = None
 
 
 def Session():
@@ -120,6 +141,9 @@ def Session():
 
     if _Session is None:
         cfg = config.Config.get()
+
+        if cfg.value("db.engine") != "postgresql":
+            raise ValueError( "This pipeline only supports PostgreSQL as a database engine" )
 
         password = cfg.value( "db.password" )
         if password is None:
@@ -237,6 +261,76 @@ def SmartSession(*args):
             session.invalidate()
 
 
+@contextmanager
+def Psycopg2Connection( current=None ):
+    """Get a direct psycopg2 connection to the database; use this in a with statement.
+
+    Useful if you don't want to fight with SQLAlchemy, e.g. if you
+    want to use table locks (see comment above in SmartSession).
+
+    Parameters
+    ----------
+      current : psycopg2.extensions.connection or None (default None)
+         Pass an existing connection, get it back.  Useful if you are in
+         nested functions that might want to be working within the same
+         transaction.
+
+    Returns
+    -------
+       psycopg2.extensions.connection
+
+       After the with block, the connection will be rolled back and
+       closed.  So, if you want what you've done committed, make sure to
+       call the commit() method on the return value before the with
+       block exits.
+
+    """
+    global _psycopg2params
+
+    if current is not None:
+        if not isinstance( current, psycopg2.extensions.connection ):
+            raise TypeError( "Must pass a psycopg2.extensions.connection or None to Pyscopg2Conection" )
+        yield current
+        # Don't roll back or close, because whoever created it in the
+        #   first place is responsible for that.
+        return
+
+    # If a connection wasn't passed, make one, and then be sure to roll it back and close it when we're done
+
+    if _psycopg2params is None:
+        cfg = config.Config.get()
+        if cfg.value( "db.engine" ) != "postgresql":
+            raise ValueError( "This pipeline only supports PostgreSQL as a database engine" )
+
+        password = cfg.value( 'db.password' )
+        if password is None:
+            if cfg.value( "db.password_file" ) is None:
+                raise RuntimeError( "Must specify either db.password or db.password_file in config" )
+            with open( cfg.value( "db.password_file" ) ) as ifp:
+                password = ifp.readline().strip()
+
+        _psycopg2params = { 'host': cfg.value('db.host'),
+                            'port': cfg.value('db.port'),
+                            'dbname': cfg.value('db.database'),
+                            'user': cfg.value('db.user'),
+                            'password': password }
+
+    try:
+        conn = psycopg2.connect( **_psycopg2params )
+        yield conn
+
+    finally:
+        # Just in case things were done, roll back.  Often, the caller
+        #   will have done a conn.commit() (which it must if it wants to
+        #   keep things that were done) or conn.rollback(), in which
+        #   case this rollback is gratuitous.  However, we can't count
+        #   on the caller having done that.  (E.g., if there's an
+        #   exception, the caller may have short-circuited, which is why
+        #   the yield is in a try and this cleaup is in a finally.)
+        conn.rollback()
+        conn.close()
+
+
 def db_stat(obj):
     """Check the status of an object. It can be one of: transient, pending, persistent, deleted, detached."""
     for word in ['transient', 'pending', 'persistent', 'deleted', 'detached']:
@@ -347,10 +441,11 @@ class SeeChangeBase:
         self.from_db = True  # let users know this object was loaded from the database
 
     def get_attribute_list(self):
-        """
-        Get a list of all attributes of this object,
-        not including internal SQLAlchemy attributes,
-        and database level attributes like id, created_at, etc.
+        """Get a list of all attributes of this object.
+
+        Does not including internal SQLAlchemy attributes, and database
+        level attributes like id, created_at, etc.
+
         """
         attrs = [
             a for a in self.__dict__.keys()
@@ -376,7 +471,7 @@ class SeeChangeBase:
         """
         for key, value in dictionary.items():
             if hasattr(self, key):
-                if type( getattr( self, key ) ) != types.MethodType:
+                if not isinstance( getattr( self, key ), types.MethodType ):
                     setattr(self, key, value)
 
 
@@ -420,7 +515,7 @@ class SeeChangeBase:
                 session.connection().execute( sa.text( "SET lock_timeout TO '1s'" ) )
                 session.connection().execute( sa.text( f'LOCK TABLE {tablename}' ) )
                 break
-            except OperationalError as e:
+            except OperationalError:
                 sleeptime *= 2
                 if sleeptime >= 16:
                     failed = True
@@ -444,7 +539,7 @@ class SeeChangeBase:
             if col.name == 'created_at':
                 continue
             elif col.name == 'modified':
-                val = datetime.datetime.now( tz=datetime.timezone.utc )
+                val = datetime.datetime.now( tz=datetime.UTC )
 
             if isinstance( col.type, sqlalchemy.dialects.postgresql.json.JSONB ) and ( val is not None ):
                 val = json.dumps( val )
@@ -482,20 +577,20 @@ class SeeChangeBase:
 
         Parameters
         ----------
-          session: SQLALchemy Session, or None
+          session: SQLALchemy Session, or psycopg2.extensions.connection, or None
             Usually you do not want to pass this; it's mostly for other
             upsert etc. methods that cascade to this.
 
           nocommit: bool, default False
-            If True, run the statement to insert the object, but
-            don't actually commit the database.  Do this if you
-            want the insert to be inside a transaction you've
-            started on session.  It doesn't make sense to use
-            nocommit without passing a session.
+            If True, run the statement to insert the object, but don't
+            actually commit the database.  Do this if you want the
+            insert to be inside a transaction you've started on session.
+            It doesn't make sense to set nocommit=True unless you've
+            passed either a Session or a psycopg2 connection.
 
         """
 
-        myid = self.id    # Make sure id is generated
+        _ = self.id    # Make sure id is generated
 
         # Doing this manually for a few reasons.  First, doing a
         #  Session.add wasn't always just doing an insert, but was doing
@@ -513,15 +608,33 @@ class SeeChangeBase:
         #
         # In any event, doing this manually dodges any weirdness associated
         #  with objects attached, or not attached, to sessions.
+        #
+        # (Even better, unless a sa Session is passed, bypass sqlalchemy
+        # altogether.)
 
         cols, values = self._get_cols_and_vals_for_insert()
         notmod = [ c for c in cols if c != 'modified' ]
-        q = f'INSERT INTO {self.__tablename__}({",".join(notmod)}) VALUES (:{",:".join(notmod)}) '
+
+        if ( session is not None ) and ( isinstance( session, sa.orm.session.Session ) ):
+            q = f'INSERT INTO {self.__tablename__}({",".join(notmod)}) VALUES (:{",:".join(notmod)}) '
+            subdict = { c: v for c, v in zip( cols, values ) if c != 'modified' }
+            with SmartSession( session ) as sess:
+                sess.execute( sa.text( q ), subdict )
+                if not nocommit:
+                    sess.commit()
+            return
+
+        if ( session is not None ) and ( not isinstance( session, psycopg2.extensions.connection ) ):
+            raise TypeError( f"session must be a sa Session or psycopg2.extensions.connection or None, "
+                             f"not a {type(session)}" )
+
+        q = f'INSERT INTO {self.__tablename__}({",".join(notmod)}) VALUES (%({")s,%(".join(notmod)})s) '
         subdict = { c: v for c, v in zip( cols, values ) if c != 'modified' }
-        with SmartSession( session ) as sess:
-            sess.execute( sa.text( q ), subdict )
+        with Psycopg2Connection( session ) as conn:
+            cursor = conn.cursor()
+            cursor.execute( q, subdict )
             if not nocommit:
-                sess.commit()
+                conn.commit()
 
 
     def upsert( self, session=None, load_defaults=False ):
@@ -575,8 +688,7 @@ class SeeChangeBase:
         #   sqlalchemy "add" and "merge" statements, so we don't have to
         #   worry about whatever other side effects those things have.)
 
-        # Make sure that self._id is generated
-        myid = self.id
+        _ = self.id   # Make sure that self._id is generated
         cols, values = self._get_cols_and_vals_for_insert()
         notmod = [ c for c in cols if c != 'modified' ]
         q = ( f'INSERT INTO {self.__tablename__}({",".join(notmod)}) VALUES (:{",:".join(notmod)}) '
@@ -621,7 +733,7 @@ class SeeChangeBase:
 
         with SmartSession( session ) as sess:
             for obj in objects:
-                myid = obj.id                 #  Make sure _id is generated
+                _ = obj.id                 #  Make sure _id is generated
                 cols, values = obj._get_cols_and_vals_for_insert()
                 notmod = [ c for c in cols if c != 'modified' ]
                 q = ( f'INSERT INTO {cls.__tablename__}({",".join(notmod)}) VALUES (:{",:".join(notmod)}) '
@@ -772,7 +884,8 @@ class SeeChangeBase:
         be lazy loaded anyway, as they are not persisted.
 
         Will convert non-standard data types:
-        UUID will be converted to string (using the .hex attribute).
+        md5sum UUIDS will be converted to string (using .hex)
+        _id UUIDS will be converted to string (using str())
         Numpy arrays are replaced by lists.
 
         To reload, use the from_dict() method:
@@ -800,7 +913,7 @@ class SeeChangeBase:
 
             if key == '_id' and value is not None:
                 if isinstance(value, UUID):
-                    value = value.hex
+                    value = str(value)
 
             if isinstance(value, np.ndarray) and key in [
                 'aper_rads', 'aper_radii', 'aper_cors', 'aper_cor_radii',
@@ -815,11 +928,13 @@ class SeeChangeBase:
             if isinstance(value, np.number):
                 value = value.item()
 
-            # 'claim_time' is from knownexposure, lastheartbeat is from PipelineWorker
+            # 'claim_time' is from KnownExposure, lastheartbeat is from PipelineWorker
+            # 'start_time' and 'finish_time' are from Report
             # We should probably define a class-level variable "_datetimecolumns" and list them
             #   there, other than adding to what's hardcoded here.  (Likewise for the ndarray aper stuff
             #   above.)
-            if (   ( key in ['modified', 'created_at', 'claim_time', 'lastheartbeat'] ) and
+            if (   ( key in [ 'modified', 'created_at', 'claim_time', 'lastheartbeat',
+                              'start_time', 'finish_time' ] ) and
                    isinstance(value, datetime.datetime) ):
                 value = value.isoformat()
 
@@ -1061,7 +1176,7 @@ class FileOnDiskMixin:
         os.makedirs(path, exist_ok=True)
 
     @declared_attr
-    def filepath(cls):
+    def filepath(cls):  # noqa: N805
         return sa.Column(
             sa.Text,
             nullable=False,
@@ -1143,8 +1258,8 @@ class FileOnDiskMixin:
 
     @staticmethod
     def _do_not_require_file_to_exist():
-        """
-        The default value for the nofile property of new objects.
+        """The default value for the nofile property of new objects.
+
         Generally it is ok to make new FileOnDiskMixin derived objects
         without first having a file (the file is created by the app and
         saved to disk before the object is committed).
@@ -1162,8 +1277,8 @@ class FileOnDiskMixin:
         super().__setattr__(key, value)
 
     def _validate_filepath(self, filepath):
-        """
-        Make sure the filepath is legitimate.
+        """Make sure the filepath is legitimate.
+
         If the filepath starts with the local path
         (i.e., an absolute path is given) then
         the local path is removed from the filepath,
@@ -1283,7 +1398,6 @@ class FileOnDiskMixin:
         if ext is None:
             md5sum = self.md5sum.hex if self.md5sum is not None else None
         else:
-            found = False
             try:
                 extdex = self.filepath_extensions.index( ext )
             except ValueError:
@@ -1486,7 +1600,7 @@ class FileOnDiskMixin:
                 raise RuntimeError( f"{localpath} exists but is not a file!  Can't save." )
             if localpath == path:
                 alreadyinplace = True
-                # SCLogger.debug( f"FileOnDiskMixin.save: local file store path and original path are the same: {path}" )
+                # SCLogger.debug( f"FileOnDiskMixin.save: local file store path & original path are the same: {path}" )
             else:
                 if ( not overwrite ) and ( not exists_ok ):
                     raise FileExistsError( f"{localpath} already exists, cannot save." )
@@ -2235,7 +2349,7 @@ class HasBitFlagBadness:
     )
 
     @declared_attr
-    def _upstream_bitflag(cls):
+    def _upstream_bitflag(cls):  # noqa: N805
         if cls.__name__ != 'Exposure':
             return sa.Column(
                 sa.BIGINT,

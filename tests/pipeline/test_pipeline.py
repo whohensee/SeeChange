@@ -4,7 +4,6 @@ import shutil
 import datetime
 
 import sqlalchemy as sa
-import numpy as np
 
 from models.base import SmartSession, FileOnDiskMixin
 from models.provenance import Provenance, ProvenanceTag
@@ -22,14 +21,15 @@ from models.report import Report
 from pipeline.top_level import Pipeline
 
 from util.logger import SCLogger
+from util.util import env_as_bool
 
 from tests.conftest import SKIP_WARNING_TESTS
 
 
 def check_datastore_and_database_have_everything(exp_id, sec_id, ref_id, ds):
-    """
-    Check that all the required objects are saved on the database
-    and in the datastore, after running the entire pipeline.
+    """Check that all the required objects are saved on the database and in the datastore.
+
+    (After running the entire pipeline.)
 
     Parameters
     ----------
@@ -140,7 +140,7 @@ def test_parameters( test_config ):
     # Verify that we _enforce_no_new_attrs works
     kwargs = { 'pipeline': { 'keyword_does_not_exist': 'testing' } }
     with pytest.raises( AttributeError, match='object has no attribute' ):
-        failed = Pipeline( **kwargs )
+        _ = Pipeline( **kwargs )
 
     # Verify that we can override from the yaml config file
     pipeline = Pipeline()
@@ -213,13 +213,14 @@ def test_running_without_reference(decam_exposure, decam_refset, decam_default_c
         cfs = ( session.query( CalibratorFile )
                 .filter( CalibratorFile.instrument == 'DECam' )
                 .filter( CalibratorFile.sensor_section == 'N1' )
-                .filter( CalibratorFile.image_id != None ) )
+                .filter( CalibratorFile.image_id is not None ) )
         imdel = [ c.image_id for c in cfs ]
         imgtodel = session.query( Image ).filter( Image._id.in_( imdel ) )
         for i in imgtodel:
             i.delete_from_disk_and_database()
 
         session.commit()
+
 
 def test_data_flow(decam_exposure, decam_reference, decam_default_calibrators, pipeline_for_tests, archive):
     """Test that the pipeline runs end-to-end.
@@ -246,7 +247,8 @@ def test_data_flow(decam_exposure, decam_reference, decam_default_calibrators, p
             provs = session.scalars(sa.select(Provenance)).all()
             assert len(provs) > 0
             prov_processes = [p.process for p in provs]
-            expected_processes = ['preprocessing', 'extraction', 'subtraction', 'detection', 'cutting', 'measuring', 'scoring']
+            expected_processes = ['preprocessing', 'extraction', 'subtraction', 'detection',
+                                  'cutting', 'measuring', 'scoring']
             for process in expected_processes:
                 assert process in prov_processes
 
@@ -296,8 +298,8 @@ def test_data_flow(decam_exposure, decam_reference, decam_default_calibrators, p
 
 
 def test_bitflag_propagation(decam_exposure, decam_reference, decam_default_calibrators, pipeline_for_tests, archive):
-    """
-    Test that adding a bitflag to the exposure propagates to all downstreams as they are created
+    """Test that adding a bitflag to the exposure propagates to all downstreams as they are created.
+
     Does not check measurements, as they do not have the HasBitflagBadness Mixin.
     """
     exposure = decam_exposure
@@ -426,9 +428,7 @@ def test_bitflag_propagation(decam_exposure, decam_reference, decam_default_cali
 
 
 def test_get_upstreams_and_downstreams(decam_exposure, decam_reference, decam_default_calibrators, archive):
-    """
-    Test that get_upstreams() and get_downstreams() return the proper objects.
-    """
+    """Test that get_upstreams() and get_downstreams() return the proper objects."""
     exposure = decam_exposure
     ref = decam_reference
     sec_id = ref.section_id
@@ -589,28 +589,55 @@ def test_provenance_tree(pipeline_for_tests, decam_refset, decam_exposure, decam
     newp = Pipeline( pipeline={'provenance_tag': 'pipeline_for_tests'},
                      extraction={'sources': { 'threshold': 42. } } )
     with pytest.raises( RuntimeError,
-                        match='The following provenances are not associated with provenance tag pipeline_for_tests' ):
+                        match=( 'The following provenances do not match the existing provenance '
+                                'for tag pipeline_for_tests' ) ):
         newp.make_provenance_tree( decam_exposure )
 
 
+# This test is really slow because it runs the pipeline repeatedly to test
+#   warnings and exceptions at each step.
+@pytest.mark.skipif( not env_as_bool('RUN_SLOW_TESTS'), reason="Set RUN_SLOW_TESTS to run this test" )
 def test_inject_warnings_errors(decam_datastore, decam_reference, pipeline_for_tests):
     from pipeline.top_level import PROCESS_OBJECTS
     p = pipeline_for_tests
     p.subtractor.pars.refset = 'test_refset_decam'
 
     try:
-        obj_to_process_name = {
+        # This next dict and the code that uses it took me a while to
+        #   get right, so I'm writing the convoluted trail down here in
+        #   case we ever come back and have to think about it again.
+        #   The goal is reconstruct what text shows up in the warning
+        #   recorded by the report.  In pipeline/parameters.py::
+        #   Parameters.do_warning_exception_hangup_injection_here, there
+        #   is a warnings.warn("...{self.get_process_name()}").  The
+        #   warnings get added to the report when
+        #   DataStore.update_report is called, whose firist parameter is
+        #   process_step; this calls Report.scan_datastore, passing
+        #   along process_step.  That method sets the warnings field of
+        #   the report to a string via read_warnings, where each line of
+        #   the warning starts with process_step, and has other stuff
+        #   after that.  process_step is originally set in
+        #   top_level.py::Pipeline.run when it calls
+        #   DataStore.update_report after each step.
+
+        # All of which would be fine for human consumption, but now we
+        #   want to write a for loop to check that the right warnings showed up.
+        #   This dictionary reproduces the process_step values used in
+        #   top_level.py
+
+        obj_to_process_step = {
             'preprocessor': 'preprocessing',
-            'extractor': 'detection',
+            'extractor': 'extraction',
             'backgrounder': 'backgrounding',
-            'astrometor': 'astro_cal',
-            'photometor': 'photo_cal',
+            'astrometor': 'astrocal',
+            'photometor': 'photocal',
             'subtractor': 'subtraction',
             'detector': 'detection',
             'cutter': 'cutting',
             'measurer': 'measuring',
-            'scorer': 'scoring',
+            'scorer': 'scoring'
         }
+
         for process, objects in PROCESS_OBJECTS.items():
             if isinstance(objects, str):
                 objects = [objects]
@@ -628,15 +655,20 @@ def test_inject_warnings_errors(decam_datastore, decam_reference, pipeline_for_t
                         getattr(p, obj2).pars.inject_exceptions = False
                         getattr(p, obj2).pars.inject_warnings = False
 
+                process_name = getattr( p, obj ).pars.get_process_name()
+                process_step = obj_to_process_step[ obj ]
+
                 if not SKIP_WARNING_TESTS:
                     # set the warning:
                     getattr(p, obj).pars.inject_warnings = True
 
                     # run the pipeline
                     ds = p.run(decam_datastore)
-                    expected = (f"{process}: <class 'UserWarning'> Warning injected by pipeline parameters "
-                                f"in process '{obj_to_process_name[obj]}'")
+                    expected = ( f"{process_step}: <class 'UserWarning'> Warning injected by pipeline parameters "
+                                 f"in process '{process_name}'" )
                     assert expected in ds.report.warnings
+                    # NOTE -- should really add a test that there are no other "Warning injected"
+                    #   lines.  The report should be this separated by ...***... lines.
 
                 # these are used to find the report later on
                 exp_id = ds.exposure_id
@@ -648,10 +680,8 @@ def test_inject_warnings_errors(decam_datastore, decam_reference, pipeline_for_t
                 getattr(p, obj).pars.inject_exceptions = True
                 # run the pipeline again, this time with an exception
 
-                with pytest.raises(
-                        RuntimeError,
-                        match=f"Exception injected by pipeline parameters in process '{obj_to_process_name[obj]}'"
-                ):
+                with pytest.raises( RuntimeError,
+                                    match=f"Exception injected by pipeline parameters in process '{process_name}'" ):
                     ds = p.run(decam_datastore)
                     ds.reraise()
 
@@ -667,7 +697,7 @@ def test_inject_warnings_errors(decam_datastore, decam_reference, pipeline_for_t
                     report = reports[0]  # the last report is the one we just generated
                     assert len(reports) - 1 == report.num_prev_reports
                     assert not report.success
-                    assert report.error_step == process
+                    assert report.error_step == process_step
                     assert report.error_type == 'RuntimeError'
                     assert 'Exception injected by pipeline parameters' in report.error_message
 
@@ -681,6 +711,7 @@ def test_multiprocessing_make_provenances_and_exposure(decam_exposure, decam_ref
     from multiprocessing import SimpleQueue, Process
     process_list = []
     pipeline_for_tests.subtractor.pars.refset = 'test_refset_decam'
+
     def make_provenances(exposure, pipeline, queue):
         provs = pipeline.make_provenance_tree(exposure)
         queue.put(provs)

@@ -3,9 +3,10 @@ import pytest
 from models.provenance import Provenance
 from pipeline.scoring import Scorer
 
+
 def test_rbbot( decam_datastore_through_measurements, code_version ):
     ds = decam_datastore_through_measurements
-    scorer = Scorer( algorithm='RBbot-quiet-shadow-131' )
+    scorer = Scorer( algorithm='RBbot-quiet-shadow-131-cut0.55' )
     # Need to update the DataStore's provenance tree because
     #   it was created with a different scorer algorithm
     scoreprov = Provenance( code_version_id=code_version.id,
@@ -19,5 +20,3 @@ def test_rbbot( decam_datastore_through_measurements, code_version ):
     scorer.run( ds )
     for scobj, expect in zip( ds.scores, expected_scores ):
         assert scobj.score == pytest.approx( expect, abs=0.0001 )
-
-

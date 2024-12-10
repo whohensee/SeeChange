@@ -4,8 +4,6 @@ import numpy as np
 
 from scipy import signal
 
-from astropy.table import Table
-
 from improc.photometry import iterative_cutouts_photometry
 from improc.tools import make_gaussian
 
@@ -17,8 +15,9 @@ from models.enums_and_bitflags import BitFlagConverter, BadnessConverter
 from pipeline.parameters import Parameters
 from pipeline.data_store import DataStore
 
-from util.util import parse_session, env_as_bool
+from util.util import env_as_bool
 from util.logger import SCLogger
+
 
 class ParsMeasurer(Parameters):
     def __init__(self, **kwargs):
@@ -28,7 +27,7 @@ class ParsMeasurer(Parameters):
             'annulus_radii',
             [7.5, 10.0],
             list,
-            'Inner and outer radii of the annulus. '
+            'Inner and outer radii of the background annulus. '
         )
 
         self.annulus_units = self.add_par(
@@ -52,22 +51,25 @@ class ParsMeasurer(Parameters):
             'analytical_cuts',
             ['negatives', 'bad pixels', 'offsets', 'filter bank', 'bad_flag'],
             [list],
-            'Which kinds of analytic cuts are used to give scores to this measurement. '
+            ( 'Which kinds of analytic cuts are used to give scores to this measurement. '
+              'TODO: remove these in favor of the thresholds dict (and put None to not threshold '
+              'on any one of them)?  Issue #319.' ),
         )
 
         self.outlier_sigma = self.add_par(
             'outlier_sigma',
             3.0,
             float,
-            'How many times the local background RMS for each pixel counts '
-            'as being a negative or positive outlier pixel. '
+            'How many times the local background RMS the pixel flux must be '
+            'to be considered a negative or positive outlier pixel. '
         )
 
         self.bad_pixel_radius = self.add_par(
             'bad_pixel_radius',
             3.0,
             float,
-            'Radius in pixels for the bad pixel cut. '
+            ( 'Any bad pixels within this pixel radius of the center of a cutout will be counted '
+              'towards the "bad pixels" disqualifier score' )
         )
 
         self.bad_pixel_exclude = self.add_par(
@@ -204,22 +206,23 @@ class Measurer:
 
             # sub_image = ds.get_subtraction( session=session )
             # if sub_image is None:
-            #     raise ValueError(f"Can't find a subtraction image corresponding to datastore inputs: {ds.get_inputs()}" )
+            #     raise ValueError(f"Can't find a subtraction image corresponding to "
+            #                      f"datastore inputs: {ds.inputs_str}" )
             new_zp = ds.get_zp( session=session )
             if new_zp is None:
-                raise ValueError(f"Can't find a zp corresponding to the datastore inputs: {ds.get_inputs()}")
+                raise ValueError(f"Can't find a zp corresponding to the datastore inputs: {ds.inputs_str}")
 
             new_wcs = ds.get_wcs( session=session )
             if new_wcs is None:
-                raise ValueError(f"Can't find a wcs corresponding to the datastore inputs: {ds.get_inputs()}")
+                raise ValueError(f"Can't find a wcs corresponding to the datastore inputs: {ds.inputs_str}")
 
             detections = ds.get_detections(session=session)
             if detections is None:
-                raise ValueError(f'Cannot find a source list corresponding to the datastore inputs: {ds.get_inputs()}')
+                raise ValueError(f'Cannot find a source list corresponding to the datastore inputs: {ds.inputs_str}')
 
             cutouts = ds.get_cutouts(session=session)
             if cutouts is None:
-                raise ValueError(f'Cannot find cutouts corresponding to the datastore inputs: {ds.get_inputs()}')
+                raise ValueError(f'Cannot find cutouts corresponding to the datastore inputs: {ds.inputs_str}')
             else:
                 cutouts.load_all_co_data( sources=detections )
 

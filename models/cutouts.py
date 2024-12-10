@@ -9,8 +9,6 @@ from sqlalchemy.schema import UniqueConstraint, CheckConstraint
 
 import h5py
 
-from astropy.table import Table
-
 from models.base import (
     SmartSession,
     Base,
@@ -19,6 +17,7 @@ from models.base import (
     FileOnDiskMixin,
     HasBitFlagBadness,
 )
+from models.image import Image
 from models.enums_and_bitflags import CutoutsFormatConverter
 from models.source_list import SourceList
 
@@ -49,7 +48,7 @@ class Cutouts(Base, UUIDMixin, FileOnDiskMixin, HasBitFlagBadness):
 
     # a unique constraint on the provenance and the source list
     @declared_attr
-    def __table_args__(cls):
+    def __table_args__(cls):  # noqa: N805
         return (
             CheckConstraint( sqltext='NOT(md5sum IS NULL AND '
                              '(md5sum_extensions IS NULL OR array_position(md5sum_extensions, NULL) IS NOT NULL))',
@@ -70,7 +69,7 @@ class Cutouts(Base, UUIDMixin, FileOnDiskMixin, HasBitFlagBadness):
         return CutoutsFormatConverter.convert(self._format)
 
     @format.expression
-    def format(cls):
+    def format(cls):  # noqa: N805
         # ref: https://stackoverflow.com/a/25272425
         return sa.case(CutoutsFormatConverter.dict, value=cls._format)
 
@@ -201,16 +200,19 @@ class Cutouts(Base, UUIDMixin, FileOnDiskMixin, HasBitFlagBadness):
     def from_detections(detections, provenance=None, **kwargs):
         """Create a Cutout object from a row in the SourceList.
 
-        The SourceList must have a valid image attribute, and that image should have exactly two
-        upstream_images: the reference and new image. Each Cutout will have three small stamps
-        from the new, reference, and subtraction images.
+        Each Cutout will have three small stamps from the new,
+        reference, and subtraction images.
 
         Parameters
         ----------
         detections: SourceList
-            The source list from which to create the cutout.
+            The source list from which to create the cutout.  It should
+            have exactly two upstream_images: the reference and new
+            image.
+
         provenance: Provenance, optional
             The provenance of the cutout. If not given, will leave as None (to be filled externally).
+
         kwargs: dict
             Can include any of the following keys, in the format: {im}_{att}, where
             the {im} can be "sub", "ref", or "new", and the {att} can be "data", "weight", or "flags".
@@ -220,6 +222,7 @@ class Cutouts(Base, UUIDMixin, FileOnDiskMixin, HasBitFlagBadness):
         -------
         cutout: Cutout
             The cutout object.
+
         """
         cutout = Cutouts()
         cutout.sources_id = detections.id
@@ -235,12 +238,12 @@ class Cutouts(Base, UUIDMixin, FileOnDiskMixin, HasBitFlagBadness):
             if detections is None:
                 detections = SourceList.get_by_id( self.sources_id )
             if detections is None:
-                raise RuntimeError( f"Can't invent a filepath for cutouts without a image or detections source list" )
+                raise RuntimeError( "Can't invent a filepath for cutouts without a image or detections source list" )
             image = Image.get_by_id( detections.image_id )
         if image is None:
-            raise RuntimeError( f"Can't invent a filepath for cutouts without an image" )
+            raise RuntimeError( "Can't invent a filepath for cutouts without an image" )
         if self.provenance_id is None:
-            raise RuntimeError( f"Can't invent a filepath for cutouts without a provenance" )
+            raise RuntimeError( "Can't invent a filepath for cutouts without a provenance" )
 
         # base the filename on the image filename, not on the sources filename.
         filename = image.filepath
@@ -431,57 +434,3 @@ class Cutouts(Base, UUIDMixin, FileOnDiskMixin, HasBitFlagBadness):
             measurements = sess.query( Measurements ).filter( Measurements.cutouts_id==self.id )
 
         return list( measurements )
-
-
-    # ======================================================================
-    # The fields below are things that we've deprecated; these definitions
-    #   are here to catch cases in the code where they're still used
-
-    @property
-    def sources( self ):
-        raise RuntimeError( f"Don't use Cutouts.sources, use sources_id" )
-
-    @sources.setter
-    def sources( self, val ):
-        raise RuntimeError( f"Don't use Cutouts.sources, use sources_id" )
-
-    @property
-    def provenance( self ):
-        raise RuntimeError( f"Don't use Cutouts.provenance, use provenance_id" )
-
-    @provenance.setter
-    def provenance( self, val ):
-        raise RuntimeError( f"Don't use Cutouts.provenance, use provenance_id" )
-
-    @property
-    def sub_image( self ):
-        raise RuntimeError( f"Cutouts.sub_image is deprecated, don't use it" )
-
-    @sub_image.setter
-    def sub_image( self, val ):
-        raise RuntimeError( f"Cutouts.sub_image is deprecated, don't use it" )
-
-    @property
-    def sub_image_id( self ):
-        raise RuntimeError( f"Cutouts.sub_image_id is deprecated, don't use it" )
-
-    @sub_image_id.setter
-    def sub_image_id( self, val ):
-        raise RuntimeError( f"Cutouts.sub_image_id is deprecated, don't use it" )
-
-    @property
-    def new_image( self ):
-        raise RuntimeError( f"Cutouts.new_image is deprecated, don't use it" )
-
-    @new_image.setter
-    def new_image( self, val ):
-        raise RuntimeError( f"Cutouts.new_image is deprecated, don't use it" )
-
-    @property
-    def ref_image( self ):
-        raise RuntimeError( f"Cutouts.ref_image is deprecated, don't use it" )
-
-    @ref_image.setter
-    def ref_image( self, val ):
-        raise RuntimeError( f"Cutouts.ref_image is deprecated, don't use it" )
-

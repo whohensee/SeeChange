@@ -14,9 +14,9 @@ import healpy
 from util import ldac
 
 from models.base import SmartSession, FileOnDiskMixin
-from models.catalog_excerpt import CatalogExcerpt
+from models.catalog_excerpt import CatalogExcerpt, GaiaDR3DownloadLock
 
-from util.exceptions import CatalogNotFoundError, SubprocessFailure, BadMatchException
+from util.exceptions import CatalogNotFoundError
 from util.util import listify
 from util.logger import SCLogger
 from util.config import Config
@@ -120,8 +120,7 @@ class Bandpass:
 
 
 def get_bandpasses_Gaia():
-    """Get a dictionary of Bandpass objects for each filter in Gaia.
-    """
+    """Get a dictionary of Bandpass objects for each filter in Gaia."""
     return dict(G=Bandpass(400, 850), BP=Bandpass(380, 650), RP=Bandpass(620, 900))
 
 
@@ -230,7 +229,7 @@ def download_gaia_dr3( minra, maxra, mindec, maxdec, padding=0.1, minmag=18., ma
                 SCLogger.debug( f"Exception trying to download ra=({ralow}:{rahigh}), dec=({declow}:{dechigh}), "
                                 f"mag=({minmag}:{maxmag}) from custom gaia server: {ex}" )
                 if i < 4:
-                    SCLogger.debug( f"Sleeping 1s and retrying gaia query" )
+                    SCLogger.debug( "Sleeping 1s and retrying gaia query" )
                     time.sleep( 1 )
         else:
             SCLogger.error( f"Repeated failures trying to download  ra=({ralow}:{rahigh}), dec=({declow}:{dechigh}), "
@@ -244,7 +243,7 @@ def download_gaia_dr3( minra, maxra, mindec, maxdec, padding=0.1, minmag=18., ma
         # ra spanning 0.  For now, we'll hope that the custom gaia dr3 server
         # is just working....
         if False:
-            SCLogger.info( f'Querying NOIRLab Astro Data Archive for Gaia DR3 stars' )
+            SCLogger.info( 'Querying NOIRLab Astro Data Archive for Gaia DR3 stars' )
 
             gaia_query = (
                 f"SELECT ra, dec, ra_error, dec_error, pm, pmra, pmdec, "
@@ -427,68 +426,90 @@ def fetch_gaia_dr3_excerpt( image, minstars=50, maxmags=22, magrange=None, sessi
         minmag = None if magrange is None else maxmag - magrange
 
         # See if there's a cached catalog we can use.
-        # NOTE: there's a pathalogical case here where ralow is
-        # slightly above 0; it won't detect catalogs with
-        # ra_corner_00 below 0 as overlapping!  For now, accept
-        # that, as that will be uncommon, and will just lead to
-        # occasionally downloading a new exceprt that we didn't
-        # strictly need to download.
+
+        # NOTE: there's a pathalogical case here where ralow is slightly
+        #   above 0; it won't detect catalogs with ra_corner_00 below 0
+        #   as overlapping!  For now, accept that, as that will be
+        #   uncommon, and will just lead to occasionally downloading a
+        #   new exceprt that we didn't strictly need to download.
         # See tests/pipeline/test_catalog_tools.py::test_gaia_dr3_excerpt_ra_span_zero
-        with SmartSession(session) as dbsess:
-            q = ( dbsess.query( CatalogExcerpt )
-                  .filter( CatalogExcerpt.origin == 'gaia_dr3' )
-                  .filter( CatalogExcerpt.ra_corner_00 <= ralow )
-                  .filter( CatalogExcerpt.ra_corner_01 <= ralow )
-                  .filter( CatalogExcerpt.ra_corner_10 >= rahigh )
-                  .filter( CatalogExcerpt.ra_corner_11 >= rahigh )
-                  .filter( CatalogExcerpt.dec_corner_00 <= declow )
-                  .filter( CatalogExcerpt.dec_corner_10 <= declow )
-                  .filter( CatalogExcerpt.dec_corner_01 >= dechigh )
-                  .filter( CatalogExcerpt.dec_corner_11 >= dechigh )
-                  .filter( CatalogExcerpt.maxmag >= maxmag-0.1 )
-                  .filter( CatalogExcerpt.maxmag <= maxmag+0.1 )
-                  .filter( CatalogExcerpt.num_items >= minstars )
-                 )
-            if minmag is not None:
-                q = ( q.filter( CatalogExcerpt.minmag >= minmag-0.1 )
-                      .filter( CatalogExcerpt.minmag <= minmag+0.1 ) )
-            if q.count() > 0:
-                catexp = q.first()
 
-                if not os.path.isfile( catexp.get_fullpath() ):
-                    SCLogger.info( f"CatalogExcerpt {catexp.id} has no file at {catexp.filepath}")
-                    dbsess.delete( catexp )
-                    dbsess.commit()
-                    catexp = None
-                else:
-                    break
+        # There's also kind of a nasty race condition here, where
+        #   multiple processes ask for the same catalog at the same
+        #   time.  The race condition formally comes in where two of
+        #   them find it not existing, and then both of them try to
+        #   download insert it; one of them will fail, becuase the
+        #   database row will already be there from the other one.  We
+        #   could solve this with some cleverness around the insert.
+        #   However, this also' means that multiple processes might be
+        #   querying NOIRLab at the same time for exactly the same
+        #   catalog, which is just bad citizenship.  We don't want to
+        #   just ham-handedly lock the catalog excerpts table, because
+        #   the time to download the catalog might be non-trivial, and
+        #   we could end up with a whole bunch of processes holding open
+        #   database connections while they wait for just the one
+        #   process to finish.  (Even worse, this stops them from
+        #   parallelizing when they're asking for *different* catalogs.)
+        #   So, to handle this, we created the gaiadr3_downloadlock
+        #   table.
 
-        if catexp is None and not onlycached:
-            # No cached catalog excerpt, so query the NOIRLab server
-            catexp, localfile, dbfile = download_gaia_dr3(
-                minra,
-                maxra,
-                mindec,
-                maxdec,
-                minmag=minmag,
-                maxmag=maxmag,
-            )
-            if catexp.num_items >= minstars:
-                catexp.filepath = dbfile
-                catexp.save( localfile )
-                with SmartSession( session ) as dbsess:
-                    existing_catexp = dbsess.scalars(
-                        sa.select(CatalogExcerpt).where(CatalogExcerpt.filepath == dbfile)
-                    ).first()
-                    if existing_catexp is None:
-                        dbsess.add( catexp )  # add if it doesn't exist
+        with GaiaDR3DownloadLock.lock( ralow, rahigh, declow, dechigh, minmag, maxmag ):
+            with SmartSession(session) as dbsess:
+                q = ( dbsess.query( CatalogExcerpt )
+                      .filter( CatalogExcerpt.origin == 'gaia_dr3' )
+                      .filter( CatalogExcerpt.ra_corner_00 <= ralow )
+                      .filter( CatalogExcerpt.ra_corner_01 <= ralow )
+                      .filter( CatalogExcerpt.ra_corner_10 >= rahigh )
+                      .filter( CatalogExcerpt.ra_corner_11 >= rahigh )
+                      .filter( CatalogExcerpt.dec_corner_00 <= declow )
+                      .filter( CatalogExcerpt.dec_corner_10 <= declow )
+                      .filter( CatalogExcerpt.dec_corner_01 >= dechigh )
+                      .filter( CatalogExcerpt.dec_corner_11 >= dechigh )
+                      .filter( CatalogExcerpt.maxmag >= maxmag-0.1 )
+                      .filter( CatalogExcerpt.maxmag <= maxmag+0.1 )
+                      .filter( CatalogExcerpt.num_items >= minstars )
+                     )
+                if minmag is not None:
+                    q = ( q.filter( CatalogExcerpt.minmag >= minmag-0.1 )
+                          .filter( CatalogExcerpt.minmag <= minmag+0.1 ) )
+                if q.count() > 0:
+                    catexp = q.first()
+
+                    if not os.path.isfile( catexp.get_fullpath() ):
+                        SCLogger.warning( f"CatalogExcerpt {catexp.id} has no file at {catexp.filepath}, "
+                                          f"deleting the database row!" )
+                        dbsess.delete( catexp )
+                        dbsess.commit()
+                        catexp = None
                     else:
-                        raise RuntimeError(f'CatalogExcerpt {dbfile} already exists in the database!')
-                    dbsess.commit()
-                    break
-            else:
-                catexp = None
-                pathlib.Path( localfile ).unlink( missing_ok=True )
+                        break
+
+            if catexp is None and not onlycached:
+                # No cached catalog excerpt, so query the NOIRLab server
+                catexp, localfile, dbfile = download_gaia_dr3(
+                    minra,
+                    maxra,
+                    mindec,
+                    maxdec,
+                    minmag=minmag,
+                    maxmag=maxmag,
+                )
+                if catexp.num_items >= minstars:
+                    catexp.filepath = dbfile
+                    catexp.save( localfile )
+                    with SmartSession( session ) as dbsess:
+                        existing_catexp = dbsess.scalars(
+                            sa.select(CatalogExcerpt).where(CatalogExcerpt.filepath == dbfile)
+                        ).first()
+                        if existing_catexp is None:
+                            dbsess.add( catexp )  # add if it doesn't exist
+                        else:
+                            raise RuntimeError(f'CatalogExcerpt {dbfile} already exists in the database!')
+                        dbsess.commit()
+                        break
+                else:
+                    catexp = None
+                    pathlib.Path( localfile ).unlink( missing_ok=True )
 
     if catexp is None:
         s = f"Failed to fetch Gaia DR3 stars at ( {(minra+maxra)/2.:.04f},{(mindec+maxdec)/2.:.04f} )"

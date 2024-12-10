@@ -7,9 +7,6 @@ import subprocess
 import numpy as np
 from numpy.fft import fft2, ifft2, fftshift
 
-from astropy.time import Time
-from astropy.io import fits
-
 from sep import Background
 
 from models.base import SmartSession, FileOnDiskMixin
@@ -31,9 +28,10 @@ from improc.tools import sigma_clipping
 import improc.tools
 
 from util.config import Config
-from util.util import listify, parse_session, save_fits_image_file, read_fits_image
+from util.util import save_fits_image_file, read_fits_image
 from util.exceptions import SubprocessFailure
 from util.logger import SCLogger
+
 
 class ParsCoadd(Parameters):
     def __init__(self, **kwargs):
@@ -196,7 +194,7 @@ class Coadder:
         outfl: ndarray
             The bit flags array after coaddition.
         """
-        if not all(type(image) == type(images[0]) for image in images):
+        if not all( isinstance(image, type(images[0]) ) for image in images):
             raise ValueError('Not all images are of the same type. ')
         if isinstance(images[0], Image):
             data = [image.data for image in images]
@@ -232,16 +230,37 @@ class Coadder:
         Parameters
         ----------
         datacube: ndarray
-            The data cube to coadd. Can be images or weight maps (or anything else).
+            The data cube to coadd. Can be images or weight maps (or
+            anything else... SORT OF.  It will produce a sum if you give
+            it something other than images, but the normalization will
+            not be consistent if e.g. you send in images and variance
+            maps; the summed variance will have been normalized
+            incorrectly as compared to how the summed image was
+            normalized.)  (...in fact, I think it doesn't even do quite
+            the right coadd (up to a normalization factor) for something
+            other than an image, unless all of the flux_zps are the same
+            as each other.  So, don't use this for anything other than
+            images.)  Must already be aligned.
+
         psfcube: ndarray
-            The PSF cube to use for coaddition.
+            The PSF cube to use for coaddition.  3D numpy array, each layer must
+            have a normalized (i.e. sum=1) PSF image at the same pixel scale
+            as the images in datacube.
+
         sigmas: ndarray
             The background noise estimate for each image in the data cube.
             Must be a 1D array with a length equal to the first axis of the data cube.
             It could have additional dimensions, but it will be reshaped to be multiplied
             with the data cube and psf cube.
+
         flux_zps: ndarray
             The flux zero points for each image in the data cube.
+            (Images are divided by this value to turn them into flux
+            values that have a zeropoint of 0, i.e. m_true =
+            -2.5*log(data/flux_zp) = -2.5*log(data) +
+            2.5*log(flux_zp), so 2.5*log(flux_zp) = the traditional
+            magnitude zeropoint.)
+
             Must be a 1D array with a length equal to the first axis of the data cube.
             It could have additional dimensions, but it will be reshaped to be multiplied
             with the data cube and psf cube.
@@ -254,6 +273,7 @@ class Coadder:
             The coadded 2D PSF cube.
         score: ndarray
             The matched-filter result of cross correlating outdata with outpsf.
+
         """
         # data verification:
         if datacube.shape != psfcube.shape:
@@ -316,7 +336,7 @@ class Coadder:
         do not pass weights, flags, psf_clips, psf_fwhms, flux_zps,
         bkg_means, or bkg_sigmas.
 
-        (2) iamges is a list of 2D ndnarrays
+        (2) images is a list of 2D ndnarrays
 
         In this case, you do not pass bgs, impsfs or zps, but you must
         pass weights, flags, psfs_clips, psf_fwhms, flux_zps, bkg_means,
@@ -350,7 +370,8 @@ class Coadder:
             The FWHM of the PSF for each image.
 
         flux_zps: list of floats, or None
-            The flux zero points for each image.
+            The flux zero points for each image.  Defined so that
+            mag = -2.5*log(data/flux_zp)
 
         bkg_means: list of floats, or None
             The mean background for each image.
@@ -373,7 +394,7 @@ class Coadder:
             A matched-filtered score image of the coadded image.
 
         """
-        if not all(type(image) == type(images[0]) for image in images):
+        if not all( isinstance( image, type(images[0]) ) for image in images):
             raise ValueError('Not all images are of the same type. ')
 
         if isinstance(images[0], Image):
@@ -416,6 +437,11 @@ class Coadder:
         if bkg_means is None or bkg_sigmas is None:
             raise ValueError('Background must be given if images are not Image objects. ')
 
+        # NOTE -- this will use a LOT of memory.
+        # All of the numpy arrays will now be stored twice -- once in
+        #   the list, and once in the datacube created.  Suggest
+        #   refactoring so that the for loop above just builds the
+        #   datacubes directly instead of going through the lists.
         imcube = np.array(data)
         flcube = np.array(flags)
         wtcube = np.array(weights)
@@ -425,6 +451,11 @@ class Coadder:
         flux_zps = np.reshape(np.array(flux_zps), (len(flux_zps), 1, 1))
 
         # subtract the background
+        # NOTE -- this isn't necessarily *really* subtracting the
+        #   backgrounds.  It's subtracting the mean background value from
+        #   every pixel.  (bkg_means above was built by looking at
+        #   bg.value.  If there's a background image, to capture varying
+        #   background, that is lost here.)
         imcube -= bkg_means
 
         # make sure to inpaint missing data
@@ -438,18 +469,30 @@ class Coadder:
         outim, psf, score = self._zogy_core(imcube, psfcube, bkg_sigmas, flux_zps)
 
         # coadd the variance as well
-        varflag = wtcube == 0
-        wtcube2 = wtcube ** 2
-        wtcube2[varflag] = np.nan
-        varmap = 1 / wtcube2
-        varmap = self.inpainter.run(varmap, varflag, wtcube)  # wtcube doesn't do anything, maybe put something else?
-        outvarmap, _, _ = self._zogy_core(varmap, psfcube, bkg_sigmas, flux_zps)
-        outwt = 1 / np.sqrt(np.abs(outvarmap))
+        #  ---> THIS DOESNT WORK RIGHT.
+        # Reason: the coadd image is normalized in _zogy_core to its standard
+        #   deviation.  The same normalization is not right for the variance image;
+        #   the stdev image is what should be normalized the same way.
+        # varflag = ( wtcube <= 0 ) | ( flcube != 0 )
+        # wtcube[varflag] = np.nan
+        # varmap = 1. / wtcube
+        # varmap = self.inpainter.run(varmap, varflag, wtcube)  # wtcube doesn't do anything, maybe put something else?
+        # outvarmap, _, _ = self._zogy_core(varmap, psfcube, bkg_sigmas, flux_zps)
+        # outwt = 1. / np.abs(outvarmap)
+
+        # Because the whole zogy algorithm implicitly assumes that it's entirely sky-noise
+        # dominated, let's just flow with it and ignore poisson noise in objects.  That's
+        # not great, but, well, we're kind of stuck right now.  Additionally, the zogy
+        # algorithm normalizes the summed image so that its variance is 1, so we
+        # can just set the weight to 1 everywhere, and that should be right for sky
+        # noise.
+        outwt = np.ones_like( outim, dtype=np.float32 )
 
         outfl = np.zeros(outim.shape, dtype='uint16')
         for f, p in zip(flags, psf_fwhms):
             splash_pixels = int(np.ceil(p * self.pars.flag_fwhm_factor))
             outfl = outfl | dilate_bitflag(f, iterations=splash_pixels)
+        outwt[ outfl != 0 ] = 0.
 
         return outim, outwt, outfl, psf, score
 
@@ -527,10 +570,10 @@ class Coadder:
             # Write out a bunch of temporary images that are the source images with an
             #   updated wcs in the header, and all scaled to the same zeropoint.
             for imgdex, ds in enumerate(data_store_list):
-                image_paths = ds.image.get_fullpath( as_list=True )
-                imdex = ds.image.filepath_extensions.index( '.image.fits' )
-                wtdex = ds.image.filepath_extensions.index( '.weight.fits' )
-                fldex = ds.image.filepath_extensions.index( '.flags.fits' )
+                # image_paths = ds.image.get_fullpath( as_list=True )
+                # imdex = ds.image.filepath_extensions.index( '.image.fits' )
+                # wtdex = ds.image.filepath_extensions.index( '.weight.fits' )
+                # fldex = ds.image.filepath_extensions.index( '.flags.fits' )
 
                 # Get a wcs for the source image using target image's source list as the RA/Dec catalog
                 dswcs = self.aligner.get_swarp_fodder_wcs( targds.image, targds.sources, targds.wcs, targds.zp,
@@ -593,8 +636,8 @@ class Coadder:
 
             command = [ 'swarp' ]
             command.extend( sumimgs )
-            command.extend( [ '-IMAGEOUT_NAME', str( tmpdir / f'coadd.fits' ),
-                              '-WEIGHTOUT_NAME', str( tmpdir / f'coadd.weight.fits' ),
+            command.extend( [ '-IMAGEOUT_NAME', str( tmpdir / 'coadd.fits' ),
+                              '-WEIGHTOUT_NAME', str( tmpdir / 'coadd.weight.fits' ),
                               '-RESCALE_WEIGHTS', 'N',
                               '-SUBTRACT_BACK', 'N',
                               '-RESAMPLE_DIR', swarp_resample_dir,
@@ -626,8 +669,8 @@ class Coadder:
             if res.returncode != 0:
                 raise SubprocessFailure( res )
 
-            data, hdr = read_fits_image( tmpdir / f'coadd.fits', output='both' )
-            weight = read_fits_image( tmpdir / f'coadd.weight.fits' )
+            data, hdr = read_fits_image( tmpdir / 'coadd.fits', output='both' )
+            weight = read_fits_image( tmpdir / 'coadd.weight.fits' )
             flags = np.zeros( weight.shape, dtype=np.int16 )
             # TODO : should probably use BitFlagConverter 'out of bounds' if we
             #   can figure out a way.  Look into swarp, see if it gives us this
@@ -802,12 +845,12 @@ class Coadder:
             index = 0
         elif self.pars['alignment_index'] == 'other':
             if alignment_target_datastore is None:
-                raise ValueError( f"alignment_index 'other' requires alignment_target_datastore" )
+                raise ValueError( "alignment_index 'other' requires alignment_target_datastore" )
             index = -1
         else:
             try:
                 index = int( self.pars['alignment_index'] )
-            except Exception as e:
+            except Exception:
                 raise ValueError( f"alignment_index must be 'first', 'last', 'other', or an integer, not "
                                   f"\"{self.pars['alignment_index']}\"" )
             if ( index < 0 ) or ( index >= len( data_store_list ) ):
@@ -831,7 +874,7 @@ class Coadder:
         else:
             # Other methods require alignment first
             if index < 0:
-                raise ValueError( f"Only alignment method swarp supports alignment_index=other" )
+                raise ValueError( "Only alignment method swarp supports alignment_index=other" )
 
             if aligned_datastores is not None:
                 SCLogger.debug( "Coadder using passed aligned datastores" )

@@ -11,7 +11,7 @@ from tests.conftest import SKIP_WARNING_TESTS
 
 def test_subtraction_data_products( ptf_ref, ptf_supernova_image_datastores ):
     assert len(ptf_supernova_image_datastores) == 2
-    ds1, ds2 = ptf_supernova_image_datastores
+    ds1, _ = ptf_supernova_image_datastores
 
     assert ds1.sources is not None
     assert ds1.psf is not None
@@ -51,7 +51,7 @@ def test_subtraction_data_products( ptf_ref, ptf_supernova_image_datastores ):
 
 def test_subtraction_ptf_zogy(ptf_ref, ptf_supernova_image_datastores):
     assert len(ptf_supernova_image_datastores) == 2
-    ds1, ds2 = ptf_supernova_image_datastores
+    ds1, _ = ptf_supernova_image_datastores
     subtractor = ds1._pipeline.subtractor
 
     # run the subtraction like you'd do in the real pipeline (calls get_reference and get_subtraction internally)
@@ -65,6 +65,7 @@ def test_subtraction_ptf_zogy(ptf_ref, ptf_supernova_image_datastores):
 
     assert ds.sub_image is not None
     assert ds.sub_image.data is not None
+    assert ds.sub_image.weight is not None
 
     # make sure there are not too many masked pixels
     mask = ds.sub_image.flags > 0
@@ -74,8 +75,22 @@ def test_subtraction_ptf_zogy(ptf_ref, ptf_supernova_image_datastores):
     region_pixel_counts.sort()
     region_pixel_counts = region_pixel_counts[:-1]  # remove that last region, which is the largest one
 
-    assert max(region_pixel_counts) < 5000  # no region should have more than 5000 pixels masked
-    assert np.sum(region_pixel_counts) / ds.sub_image.data.size < 0.01  # no more than 1% of the pixels should be masked
+    # no region should have more than 5000 pixels masked
+    assert max(region_pixel_counts) < 5000
+    # No more than 1.5% pixels masked.  (This used to be 1%, but I think we masked a few more
+    # pixels in the ref with the fixing of caodd zogy weights.)
+    assert np.sum(region_pixel_counts) / ds.sub_image.data.size < 0.015
+
+    # check that a visually-identified blank region really is 0, and that
+    #   the subtraction weight makes sense.
+    y0 = 1908
+    y1 = 1934
+    x0 = 1049
+    x1 = 1075
+    assert ( np.abs( ds.sub_image.data[y0:y1,x0:x1].mean() )
+             < 3. * ( ds.sub_image.data[y0:y1,x0:x1].std() / np.sqrt( ds.sub_image.data[y0:y1,x0:x1].size ) ) )
+    assert ( ds.sub_image.data[y0:y1,x0:x1].std()
+             == pytest.approx( 1. / np.sqrt( ds.sub_image.weight[y0:y1,x0:x1] ).mean(), rel=0.1 ) )
 
     # isolate the score, masking the bad pixels
     S = ds.zogy_score.copy()
@@ -84,6 +99,48 @@ def test_subtraction_ptf_zogy(ptf_ref, ptf_supernova_image_datastores):
     mu, sigma = sigma_clipping(S)
     assert abs(mu) < 0.1  # the mean should be close to zero
     assert abs(sigma - 1) < 0.1  # the standard deviation should be close to 1
+
+
+def test_subtraction_ptf_hotpants( ptf_ref, ptf_supernova_image_datastores ):
+    assert len( ptf_supernova_image_datastores ) == 2
+    ds1, _ = ptf_supernova_image_datastores
+    subtractor = ds1._pipeline.subtractor
+    detector = ds1._pipeline.detector
+
+    subtractor.pars.method = 'hotpants'
+    subtractor.pars.refset = 'test_refset_ptf'
+    detector.pars.method = 'sextractor'
+    ds1.prov_tree = ds1._pipeline.make_provenance_tree( ds1.exposure, no_provtag=True )
+    ds = subtractor.run( ds1 )
+    ds.reraise()          # Make sure the DataStore didn't catch any subtractions during subtractor.run()
+
+    assert ds.sub_image is not None
+    assert ds.sub_image.data is not None
+    assert ds.sub_image.weight is not None
+
+    # make sure there are not too many masked pixels
+    mask = ds.sub_image.flags > 0
+    labels, num_masked_regions = ndimage.label(mask)
+    all_idx = np.arange(1, num_masked_regions + 1)
+    region_pixel_counts = ndimage.sum(mask, labels, all_idx)
+    region_pixel_counts.sort()
+    region_pixel_counts = region_pixel_counts[:-1]  # remove that last region, which is the largest one
+
+    # no region should have more than 10000 pixels masked
+    assert max(region_pixel_counts) < 10000
+    # No more than ~3% pixels masked.  (Hotpants method seems to maks more than zogy.)
+    assert np.sum(region_pixel_counts) / ds.sub_image.data.size < 0.031
+
+    # check that a visually-identified blank region really is 0, and that
+    #   the subtraction weight makes sense.
+    y0 = 1908
+    y1 = 1934
+    x0 = 1049
+    x1 = 1075
+    assert ( np.abs( ds.sub_image.data[y0:y1,x0:x1].mean() )
+             < 3. * ( ds.sub_image.data[y0:y1,x0:x1].std() / np.sqrt( ds.sub_image.data[y0:y1,x0:x1].size ) ) )
+    assert ( ds.sub_image.data[y0:y1,x0:x1].std()
+             == pytest.approx( 1. / np.sqrt( ds.sub_image.weight[y0:y1,x0:x1] ).mean(), rel=0.1 ) )
 
 
 def test_warnings_and_exceptions( decam_datastore_through_zp, decam_reference, decam_default_calibrators):
@@ -99,7 +156,8 @@ def test_warnings_and_exceptions( decam_datastore_through_zp, decam_reference, d
             subtractor.run( ds )
         assert ds.exception is None
         assert len(record) > 0
-        assert any("Warning injected by pipeline parameters in process 'subtraction'." in str(w.message) for w in record)
+        assert any("Warning injected by pipeline parameters in process 'subtraction'." in str(w.message)
+                   for w in record)
 
     subtractor.pars.inject_warnings = 0
     subtractor.pars.inject_exceptions = 1

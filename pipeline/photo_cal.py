@@ -3,8 +3,6 @@ import numpy as np
 
 import astropy.units as u
 
-import pipeline.catalog_tools
-
 from models.zero_point import ZeroPoint
 
 import pipeline.catalog_tools
@@ -70,7 +68,7 @@ class ParsPhotCalibrator(Parameters):
         self.override(kwargs)
 
     def get_process_name(self):
-        return 'photo_cal'
+        return 'photocal'
 
     def require_siblings(self):
         return True
@@ -162,7 +160,7 @@ class PhotCalibrator:
         # Match catalog excerpt RA/Dec to source RA/Dec
         # ref https://docs.astropy.org/en/stable/coordinates/matchsep.html#matching-catalogs
         max_sep = match_radius * u.arcsec
-        idx, d2d, d3d = skycoords.match_to_catalog_sky(catcoords)
+        idx, d2d, _ = skycoords.match_to_catalog_sky(catcoords)
         sep_constraint = d2d < max_sep
         skycoords = skycoords[sep_constraint]
         sourceflux = sourceflux[sep_constraint]
@@ -257,10 +255,10 @@ class PhotCalibrator:
                 raise ValueError('Cannot find the image corresponding to the datastore inputs')
             sources = ds.get_sources(session=session)
             if sources is None:
-                raise ValueError(f'Cannot find a source list corresponding to the datastore inputs: {ds.get_inputs()}')
+                raise ValueError(f'Cannot find a source list corresponding to the datastore inputs: {ds.inputs_str}')
             psf = ds.get_psf(session=session)
             if psf is None:
-                raise ValueError(f'Cannot find a psf corresponding to the datastore inputs: {ds.get_inputs()}')
+                raise ValueError(f'Cannot find a psf corresponding to the datastore inputs: {ds.inputs_str}')
             wcs = ds.get_wcs(session=session)
             if wcs is None:
                 raise ValueError(f'Cannot find a wcs for image {image.filepath}')
@@ -317,10 +315,10 @@ class PhotCalibrator:
                     #                                                 np.sqrt(np.pi) * fwhm_pix )
                     #                             )
 
-                ds.runtimes['photo_cal'] = time.perf_counter() - t_start
+                ds.runtimes['photocal'] = time.perf_counter() - t_start
                 if env_as_bool('SEECHANGE_TRACEMALLOC'):
                     import tracemalloc
-                    ds.memory_usages['photo_cal'] = tracemalloc.get_traced_memory()[1] / 1024 ** 2  # in MB
+                    ds.memory_usages['photocal'] = tracemalloc.get_traced_memory()[1] / 1024 ** 2  # in MB
 
 
             # update the bitflag with the upstreams

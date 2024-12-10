@@ -1,0 +1,38 @@
+{ "type": "record",
+  "namespace": "ls4.v0_1",
+  "name": "diaObject",
+  "fields": [
+    { "name": "diaObjectId",
+      "type": "string",
+      "logicalType": "uuid",
+      "doc": "Unique identifier of this DiaObject."
+    },
+    { "name": "name",
+      "type": "string",
+      "doc": "Human-readable unique name of this DiaObject."
+    },
+    { "name": "ra",
+      "type": "double",
+      "doc": "Fiducial right ascension coordinate of the position of the object; not a best position."
+    },
+    { "name": "raErr",
+      "type": [ "float", "null" ],
+      "default": null,
+      "doc": "Uncertainty of ra."
+    },
+    { "name": "dec",
+      "type": "double",
+      "doc": "Fiducial declination coordinate of the position of the object; not a best position."
+    },
+    { "name": "decErr",
+      "type": [ "float", "null" ],
+      "default": null,
+      "doc": "Uncertainty of dec."
+    },
+    { "name": "ra_dec_Cov",
+      "type": [ "float", "null" ],
+      "default": null,
+      "doc": "Covariance between ra and dec."
+    }
+  ]
+}

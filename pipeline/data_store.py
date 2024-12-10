@@ -1,5 +1,4 @@
 import io
-import warnings
 import datetime
 import sqlalchemy as sa
 import uuid
@@ -9,7 +8,7 @@ from util.util import parse_session, listify, asUUID
 from util.logger import SCLogger
 
 from models.base import SmartSession, FileOnDiskMixin, FourCorners
-from models.provenance import CodeVersion, Provenance
+from models.provenance import Provenance
 from models.exposure import Exposure
 from models.image import Image, image_upstreams_association_table
 from models.source_list import SourceList
@@ -23,6 +22,9 @@ from models.measurements import Measurements
 from models.deepscore import DeepScore
 
 # for each process step, list the steps that go into its upstream
+# backgrounding, astrocal, photocal don't appear in this list because
+# they share a provenance with 'extraction', so where you see 'extraction',
+# treat it as the union of (extraction, bbackgrounding, astrocal, photocal).
 UPSTREAM_STEPS = {
     'exposure': [],  # no upstreams
     'preprocessing': ['exposure'],
@@ -404,7 +406,7 @@ class DataStore:
             if not isinstance( val, Image ):
                 raise TypeError( f"DataStore.sub_image must be an Image, not a {type(val)}" )
             if not val.is_sub:
-                raise ValueError( f"DataStore.sub_image must have is_sub set" )
+                raise ValueError( "DataStore.sub_image must have is_sub set" )
             if ( ( self._detections is not None ) and ( self._detections.image_id != val.id ) ):
                 raise ValueError( "Can't set a sub_image inconsistent with detections" )
             if val.ref_image_id != self.ref_image.id:
@@ -486,7 +488,7 @@ class DataStore:
         if val is None:
             self._scores = None
         else:
-            if ( self._measurements is None or len(self._measurements) == 0 ):
+            if ( self._measurements is None ):
                 raise RuntimeError( " Can't set DataStore scores until it has measurements" )
             if not isinstance( val, list ):
                 raise TypeError( f"Datastore.scores must be a list of scores, not a {type(val)}" )
@@ -543,8 +545,8 @@ class DataStore:
 
 
     def parse_args(self, *args, **kwargs):
-        """
-        Parse the arguments to the DataStore constructor.
+        """Parse the arguments to the DataStore constructor.
+
         Can initialize based on exposure and section ids,
         or give a specific image id or coadd id.
 
@@ -618,20 +620,25 @@ class DataStore:
             del kwargs[key]
 
         # parse the args list
+        self.inputs_str = "(unknown)"
         arg_types = [type(arg) for arg in args]
         if arg_types == []:   # no arguments, quietly skip
-            pass
+            self.inputs_str = "(no inputs)"
         elif ( ( arg_types == [ uuid.UUID, int ] ) or
                ( arg_types == [ uuid.UUID, str ] ) or
                ( arg_types == [ str, int ] ) or
                ( arg_types == [ str, str ] ) ):  #exposure_id, section_id
             self.exposure_id, self.section_id = args
+            self.inputs_str = f"exposure_id={self.exposure_id}, section_id={self.section_id}"
         elif arg_types == [ Exposure, int ] or arg_types == [ Exposure, str ]:
             self.exposure, self.section_id = args
+            self.inputs_str = f"exposure={self.exposure}, section_id={self.section_id}"
         elif ( arg_types == [ uuid.UUID ] ) or ( arg_types == [ str ] ):     # image_id
             self.image_id = args[0]
+            self.inputs_str = f"image_id={self.image_id}"
         elif arg_types == [ Image ]:
             self.image = args[0]
+            self.inputs_str = f"image={self.image}"
         # TODO: add more options here?
         #  example: get a string filename to parse a specific file on disk
         else:
@@ -645,7 +652,8 @@ class DataStore:
             setattr( self, key, val )
 
         if output_session is not None:
-            raise RuntimeError( "DataStore parse_args found a session.  Don't pass sessions to DataStore constructors." )
+            raise RuntimeError( "DataStore parse_args found a session.  "
+                                "Don't pass sessions to DataStore constructors." )
         return output_session
 
     @staticmethod
@@ -688,7 +696,8 @@ class DataStore:
             raise e
 
     def __init__(self, *args, **kwargs):
-        """
+        """Make a DataStore.
+
         See the parse_args method for details on how to initialize this object.
 
         Please make sure to add any new attributes to the products_to_save list.
@@ -801,30 +810,17 @@ class DataStore:
 
     def update_report(self, process_step, session=None):
         """Update the report object with the latest results from a processing step that just finished. """
-        self.report.scan_datastore( self, process_step=process_step )
+        if self.report is not None:
+            self.report.scan_datastore( self, process_step=process_step )
 
     def finalize_report( self ):
         """Mark the report as successful and set the finish time."""
-        self.report.success = True
-        self.report.finish_time = datetime.datetime.utcnow()
-        self.report.upsert()
+        if self.report is not None:
+            self.report.scan_datastore( self, process_step='finalize' )
+            self.report.success = True
+            self.report.finish_time = datetime.datetime.now( datetime.UTC )
+            self.report.upsert()
 
-
-    def get_inputs(self):
-        """Get a string with the relevant inputs. """
-
-        # Think about whether the order here actually makes sense given refactoring.  (Issue #349.)
-
-        if self.image_id is not None:
-            return f'image_id={self.image_id}'
-        if self.image is not None:
-            return f'image={self.image}'
-        elif self.exposure_id is not None and self.section_id is not None:
-            return f'exposure_id={self.exposure_id}, section_id={self.section_id}'
-        elif self.exposure is not None and self.section_id is not None:
-            return f'exposure={self.exposure}, section_id={self.section_id}'
-        else:
-            raise ValueError('Could not get inputs for DataStore.')
 
     def set_prov_tree( self, provdict, wipe_tree=False ):
         """Update the DataStore's provenance tree.
@@ -979,7 +975,7 @@ class DataStore:
 
         code_version = Provenance.get_code_version(session=session)
         if code_version is None:
-            raise RuntimeError( f"No code_version in the database, can't make a Provenance" )
+            raise RuntimeError( "No code_version in the database, can't make a Provenance" )
 
         # check if we can find the upstream provenances
         upstreams = []
@@ -1054,8 +1050,7 @@ class DataStore:
         # return None  # if not found in prov_tree, just return None
 
     def get_raw_exposure(self, session=None):
-        """Get the raw exposure from the database.
-        """
+        """Get the raw exposure from the database."""
         if self._exposure is None:
             if self.exposure_id is None:
                 raise ValueError('Cannot get raw exposure without an exposure_id!')
@@ -1485,7 +1480,7 @@ class DataStore:
         provenances = listify(provenances)
 
         if ( provenances is None ) or ( len(provenances) == 0 ):
-            raise RuntimeError( f"DataStore can't get a reference, no provenances to search" )
+            raise RuntimeError( "DataStore can't get a reference, no provenances to search" )
 
         provenance_ids = [ p.id for p in provenances ]
 
@@ -1704,7 +1699,7 @@ class DataStore:
             if self.image_id is None:
                 self.get_image( session=sess )
             if self.image_id is None:
-                raise RuntimeError( f"Can't get sub_image, don't have an image_id" )
+                raise RuntimeError( "Can't get sub_image, don't have an image_id" )
 
             imgs = ( sess.query( Image )
                      .join( image_upstreams_association_table,
@@ -2058,12 +2053,12 @@ class DataStore:
 
             # make sure there is one score per measurement
             if ( len( self.scores ) != len(self.measurements) ):
-                raise ValueError(f"Score and measurements list not the same length")
+                raise ValueError("Score and measurements list not the same length")
 
             sm_index_list = []
             m_ids = [str(m.id) for m in self.measurements]
             for i, s in enumerate(self.scores):
-                if not str(s.measurements_id) in m_ids:
+                if str(s.measurements_id) not in m_ids:
                     raise ValueError("score points to nonexistant measurement")
                 sm_index_list.append(m_ids.index(str(s.measurements_id)))
 
@@ -2089,12 +2084,12 @@ class DataStore:
 
 
     def delete_everything(self):
-        """Delete everything associated with this DataStore.
+        """Delete (almost) everything associated with this DataStore.
 
         All data products in the data store are removed from the DB,
         and all files on disk and in the archive are deleted.
 
-        NOTE: does *not* delete the exposure.  (There may well be other
+        Does *not* delete the exposure.  (There may well be other
         data stores out there with different images from the same
         exposure.)
 
@@ -2103,6 +2098,16 @@ class DataStore:
         Clears out all data product fields in the datastore.
 
         """
+
+        # Special case handling for report, since it was never in
+        #   products_to_save.  We don't want it there, because it's
+        #   handled differently from the actual data products.  (Most
+        #   notably: although there are exceptions (image and WCS), the
+        #   default idea for our data products is that once a database
+        #   entry is written, it stays the same.  The reports database
+        #   entry is very much a "update with status" thing, though.)
+        if self.report is not None:
+            self.report.delete_from_disk_and_database()
 
         # Not just deleting the image and allowing it to recurse through its
         #   downstreams because it's possible that the data products weren't
@@ -2130,6 +2135,9 @@ class DataStore:
 
         for att in self.products_to_clear:
             setattr(self, att, None)
+
+        self.report = None
+
 
     def free( self, not_zogy_specific_products=False ):
         """Set lazy-loaded data product fields to None in an attempt to save memory.

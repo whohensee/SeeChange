@@ -9,9 +9,7 @@ import torch
 
 import RBbot_inference
 
-from models.measurements import Measurements
 from models.deepscore import DeepScore
-from models.provenance import Provenance
 from models.enums_and_bitflags import DeepscoreAlgorithmConverter
 
 from util.config import Config
@@ -46,6 +44,7 @@ class ParsScorer(Parameters):
     def get_process_name(self):
         return 'scoring'
 
+
 class Scorer:
     def __init__(self, **kwargs):
         self.config = Config.get()
@@ -63,17 +62,21 @@ class Scorer:
         if algo is None:
             algo = self.pars.algorithm
 
+        if len(ds.measurements) == 0:
+            SCLogger.debug( "No measurements, returning empty score list" )
+            return []
+
         SCLogger.debug( "score_rbbot starting, loading cutouts data" )
 
-        sources = ds.get_sources( session=session )
+        detections = ds.get_detections( session=session )
         cutouts = ds.get_cutouts( session=session )
-        cutouts.load_all_co_data( sources=sources )
+        cutouts.load_all_co_data( sources=detections )
 
         # Construct the numpy array
         # Current RBbot models assume 41×41 cutouts
         if ( cutouts.co_dict[f'source_index_{ds.measurements[0].index_in_sources}']['sub_data'].shape
              != (41,41) ):
-            raise ValueError( f"RBbot currently requires cutouts to be 41×41" )
+            raise ValueError( "RBbot currently requires cutouts to be 41×41" )
         data = np.empty( ( len(ds.measurements), 3, 41, 41 ) )
         tmpdata = np.empty( ( 3, 41, 41 ) )
         tmpmask = np.empty( ( 3, 41, 41 ), dtype=bool )
@@ -105,8 +108,9 @@ class Scorer:
         # TODO : cache this so we don't have to reload it?  Maybe not a big deal,
         #  since in a single run of the pipeline we expet this function to
         #  only be called once.
-        SCLogger.debug( "Loading model and running inference" )
+        SCLogger.debug( f"Loading RBbot model; model={deepmodel}, model_root={self.pars.rbbot_model_dir}" )
         model = RBbot_inference.load_model.load_model( deepmodel, model_root=self.pars.rbbot_model_dir )
+        SCLogger.debug( "Mode loaded, running inference." )
 
         # Run the inference
         trips_tensor = torch.Tensor(data).to('cpu')
@@ -126,7 +130,8 @@ class Scorer:
 
 
     def run(self, *args, **kwargs):
-        """
+        """Assign deepscores to measurements.
+
         Look at the measurements and assign scores based
         on the chosen ML/DL model. Potentially will include an R/B
         score in addition to other scores.
@@ -154,7 +159,7 @@ class Scorer:
             if measurements is None:
                 raise ValueError(
                     f'Cannot find a measurements corresponding to '
-                    f'the datastore inputs: {ds.get_inputs()}'
+                    f'the datastore inputs: {ds.inputs_str}'
                 )
 
             # find if these deepscores have already been made
