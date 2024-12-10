@@ -1532,7 +1532,6 @@ class Instrument:
         from models.calibratorfile import CalibratorFile, CalibratorFileDownloadLock
         from models.image import Image
 
-        # breakpoint()
         params = {}
 
         expdatetime = pytz.utc.localize( astropy.time.Time( mjd, format='mjd' ).datetime )
@@ -1575,7 +1574,6 @@ class Instrument:
                     # This is the real reason we got the calibfile downloadlock, but of course
                     # we had to do it before searching for the file so that we don't have a race
                     # condition for multiple processes all downloading the file at once.
-                    breakpoint()
                     fltr = self.get_short_filter_name( filter )
                     calib = self._get_default_calibrator( mjd, section, calibtype=calibtype,
                                                           filter=fltr,

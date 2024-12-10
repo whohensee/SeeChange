@@ -59,6 +59,7 @@ ALLOWED_DEFAULT_FILTER_NAMES = [
     'g',
     'i',
     'z',
+    'Y',
 ]
 
 
@@ -399,6 +400,10 @@ class Exposure(Base, UUIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagBad
             kwargs['_header'] = kwargs.pop('header')
 
         # filter needs to be set after instrument - this will be rerun
+        # THis is super annoying. Best solution I have is that if you want
+        # to pass a filter to an exposure without an explicit instrument, you must pass the short filter
+        # allowed by ALLOWED_DEFAULT_FILTER_NAMES which allows the filepath to be
+        # generated and the instrument to be guessed, then everything can work
         
         # filtername = kwargs.pop('filter') if 'filter' in kwargs else None
         # if 'filter' in kwargs:

@@ -144,7 +144,8 @@ def test_exposure_no_null_values():
 
 
 def test_exposure_guess_demo_instrument():
-    e = Exposure(filepath=f"Demo_test_{rnd_str(5)}.fits", exp_time=30, mjd=58392.0, filter="F160W", ra=123, dec=-23,
+    # can only pass legal short filter names to exposure without instrument object
+    e = Exposure(filepath=f"Demo_test_{rnd_str(5)}.fits", exp_time=30, mjd=58392.0, filter="r", ra=123, dec=-23,
                  project='foo', target='bar', nofile=True)
 
     assert e.instrument == 'DemoInstrument'

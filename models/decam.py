@@ -347,7 +347,7 @@ class DECam(Instrument):
         longnames = list(FILTER_NAME_CONVERSIONS.values())
         shortnames = list(FILTER_NAME_CONVERSIONS.keys())
 
-        # check if it is already a short filter name
+        # TODO: CHECK IF THIS WORKS!!
         if filter in shortnames:
             return filter
 
@@ -459,7 +459,6 @@ class DECam(Instrument):
         datadir = pathlib.Path( FileOnDiskMixin.local_path ) / reldatadir
 
         if calibtype == 'flat':
-            # breakpoint()
             rempath = pathlib.Path( f'{cfg.value("DECam.calibfiles.flatbase")}/'
                                     f'{s_filter}.out.{self._chip_radec_off[section]["ccdnum"]:02d}_trim_med.fits' )
 
