@@ -270,31 +270,34 @@ class Exposure(Base, UUIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagBad
 
     @property
     def filter( self ):
+        # always return short filter name unless self.filter_long is used
         if self._filter is None:
             return None
         else:
-            if self.instrument_object is None:
-                # raise ValueError( "Exposure must have an instrument to set a filter" )
-                return self._filter
-            else:
-                return self.instrument_object.get_full_filter_name( self._filter )
+            return self._filter
+            # if self.instrument_object is None:
+            #     # raise ValueError( "Exposure must have an instrument to set a filter" )
+            #     return self._filter
+            # else:
+            #     return self.instrument_object.get_full_filter_name( self._filter )
 
     @filter.setter
     def filter( self, val ):
-        if self.instrument_object is None:
-            # raise ValueError( "Exposure must have an instrument to set a filter" )
-            if val[0] not in ALLOWED_DEFAULT_FILTER_NAMES:
-                raise ValueError(f"attempted to set invalid filter without instrument: {val}")
-            self._filter = val[0]
-        else:
-            self._filter = self.instrument_object.get_short_filter_name( val )
+        self._filter = val
 
-    # WHPR consider how to use this to fix everything to use new logic easily
+        # if self.instrument_object is None:
+        #     # raise ValueError( "Exposure must have an instrument to set a filter" )
+        #     if val[0] not in ALLOWED_DEFAULT_FILTER_NAMES:
+        #         raise ValueError(f"attempted to set invalid filter without instrument: {val}")
+        #     self._filter = val[0]
+        # else:
+        #     self._filter = self.instrument_object.get_short_filter_name( val )
+    
     @property
-    def filter_short(self):
-        if self._filter is None:
-            return None
-        return self._filter
+    def filter_full(self):
+        if self.instrument_object is None:
+            raise ValueError( "Exposure must have an instrument to determine full filter.")
+        return self.instrument_object.get_full_filter_name( self._filter )
 
     filter_array = sa.Column(
         ARRAY(sa.Text, zero_indexes=True),
@@ -412,6 +415,10 @@ class Exposure(Base, UUIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagBad
         # We will run this exact code again later so that the keywords
         # can override what's detected from the header.
         self.set_attributes_from_dict( kwargs )
+        # NOTE: since this reads directly from header, it will often set
+        # a full filter name without an instrument, which must be detected
+        # and fixed below before making anything permanent (filepaths,
+        # provenances etc).
 
         # must have Instrument to invent a filename (and initialize Provenance)
         # but if not given, it can be guessed from the filepath
@@ -420,6 +427,7 @@ class Exposure(Base, UUIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagBad
 
         if self.filepath is None:
             # in this case, the instrument must have been given
+            self.filter = self.instrument_object.get_short_filter_name( self.filter )
             if self.provenance_id is None:
                 prov = self.make_provenance(self.instrument)  # a default provenance for exposures
                 self.provenance_id = prov.id
@@ -431,6 +439,10 @@ class Exposure(Base, UUIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagBad
 
         if self.instrument is None:
             self.instrument = guess_instrument(self.filepath)
+
+        # ensure we are working with short filter from here and below
+        self.filter = self.instrument_object.get_short_filter_name( self.filter )
+        
 
         # this can happen if the instrument is not given, but the filepath is
         if self.provenance_id is None:
@@ -453,6 +465,7 @@ class Exposure(Base, UUIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagBad
 
         # Allow passed keywords to override what's detected from the header
         self.set_attributes_from_dict( kwargs )
+        self.filter = self.instrument_object.get_short_filter_name( self.filter )
 
         # # create a proper filepath now that filter is loaded
         # if invent_filepath:
@@ -522,9 +535,9 @@ class Exposure(Base, UUIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagBad
                     )
             elif k == 'filter' and isinstance(v, list):
                 # WHPR convert filter array to use short filter names too
-                self.filter_array = v
+                self.filter_array = self.instrument_object.get_short_filter_name( v )
             elif k == 'filter' and isinstance(v, str):
-                self.filter = v
+                self.filter = self.instrument_object.get_short_filter_name( v )
             else:
                 setattr(self, k, v)
 
@@ -636,7 +649,7 @@ class Exposure(Base, UUIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagBad
         date = t.strftime('%Y%m%d')
         time = t.strftime('%H%M%S')
 
-        filter = self.filter_short
+        filter = self.filter
 
         ra = self.ra
         ra_int, ra_frac = str(float(ra)).split('.')

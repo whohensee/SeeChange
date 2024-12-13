@@ -36,7 +36,7 @@ def test_exposure_launcher( conductor_connector,
 
     # Hold all exposures
     data = conductor_connector.send( "getknownexposures" )
-    breakpoint()
+    # breakpoint()
     tohold = []
     idtodo = None
     for ke in data['knownexposures']:
