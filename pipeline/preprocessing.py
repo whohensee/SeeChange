@@ -99,12 +99,9 @@ class Preprocessor:
 
         """
         self.has_recalculated = False
-        try:  # first make sure we get back a datastore, even an empty one
-            ds, session = DataStore.from_args( *args, **kwargs )
-        except Exception as e:
-            return DataStore.catch_failure_to_parse(e, *args)
 
-        try:  # catch any exceptions and save them in the datastore
+        try:
+            ds, session = DataStore.from_args( *args, **kwargs )
             t_start = time.perf_counter()
             if env_as_bool('SEECHANGE_TRACEMALLOC'):
                 import tracemalloc
@@ -268,8 +265,9 @@ class Preprocessor:
 
                     image.preproc_bitflag |= string_to_bitflag( step, image_preprocessing_inverse )
 
-            # Get the Instrument standard bad pixel mask for this image
+            # Build the weight and flags images (if necessary)
             if image._flags is None or image._weight is None:
+                # Start with the Instrument standard bad pixel mask for this image
                 image._flags = self.instrument.get_standard_flags_image( ds.section_id )
 
                 # Estimate the background rms with sep
@@ -283,7 +281,7 @@ class Preprocessor:
                 fmask = np.array( image._flags, dtype=np.float32 )
                 backgrounder = sep.Background( image.data, mask=fmask,
                                                bw=boxsize, bh=boxsize, fw=filtsize, fh=filtsize )
-                fmask = None
+                del fmask
                 rms = backgrounder.rms()
                 sky = backgrounder.back()
                 subim = image.data - sky
@@ -330,7 +328,9 @@ class Preprocessor:
                 import tracemalloc
                 ds.memory_usages['preprocessing'] = tracemalloc.get_traced_memory()[1] / 1024 ** 2  # in MB
 
-        except Exception as e:
-            ds.catch_exception(e)
-        finally:
             return ds
+
+        except Exception as e:
+            SCLogger.exception( f"Exception in Preprocessor.run: {e}" )
+            ds.exceptions.append( e )
+            raise

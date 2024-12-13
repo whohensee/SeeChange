@@ -2,7 +2,7 @@ import io
 import datetime
 import sqlalchemy as sa
 import uuid
-import traceback
+# import traceback
 
 from util.util import parse_session, listify, asUUID
 from util.logger import SCLogger
@@ -656,44 +656,6 @@ class DataStore:
                                 "Don't pass sessions to DataStore constructors." )
         return output_session
 
-    @staticmethod
-    def catch_failure_to_parse(exception, *args):
-        """Call this when the from_args() function fails.
-        It is gaurenteed to return a DataStore object,
-        and will set the error attribute to the exception message.
-        """
-
-        datastores = [a for a in args if isinstance(a, DataStore)]
-        if len(datastores) > 0:
-            ds = datastores[0]
-        else:
-            ds = DataStore()  # return an empty datastore, as we cannot create it and cannot find one in args
-
-        ds.exception = exception
-
-        return ds
-
-    def catch_exception(self, exception):
-        """Store the exception into the datastore for later use. """
-
-        strio = io.StringIO( "DataStore catching exception:\n ")
-        traceback.print_exception( exception, file=strio )
-        SCLogger.error( strio.getvalue() )
-
-        self.exception = exception
-        # This is a trivial function now, but we may want to do more complicated stuff down the road
-
-    def read_exception(self):
-        """Return the stored exception and clear it from the datastore. """
-        output = self.exception
-        self.exception = None
-        return output
-
-    def reraise(self):
-        """If an exception is logged to the datastore, raise it. Otherwise pass. """
-        if self.exception is not None:
-            e = self.read_exception()
-            raise e
 
     def __init__(self, *args, **kwargs):
         """Make a DataStore.
@@ -749,7 +711,7 @@ class DataStore:
         self._image_id = None  # use this to specify an image already in the database
 
         self.warnings_list = None  # will be replaced by a list of warning objects in top_level.Pipeline.run()
-        self.exception = None  # the exception object (so we can re-raise it if needed)
+        self.exceptions = []   # Stored list of exceptions
         self.runtimes = {}  # for each process step, the total runtime in seconds
         self.memory_usages = {}  # for each process step, the peak memory usage in MB
         self.products_committed = ''  # a comma separated list of object names (e.g., "image, sources") saved to DB
@@ -759,21 +721,6 @@ class DataStore:
         self.session = None
         self.parse_args(*args, **kwargs)
 
-
-    def __getattribute__(self, key):
-        # if this datastore has a pending error, will raise it as soon as any other data is used
-        if (
-                key not in ['exception', 'read_exception', 'update_report', 'reraise', 'report'] and
-                not key.startswith('__') and hasattr(self, 'exception') and self.exception is not None
-        ):
-            SCLogger.warning('DataStore has a pending exception. Call read_exception() to get it, '
-                             'or reraise() to raise it.')
-            SCLogger.warning(f'Exception was triggered by trying to access attribute {key}.')
-            raise self.exception
-
-        value = super().__getattribute__(key)
-
-        return value
 
     def __setattr__(self, key, value):
         """Check some of the inputs before saving them.
@@ -1839,16 +1786,16 @@ class DataStore:
         """Go over all the data products, saving them to disk if necessary, saving them to the database as necessary.
 
         In general, it will *not* save data products that have a
-        non-null md5sum (or md5sum_extensions) line in the database.
+        non-null md5sum (or md5sum_components) line in the database.
         Reason: once that line is written, it means that that data
         product is "done" and will not change again.  As such, this
         routine assumes that it's all happily saved at least to the
         archive, so nothing needs to be written.
 
         There is one exception: the "image" (as opposed to weight or
-        flags) extension of an Image.  If "update_image_header" is true,
+        flags) component of an Image.  If "update_image_header" is true,
         then the DataStore will save and overwrite just the image
-        extension (not the weight or flags extensions) both to disk and
+        component (not the weight or flags components) both to disk and
         to the archive, and will update the database md5sum line
         accordingly.  The *only* change that should have been made to
         the image file is in the header; the WCS and zeropoint keywords
@@ -1893,9 +1840,9 @@ class DataStore:
 
         update_image_header: bool, default False
             See above.  If this is true, then the if there is an Image
-            object in the data store, its "image" extension will be
+            object in the data store, its "image" component will be
             overwritten both on the local store and on the archive, and
-            appropriate entry in the md5sum_extensions array of the
+            appropriate entry in the md5sum_components array of the
             Image object (and in row in the database) will be updated.
             THIS OPTION SHOULD BE USED WITH CARE.  It's an exception to
             the basic design of the pipeline, and adds redundant I/O
@@ -1934,16 +1881,16 @@ class DataStore:
 
             if isinstance(obj, FileOnDiskMixin):
                 mustsave = True
-                # TODO : if some extensions have a None md5sum and others don't,
+                # TODO : if some components have a None md5sum and others don't,
                 #  right now we'll re-save everything.  Improve this to only
-                #  save the necessary extensions.  (In practice, this should
+                #  save the necessary components.  (In practice, this should
                 #  hardly ever come up.)
                 if ( ( not force_save_everything )
                      and
                      ( ( obj.md5sum is not None )
-                       or ( ( obj.md5sum_extensions is not None )
+                       or ( ( obj.md5sum_components is not None )
                             and
-                            ( all( [ i is not None for i in obj.md5sum_extensions ] ) )
+                            ( all( [ i is not None for i in obj.md5sum_components ] ) )
                            )
                       ) ):
                     mustsave = False

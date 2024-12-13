@@ -28,7 +28,7 @@ from improc.tools import sigma_clipping
 import improc.tools
 
 from util.config import Config
-from util.util import save_fits_image_file, read_fits_image
+from util.fits import save_fits_image_file, read_fits_image
 from util.exceptions import SubprocessFailure
 from util.logger import SCLogger
 
@@ -571,9 +571,9 @@ class Coadder:
             #   updated wcs in the header, and all scaled to the same zeropoint.
             for imgdex, ds in enumerate(data_store_list):
                 # image_paths = ds.image.get_fullpath( as_list=True )
-                # imdex = ds.image.filepath_extensions.index( '.image.fits' )
-                # wtdex = ds.image.filepath_extensions.index( '.weight.fits' )
-                # fldex = ds.image.filepath_extensions.index( '.flags.fits' )
+                # imdex = ds.image.components.index( 'image' )
+                # wtdex = ds.image.components.index( 'weight' )
+                # fldex = ds.image.components.index( 'flags' )
 
                 # Get a wcs for the source image using target image's source list as the RA/Dec catalog
                 dswcs = self.aligner.get_swarp_fodder_wcs( targds.image, targds.sources, targds.wcs, targds.zp,

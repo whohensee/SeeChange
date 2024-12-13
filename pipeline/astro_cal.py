@@ -275,12 +275,9 @@ class AstroCalibrator:
         Returns a DataStore object with the products of the processing.
         """
         self.has_recalculated = False
-        try:  # first make sure we get back a datastore, even an empty one
-            ds, session = DataStore.from_args(*args, **kwargs)
-        except Exception as e:
-            return DataStore.catch_failure_to_parse(e, *args)
 
         try:
+            ds, session = DataStore.from_args(*args, **kwargs)
             t_start = time.perf_counter()
             if env_as_bool('SEECHANGE_TRACEMALLOC'):
                 import tracemalloc
@@ -336,8 +333,9 @@ class AstroCalibrator:
             ds.wcs._upstream_bitflag |= psf.bitflag
             ds.wcs._upstream_bitflag |= bg.bitflag
 
-        except Exception as e:
-            ds.catch_exception(e)
-        finally:
-            # make sure datastore is returned to be used in the next step
             return ds
+
+        except Exception as e:
+            SCLogger.exception( f"Exception in Astrometor.run: {e}" )
+            ds.exceptions.append( e )
+            raise

@@ -330,15 +330,13 @@ class Pipeline:
             The DataStore object that includes all the data products.
 
         """
-        try:  # first make sure we get back a datastore, even an empty one
-            ds, session = self.setup_datastore(*args, **kwargs)
-        except Exception as e:
-            return DataStore.catch_failure_to_parse(e, *args)
 
-        if session is not None:
-            raise RuntimeError( "You have a persistent session in Pipeline.run; don't do that." )
-
+        ds = None
         try:
+            ds, session = self.setup_datastore(*args, **kwargs)
+            if session is not None:
+                raise RuntimeError( "You have a persistent session in Pipeline.run; don't do that." )
+
             stepstodo = [ 'preprocessing', 'backgrounding', 'extraction', 'wcs', 'zp', 'subtraction',
                           'detection', 'cutting', 'measuring', 'scoring', ]
             if self.pars.through_step is not None:
@@ -457,13 +455,13 @@ class Pipeline:
                 return ds
 
         except Exception as e:
-            if self.pars.save_on_exception:
+            if self.pars.save_on_exception and ( ds is not None ):
                 SCLogger.error( "DataStore saving data products on pipeline exception" )
                 ds.save_and_commit()
-            ds.catch_exception(e)
-        finally:
-            # make sure the DataStore is returned in case the calling scope want to debug the pipeline run
-            return ds
+            SCLogger.exception( f"Exception in Pipeline.run: {e}" )
+            if ds is not None:
+                ds.exceptions.append( e )
+            raise
 
     def make_provenance_tree( self,
                               exposure,

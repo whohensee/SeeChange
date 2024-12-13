@@ -249,6 +249,33 @@ class DECam(Instrument):
                  'maxdec': maxdec
                 }
 
+    @classmethod
+    def _get_header_keyword_translations( cls ):
+        t = dict(
+            ra = [ 'TELRA', 'RA' ],
+            dec = [ 'TELDEC, DEC' ],
+            mjd = [ 'MJD-OBS' ],
+            project = [ 'PROPID' ],
+            target = [ 'OBJECT' ],
+            width = [ 'NAXIS1' ],
+            height = [ 'NAXIS2' ],
+            exp_time = [ 'EXPTIME' ],
+            filter = [ 'FILTER' ],
+            instrument = [ 'INSTRUME' ],
+            telescope = [ 'TELESCOP' ],
+            gain = [ 'GAINA' ],
+            airmass = [ 'AIRMASS' ]
+        )
+        return t
+
+    @classmethod
+    def _get_header_values_converters( cls ):
+        t = dict(
+            ra = lambda r: util.radec.parse_sexigesimal_degrees( r, hours=True ),
+            dec = util.radec.parse_sexigesimal_degrees
+        )
+        return t
+
     def get_standard_flags_image( self, section_id ):
         # NOTE : there's a race condition here; multiple
         # processes might try to locally cache the
@@ -298,14 +325,27 @@ class DECam(Instrument):
     def average_gain( self, image, section_id=None ):
         if image is None:
             return Instrument.average_again( self, None, section_id=section_id )
-        return ( float( image.header['GAINA'] ) + float( image.header['GAINB'] ) ) / 2.
+        if ( 'GAINA' in image.header ) and ( 'GAINB' in image.header ):
+            return ( float( image.header['GAINA'] ) + float( image.header['GAINB'] ) ) / 2.
+        elif 'GAIN' in image.header:
+            return float( image.header['GAIN'] )
+        else:
+            raise ValueError( "Unable to find gain level in header" )
 
     def average_saturation_limit( self, image, section_id=None ):
         if image is None:
             return Instrument.average_saturation_limit( self, image, section_id=section_id )
-        # Although the method name is "average...", return the lower saturation
-        #  limit to be conservative
-        return min( float( image.header['SATURATA'] ), float( image.header['SATURATB'] ) )
+        if ( 'SATURATA' in image.header ) and ( 'SATURATB' in image.header ):
+            # Although the method name is "average...", return the lower saturation
+            #  limit to be conservative
+            return min( float( image.header['SATURATA'] ), float( image.header['SATURATB'] ) )
+        elif 'SATURATE' in image.header:
+            # At least some of the pre-reduced refs (produced by the lensgrinder pipeline)
+            #  have the keyword "SATURATE" in the header instead of the DECam standard
+            #  SATURATA and SATURATB.
+            return float( image.header['SATURATE'] )
+        else:
+            raise ValueError( "Unable to find saturation level in header" )
 
     @classmethod
     def _get_fits_hdu_index_from_section_id(cls, section_id):
@@ -671,18 +711,11 @@ class DECam(Instrument):
             if ( wtfile is None ) or ( flgfile is None ):
                 raise RuntimeError( "Committing a DECam exposure with non-0 preproc_bitflag requires "
                                     "a weight and a flags file." )
-
-            exts = []
-            for f, which in zip( [ expfile, wtfile, flgfile ], [ 'image', 'weight', 'flags' ] ):
-                if str(f)[-8:] == '.fits.fz':
-                    exts.append( f'.{which}.fits.fz' )
-                elif str(f)[-5:] == '.fits':
-                    exts.append( f'.{which}.fits' )
-                else:
-                    raise ValueError( f"Can't handle exposure {which} file named {expfile}" )
+            exts = [ 'image', 'weight', 'flags' ]
 
         provenance = self.get_exposure_provenance()
 
+        expfile = pathlib.Path( expfile )
         with fits.open( expfile ) as ifp:
             hdr = { k: v for k, v in ifp[0].header.items()
                     if k in ( 'PROCTYPE', 'PRODTYPE', 'FILENAME', 'TELESCOP', 'OBSERVAT', 'INSTRUME'
@@ -724,8 +757,18 @@ class DECam(Instrument):
             expobj = Exposure( current_file=expfile, invent_filepath=True,
                                type=obs_type, format='fits', provenance_id=provenance.id, ra=ra, dec=dec,
                                instrument='DECam', origin_identifier=origin_identifier, header=hdr,
-                               preproc_bitflag=preproc_bitflag, filepath_extensions=exts,
+                               preproc_bitflag=preproc_bitflag, components=exts,
                                **exphdrinfo )
+            # HACK ALERT.  invent_filepath will have set format to "fits" or "fitsfz" based on the
+            #   config.  However, since we're just copying the file, we want to make sure that
+            #   we have actually the right format here.
+            if expfile.name[-8:] == '.fits.fz':
+                expobj.format = 'fitsfz'
+            elif expfile.name[-5:] == '.fits':
+                expobj.format = 'fits'
+            else:
+                raise ValueError( f"Can't figure out the format of exposure file {expfile}" )
+
             # dbpath = outdir / expobj.filepath
             if preproc_bitflag == 0:
                 expobj.save( expfile )

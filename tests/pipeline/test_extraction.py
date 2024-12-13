@@ -325,7 +325,6 @@ def test_warnings_and_exceptions( decam_datastore_through_preprocessing ):
 
         with pytest.warns(UserWarning) as record:
             extractor.run( ds )
-        assert ds.exception is None
         assert len(record) > 0
         assert any("Warning injected by pipeline parameters in process 'detection'." in str(w.message) for w in record)
 
@@ -333,8 +332,5 @@ def test_warnings_and_exceptions( decam_datastore_through_preprocessing ):
     extractor.pars.inject_warnings = 0
     extractor.pars.inject_exceptions = 1
     ds.prov_tree = ds._pipeline.make_provenance_tree( ds.exposure )
-    with pytest.raises(Exception) as excinfo:
+    with pytest.raises(Exception, match="Exception injected by pipeline parameters in process 'detection'."):
         ds = extractor.run( ds )
-        ds.reraise()
-    assert "Exception injected by pipeline parameters in process 'detection'." in str(excinfo.value)
-    ds.read_exception()
