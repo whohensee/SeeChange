@@ -26,7 +26,7 @@ def test_subtraction_data_products( ptf_ref, ptf_supernova_image_datastores ):
     assert subtractor.pars['alignment_index'] == 'new'  # make sure alignment is configured to new, not latest image
     ds1.prov_tree = ds1._pipeline.make_provenance_tree( ds1.exposure, no_provtag=True )
     ds = subtractor.run( ds1 )
-    ds.reraise()  # make sure there are no exceptions from run()
+    assert len( ds.exceptions ) == 0      # Make sure no exceptions from subtractor run
 
     # check that we don't lazy load a subtracted image, but recalculate it
     assert subtractor.has_recalculated
@@ -61,7 +61,7 @@ def test_subtraction_ptf_zogy(ptf_ref, ptf_supernova_image_datastores):
     assert subtractor.pars['alignment_index'] == 'new'  # make sure alignment is configured to new, not latest image
     ds1.prov_tree = ds1._pipeline.make_provenance_tree( ds1.exposure, no_provtag=True )
     ds = subtractor.run( ds1 )
-    ds.reraise()  # make sure there are no exceptions from run()
+    assert len( ds.exceptions ) == 0      # Make sure no exceptions from subtractor run
 
     assert ds.sub_image is not None
     assert ds.sub_image.data is not None
@@ -112,7 +112,7 @@ def test_subtraction_ptf_hotpants( ptf_ref, ptf_supernova_image_datastores ):
     detector.pars.method = 'sextractor'
     ds1.prov_tree = ds1._pipeline.make_provenance_tree( ds1.exposure, no_provtag=True )
     ds = subtractor.run( ds1 )
-    ds.reraise()          # Make sure the DataStore didn't catch any subtractions during subtractor.run()
+    assert len( ds.exceptions ) == 0      # Make sure no exceptions from subtractor run
 
     assert ds.sub_image is not None
     assert ds.sub_image.data is not None
@@ -154,7 +154,6 @@ def test_warnings_and_exceptions( decam_datastore_through_zp, decam_reference, d
 
         with pytest.warns(UserWarning) as record:
             subtractor.run( ds )
-        assert ds.exception is None
         assert len(record) > 0
         assert any("Warning injected by pipeline parameters in process 'subtraction'." in str(w.message)
                    for w in record)
@@ -163,8 +162,5 @@ def test_warnings_and_exceptions( decam_datastore_through_zp, decam_reference, d
     subtractor.pars.inject_exceptions = 1
     ds.sub_image = None
     ds.prov_tree = ds._pipeline.make_provenance_tree( ds.exposure )
-    with pytest.raises(Exception) as excinfo:
+    with pytest.raises(Exception, match="Exception injected by pipeline parameters in process 'subtraction'."):
         ds = subtractor.run( ds )
-        ds.reraise()
-    assert "Exception injected by pipeline parameters in process 'subtraction'." in str(excinfo.value)
-    ds.read_exception()

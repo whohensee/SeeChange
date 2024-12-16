@@ -111,11 +111,9 @@ def test_run_scamp( decam_datastore_through_bg, astrometor ):
 
     # The datastore should object when it tries to get the provenance for astrometor
     # params that don't match what we started with
-    ds = astrometor.run(ds)
-    exc = ds.read_exception()
-    assert exc is not None
-    assert str(exc) == ( "DataStore getting provenance for extraction whose parameters don't match "
-                         "the parameters of the same process in the prov_tree" )
+    with pytest.raises( ValueError, match=( "DataStore getting provenance for extraction whose parameters "
+                                            "don't match the parameters of the same process in the prov_tree" ) ):
+        ds = astrometor.run(ds)
 
     # Wipe the datastore prov_tree so that we can
     #   run something with paramaters that are
@@ -167,12 +165,12 @@ def test_run_scamp( decam_datastore_through_bg, astrometor ):
         q = session.query( Image ).filter( Image._id == ds.image.id )
         assert q.count() == 1
         foundim = q.first()
-        assert foundim.md5sum_extensions[0] == ds.image.md5sum_extensions[0]
-        assert foundim.md5sum_extensions[0] != origmd5
+        assert foundim.md5sum_components[0] == ds.image.md5sum_components[0]
+        assert foundim.md5sum_components[0] != origmd5
         with open( foundim.get_fullpath()[0], 'rb' ) as ifp:
             md5 = hashlib.md5()
             md5.update( ifp.read() )
-            assert uuid.UUID( md5.hexdigest() ) == foundim.md5sum_extensions[0]
+            assert uuid.UUID( md5.hexdigest() ) == foundim.md5sum_components[0]
         # This is probably redundant given the md5sum test we just did....
         ds.image._header = None
         for kw in foundim.header:
@@ -198,7 +196,7 @@ def test_run_scamp( decam_datastore_through_bg, astrometor ):
         # Make sure the archive has the right md5sum
         info = foundim.archive.get_info( f'{foundim.filepath}.image.fits' )
         assert info is not None
-        assert uuid.UUID( info['md5sum'] ) == foundim.md5sum_extensions[0]
+        assert uuid.UUID( info['md5sum'] ) == foundim.md5sum_components[0]
 
 
 # TODO : test that it fails when it's supposed to
@@ -214,14 +212,10 @@ def test_warnings_and_exceptions(decam_datastore, astrometor):
         astrometor.pars.inject_warnings = 1
         with pytest.warns(UserWarning) as record:
             astrometor.run(decam_datastore)
-        assert decam_datastore.exception is None
         assert len(record) > 0
         assert any("Warning injected by pipeline parameters in process 'astrocal'." in str(w.message) for w in record)
 
     astrometor.pars.inject_warnings = 0
     astrometor.pars.inject_exceptions = 1
-    with pytest.raises(Exception) as excinfo:
-        ds = astrometor.run(decam_datastore)
-        ds.reraise()
-    assert "Exception injected by pipeline parameters in process 'astrocal'." in str(excinfo.value)
-    ds.read_exception()
+    with pytest.raises(Exception, match="Exception injected by pipeline parameters in process 'astrocal'."):
+        _ = astrometor.run(decam_datastore)

@@ -84,12 +84,8 @@ class Backgrounder:
         """
         self.has_recalculated = False
 
-        try:  # first make sure we get back a datastore, even an empty one
-            ds, session = DataStore.from_args(*args, **kwargs)
-        except Exception as e:
-            return DataStore.catch_failure_to_parse(e, *args)
-
         try:
+            ds, session = DataStore.from_args(*args, **kwargs)
             t_start = time.perf_counter()
             if env_as_bool('SEECHANGE_TRACEMALLOC'):
                 import tracemalloc
@@ -123,7 +119,7 @@ class Backgrounder:
                     fmask = np.array(image._flags, dtype=np.float32)
                     sep_bg_obj = sep.Background(image.data.copy(), mask=fmask,
                                                   bw=boxsize, bh=boxsize, fw=filtsize, fh=filtsize)
-                    fmask = None
+                    del fmask
                     bg = Background(
                         value=float(np.nanmedian(sep_bg_obj.back())),
                         noise=float(np.nanmedian(sep_bg_obj.rms())),
@@ -165,7 +161,9 @@ class Backgrounder:
                 import tracemalloc
                 ds.memory_usages['backgrounding'] = tracemalloc.get_traced_memory()[1] / 1024 ** 2  # in MB
 
-        except Exception as e:
-            ds.catch_exception(e)
-        finally:  # make sure datastore is returned to be used in the next step
             return ds
+
+        except Exception as e:
+            SCLogger.exception( f"Exception in Backgrounder.run: {e}" )
+            ds.exceptions.append( e )
+            raise

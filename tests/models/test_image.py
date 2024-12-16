@@ -18,6 +18,7 @@ import sqlalchemy as sa
 from sqlalchemy.exc import IntegrityError
 
 from models.base import SmartSession, FileOnDiskMixin
+from models.provenance import Provenance
 from models.instrument import get_instrument_instance
 from models.image import Image, image_upstreams_association_table
 from models.enums_and_bitflags import image_preprocessing_inverse, string_to_bitflag, image_badness_inverse
@@ -25,6 +26,9 @@ from models.psf import PSF
 from models.source_list import SourceList
 from models.world_coordinates import WorldCoordinates
 from models.zero_point import ZeroPoint
+import improc.tools
+from util.config import Config
+from util.fits import read_fits_image
 
 from tests.conftest import rnd_str
 from tests.fixtures.simulated import ImageCleanup
@@ -170,7 +174,7 @@ def test_image_must_have_md5(sim_image_uncommitted, provenance_base):
     try:
         im = sim_image_uncommitted
         assert im.md5sum is None
-        assert im.md5sum_extensions is None
+        assert im.md5sum_components is None
 
         im.provenance_id = provenance_base.id
         _ = ImageCleanup.save_image(im, archive=False)
@@ -275,21 +279,21 @@ def test_image_archive_multifile(sim_image_uncommitted, archive, test_config):
             with open(fullpath, "rb") as ifp:
                 localmd5s[fullpath].update(ifp.read())
         assert im.md5sum is None
-        assert im.md5sum_extensions == [None, None]
+        assert im.md5sum_components == [None, None]
         im.remove_data_from_disk()
 
         # Save to the archive
         im.save()
-        for ext, fullpath, md5sum in zip(im.filepath_extensions,
+        for ext, fullpath, md5sum in zip(im.components,
                                          im.get_fullpath(nofile=True),
-                                         im.md5sum_extensions):
+                                         im.md5sum_components):
             assert localmd5s[fullpath].hexdigest() == md5sum.hex
 
             with open( fullpath, "rb" ) as ifp:
                 m = hashlib.md5()
                 m.update( ifp.read() )
                 assert m.hexdigest() == localmd5s[fullpath].hexdigest()
-            with open( os.path.join(archive_dir, im.filepath) + ext, 'rb' ) as ifp:
+            with open( os.path.join(archive_dir, im.filepath) + f".{ext}.fits", 'rb' ) as ifp:
                 m = hashlib.md5()
                 m.update( ifp.read() )
                 assert m.hexdigest() == localmd5s[fullpath].hexdigest()
@@ -321,7 +325,7 @@ def test_image_archive_multifile(sim_image_uncommitted, archive, test_config):
             dbimage = session.scalars(sa.select(Image).where(Image._id == im.id)).first()
         assert dbimage.md5sum is None
         filenames = dbimage.get_fullpath( nofile=True )
-        for fullpath, md5sum in zip(filenames, dbimage.md5sum_extensions):
+        for fullpath, md5sum in zip(filenames, dbimage.md5sum_components):
             assert localmd5s[fullpath].hexdigest() == md5sum.hex
 
     finally:
@@ -347,23 +351,23 @@ def test_image_save_justheader( sim_image1 ):
         # This is tested elsewhere, but for completeness make sure the
         # md5sum of the file on the archive is what's expected
         info = archive.get_info( pathlib.Path( names[0] ).relative_to( FileOnDiskMixin.local_path ) )
-        assert uuid.UUID( info['md5sum'] ) == sim_image1.md5sum_extensions[0]
+        assert uuid.UUID( info['md5sum'] ) == sim_image1.md5sum_components[0]
 
         sim_image1._header['ADDEDKW'] = 'This keyword was added'
         sim_image1.data = np.full( (64, 32), 0.5, dtype=np.float32 )
         sim_image1.weight = np.full( (64, 32), 2., dtype=np.float32 )
 
-        origimmd5sum = sim_image1.md5sum_extensions[0]
-        origwtmd5sum = sim_image1.md5sum_extensions[1]
+        origimmd5sum = sim_image1.md5sum_components[0]
+        origwtmd5sum = sim_image1.md5sum_components[1]
         sim_image1.save( only_image=True, just_update_header=True )
 
         # Make sure the md5sum is different since the image is different, but that the weight is the same
-        assert sim_image1.md5sum_extensions[0] != origimmd5sum
-        assert sim_image1.md5sum_extensions[1] == origwtmd5sum
+        assert sim_image1.md5sum_components[0] != origimmd5sum
+        assert sim_image1.md5sum_components[1] == origwtmd5sum
 
         # Make sure the archive has the new image
         info = archive.get_info( pathlib.Path( names[0] ).relative_to( FileOnDiskMixin.local_path ) )
-        assert uuid.UUID( info['md5sum'] ) == sim_image1.md5sum_extensions[0]
+        assert uuid.UUID( info['md5sum'] ) == sim_image1.md5sum_components[0]
 
         with fits.open( names[0] ) as hdul:
             assert hdul[0].header['ADDEDKW'] == 'This keyword was added'
@@ -402,6 +406,145 @@ def test_image_save_onlyimage( sim_image1 ):
 
     with open( names[1], "r" ) as ifp:
         assert ifp.read() == "Hello, world."
+
+
+def test_image_save_fpack( code_version ):
+    saved_images = []
+    prov = None
+    rng = np.random.default_rng( 42 )
+    cfg = Config.get()
+    origfmt = cfg.value( 'storage.images.format' )
+    try:
+        prov = Provenance( process="test", code_version_id=code_version.id, is_testing=True,
+                           parameters={"gratuitous": rng.normal() } )
+        prov.insert()
+        # Unfortunately, the sim_image fixtures don't have high enough pixel
+        #   values to give a good test of the fpacking.  (It manages to save
+        #   perfectly even with lossy compression.)
+        im = Image( type="Sci", format="fitsfz", provenance_id=prov.id,
+                    instrument="DemoInstrument", telescope="DemoTelescope",
+                    mjd=60000., endmjd=60000.02083, exp_time=180., project="Test",
+                    target="Test", ra=120., dec=0.,
+                    ra_corner_00=119.9, ra_corner_01=119.9, ra_corner_10=120.1, ra_corner_11=120.1,
+                    dec_corner_00=-0.1, dec_corner_01=0.1, dec_corner_10=-0.1, dec_corner_11=0.1 )
+        im.calculate_coordinates()
+
+        # Sky level 1000., noise 20.
+        im.data = rng.normal( 1000., 20., size=(2048,1024) )
+        im.weight = np.full_like( im.data, 0.0025 )
+        # For sky mean=1000, sky sig=200, poissonnoise means gain = 2.5 e-/adu
+        gain = 2.5
+        # Plop in some fake stars
+        sig = 2.2
+        wid = int( np.floor( 4*sig ) )
+        xs = np.arange( -wid, wid+1 )
+        xs, ys = np.meshgrid( xs, xs )
+        for n in range( 200 ):
+            flux = 5000. * ( 1. - rng.power(3) )
+            star = ( flux / np.sqrt( 2. * np.pi * sig**2 ) ) * np.exp( -( xs**2 + ys**2 ) / ( 2 * sig**2 ) )
+            # poisson noise
+            star += rng.normal( size=star.shape ) * np.sqrt( star / gain )
+            x = int( np.floor( rng.uniform( wid+1, im.data.shape[1]-wid-1 ) ) )
+            y = int( np.floor( rng.uniform( wid+1, im.data.shape[0]-wid-1 ) ) )
+            im.data[ y-wid:y+wid+1, x-wid:x+wid+1 ] += star
+            im.weight[ y-wid:y+wid+1, x-wid:x+wid+1 ] = 1. / ( ( 1. / im.weight[ y-wid:y+wid+1, x-wid:x+wid+1 ] ) +
+                                                               ( np.maximum( star, 0. ) / gain ) )
+        # We're not actually using the flags image as a flags image, so
+        #   instead fill it with values that will really test the
+        #   lossless compression.  (The image class is supposed to save
+        #   the flags image losslessly, since usually it's a 16-bit
+        #   integer and will compress very well with lossless
+        #   gzip... and we don't want mask values slightly deviating
+        #   from their true values, since they're treated as bitmasks!)
+        #   (However, I suspect with 16-bit integers even if we told it
+        #   to do lossy compression, it would end up saving with full
+        #   fidelity.  Here, we're trying to test that the explicit
+        #   "save losslessly" functionality is working.)
+        im.flags = rng.uniform( 0, 1e5, size=im.data.shape ).astype( '>f4' )
+
+        # Make a header
+        tsthdrvals = { 'TEST1': 4, 'TEST2': 8, 'TEST3': 15, 'TEST4': 16, 'TEST5': 23, 'TEST6': 42 }
+        im.header = fits.Header( tsthdrvals )
+
+        sky, skysig = improc.tools.sigma_clipping( im.data )
+        # Just make sure sigma_clipping found the right thing
+        assert sky == pytest.approx( 1000., abs=1. )
+        assert skysig == pytest.approx( 20., abs=1. )
+
+        assert im.filepath is None
+        im.save()
+        saved_images.append( im )
+        assert im.filepath is not None
+
+        nonfzim = Image.copy_image( im )
+        nonfzim.provenance_id = prov.id
+        nonfzim.format = 'fits'
+        # Need to give it a different (say) mjd so that they aren't
+        # (from the point of view of the database) the same image.
+        nonfzim.mjd = 60000.1
+        nonfzim.ned_mjd = 60001.12083
+        nonfzim.save()
+        saved_images.append( nonfzim )
+        assert nonfzim.filepath is not None
+
+        assert len( im.get_fullpath() ) == 3
+        for fname in im.get_fullpath():
+            assert fname[-3:] == '.fz'
+            # Make sure that the non-fz file didn't get left behind
+            p = pathlib.Path( fname )
+            p = p.parent / p.name[:-3]
+            assert p.name[-5:] == '.fits'
+            assert not p.exists()
+        filepath = pathlib.Path( im.get_fullpath()[0] )
+        nonfzfilepath = pathlib.Path( nonfzim.get_fullpath()[0] )
+        # Make sure it really compressed
+        assert filepath.stat().st_size / nonfzfilepath.stat().st_size < 0.2
+
+        newdata, newhdr = read_fits_image( filepath, output='both' )
+        assert all( newhdr[k] == v for k, v in tsthdrvals.items() )
+        diff = newdata - im.data
+        # Make sure the lossy compression did lose something...
+        assert np.abs(diff).max() > 0
+        # ...but not too much.  Fpack claims to quantize to sky rms/4
+        # (for q=4).  It seems to be doing better than that here as
+        # compared to what's in tests/util/test_fits_operations.py, but
+        # that may be because this image is so bloody simplistic.
+        assert np.abs(diff).max() < skysig / 4.
+
+        # Make sure the flags didn't lose anything, since it was supposedly saved
+        #   losslessly
+        maskdata = read_fits_image( im.get_fullpath()[ im.components.index('flags') ] )
+        assert np.all( maskdata == im.flags )
+
+        # Finally,  make sure that we save .fits.fz files if the config
+        #   is set to do so
+        cfg.set_value( 'storage.images.format', 'fitsfz' )
+        anotherim =Image.copy_image( im )
+        anotherim.provenance_id = prov.id
+        anotherim._format = None
+        assert anotherim.format is None
+        anotherim.mjd = 60000.2
+        anotherim.end_mjd = 60000.22083
+        anotherim.save()
+        saved_images.append( anotherim )
+        assert anotherim.format == 'fitsfz'
+        assert len( anotherim.get_fullpath() ) == 3
+        for fname in anotherim.get_fullpath():
+            p = pathlib.Path( fname )
+            assert p.name[-3:] == '.fz'
+            assert p.is_file()
+            p = p.parent / p.name[:-3]
+            assert p.name[-5:] == '.fits'
+            assert not p.exists()
+        filepath = pathlib.Path( anotherim.get_fullpath()[0] )
+        assert filepath.stat().st_size / nonfzfilepath.stat().st_size < 0.2
+
+    finally:
+        cfg.set_value( 'storage.images.format', origfmt )
+        for i in saved_images:
+            i.delete_from_disk_and_database()
+        if prov is not None:
+            prov.delete_from_disk_and_database()
 
 
 def test_image_enum_values( sim_image_uncommitted ):
