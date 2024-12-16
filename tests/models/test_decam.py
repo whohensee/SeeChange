@@ -364,8 +364,6 @@ def test_decam_download_and_commit_exposure(
                 # Todo : add the subdirectory to dbfname once that is implemented
                 dbfname = ( f'c4d_20{match.group("yymmdd")}_{match.group("hhmmss")}_{exposure.filter}_'
                             f'{exposure.provenance_id[0:6]}.fits' )
-                # if i == 2:
-                #     breakpoint()
                 assert exposure.filepath == dbfname
                 assert ( pathlib.Path( exposure.get_fullpath( download=False ) ) ==
                          pathlib.Path( FileOnDiskMixin.local_path ) / exposure.filepath )
@@ -422,8 +420,6 @@ def test_get_default_calibrators( decam_default_calibrators ):
                         q = q.join( Image ).filter( Image.filter==filt )
 
                     if ( ftype == 'fringe' ) and ( decam.get_short_filter_name(filt) not in [ 'z', 'Y' ] ):
-                        # if q.count() != 0:
-                            # breakpoint()
                         assert q.count() == 0
                     else:
                         assert q.count() == 1
