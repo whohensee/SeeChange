@@ -382,7 +382,6 @@ class DECam(Instrument):
         longnames = list(FILTER_NAME_CONVERSIONS.values())
         shortnames = list(FILTER_NAME_CONVERSIONS.keys())
 
-        # TODO: CHECK IF THIS WORKS!!
         if filter in shortnames:
             return filter
 
@@ -483,7 +482,7 @@ class DECam(Instrument):
         # leading to a circular import
         from models.calibratorfile import CalibratorFile, CalibratorFileDownloadLock
 
-        s_filter = self.get_short_filter_name( filter ) if filter is not None else None
+        # s_filter = self.get_short_filter_name( filter ) if filter is not None else None
 
         cfg = Config.get()
         cv = Provenance.get_code_version( session=session )
@@ -495,16 +494,16 @@ class DECam(Instrument):
 
         if calibtype == 'flat':
             rempath = pathlib.Path( f'{cfg.value("DECam.calibfiles.flatbase")}/'
-                                    f'{s_filter}.out.{self._chip_radec_off[section]["ccdnum"]:02d}_trim_med.fits' )
+                                    f'{filter}.out.{self._chip_radec_off[section]["ccdnum"]:02d}_trim_med.fits' )
 
         elif calibtype == 'illumination':
             rempath = pathlib.Path( f'{cfg.value("DECam.calibfiles.illuminationbase")}-'
-                                    f'{s_filter}I_ci_{s_filter}_{self._chip_radec_off[section]["ccdnum"]:02d}.fits' )
+                                    f'{filter}I_ci_{filter}_{self._chip_radec_off[section]["ccdnum"]:02d}.fits' )
         elif calibtype == 'fringe':
-            if s_filter not in [ 'z', 'Y' ]:
+            if filter not in [ 'z', 'Y' ]:
                 return None
             rempath = pathlib.Path( f'{cfg.value("DECam.calibfiles.fringebase")}-'
-                                    f'{s_filter}G_ci_{s_filter}_{self._chip_radec_off[section]["ccdnum"]:02d}.fits' )
+                                    f'{filter}G_ci_{filter}_{self._chip_radec_off[section]["ccdnum"]:02d}.fits' )
         elif calibtype == 'linearity':
             rempath = pathlib.Path( cfg.value( "DECam.calibfiles.linearity" ) )
         else:
@@ -600,7 +599,7 @@ class DECam(Instrument):
                 dbtype = 'ComSkyFlat'
             mjd = float( cfg.value( "DECam.calibfiles.mjd" ) )
             image = Image( format='fits', type=dbtype, provenance_id=prov.id, instrument='DECam',
-                           telescope='CTIO4m', filter=s_filter, section_id=section, filepath=str(filepath),
+                           telescope='CTIO4m', filter=filter, section_id=section, filepath=str(filepath),
                            mjd=mjd, end_mjd=mjd,
                            info={}, exp_time=0, ra=0., dec=0.,
                            ra_corner_00=0., ra_corner_01=0.,ra_corner_10=0., ra_corner_11=0.,
