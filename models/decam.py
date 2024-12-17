@@ -397,7 +397,6 @@ class DECam(Instrument):
         Return the full version of each filter used by DECam from the shortname.
         e.g., returning "g" to "g DECam SDSS c0001 4720.0 1520.0".
         """
-        # return filter[0:1]
         return FILTER_NAME_CONVERSIONS[shortfilter]
         
 
@@ -481,8 +480,6 @@ class DECam(Instrument):
         # imports exposure.py, and exposure.py imports instrument.py --
         # leading to a circular import
         from models.calibratorfile import CalibratorFile, CalibratorFileDownloadLock
-
-        # s_filter = self.get_short_filter_name( filter ) if filter is not None else None
 
         cfg = Config.get()
         cv = Provenance.get_code_version( session=session )
