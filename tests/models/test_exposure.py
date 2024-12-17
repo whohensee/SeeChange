@@ -73,12 +73,11 @@ def test_exposure_no_null_values():
     required = {
         'mjd': 58392.1,
         'exp_time': 30,
+        'filter': 'r',
         'md5sum': uuid.UUID('00000000-0000-0000-0000-000000000000'),
         'ra': rng.uniform(0, 360),
         'dec': rng.uniform(-90, 90),
         'instrument': 'DemoInstrument',
-        # 'filter': 'r',    # Filter now requires an instrument: this made the test hard
-                            # to fix
         'project': 'foo',
         'target': 'bar',
     }
@@ -146,8 +145,7 @@ def test_exposure_no_null_values():
 
 
 def test_exposure_guess_demo_instrument():
-    # can only pass legal short filter names to exposure without instrument object
-    e = Exposure(filepath=f"Demo_test_{rnd_str(5)}.fits", exp_time=30, mjd=58392.0, filter="r", ra=123, dec=-23,
+    e = Exposure(filepath=f"Demo_test_{rnd_str(5)}.fits", exp_time=30, mjd=58392.0, filter="F160W", ra=123, dec=-23,
                  project='foo', target='bar', nofile=True)
 
     assert e.instrument == 'DemoInstrument'

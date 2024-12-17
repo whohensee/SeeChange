@@ -507,7 +507,6 @@ def test_find_images(ptf_reference_image_datastores, ptf_ref,
     assert all(im.instrument == 'PTF' for im in found6)
     assert set( f.id for f in found6 ) == set( f.id for f in found1 )
 
-    # found7 = Image.find_images(filter='r DECam SDSS c0002 6415.0 1480.0')
     found7 = Image.find_images(filter='r')
     assert all(im.filter == 'r' for im in found7)
     assert all(im.instrument == 'DECam' for im in found7)

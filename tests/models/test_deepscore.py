@@ -34,12 +34,10 @@ def test_multiple_algorithms(decam_exposure, decam_reference, decam_default_cali
     ref = decam_reference
     sec_id = ref.section_id
 
-
     try:  # cleanup the file at the end.
         p1 = Pipeline( pipeline={'provenance_tag': 'test_multiple_algorithms1'} )
         p1.subtractor.pars.refset = 'test_refset_decam'
         p1.scorer.pars.algorithm = "random"
-        # breakpoint()
         ds1 = p1.run(exposure, sec_id)
 
         with SmartSession() as session:

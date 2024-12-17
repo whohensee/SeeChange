@@ -166,7 +166,7 @@ class Exposure(Base, UUIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagBad
                                '(md5sum_components IS NULL OR array_position(md5sum_components, NULL) IS NOT NULL))',
                                name=f'{cls.__tablename__}_md5sum_check' ),
             sa.Index(f"{cls.__tablename__}_q3c_ang2ipix_idx", sa.func.q3c_ang2ipix(cls.ra, cls.dec)),
-            CheckConstraint( sqltext='NOT(filter IS NULL AND filter_array IS NULL)',
+            CheckConstraint( sqltext='NOT(_filter IS NULL AND filter_array IS NULL)',
                              name='exposures_filter_or_array_check' )
         )
 
