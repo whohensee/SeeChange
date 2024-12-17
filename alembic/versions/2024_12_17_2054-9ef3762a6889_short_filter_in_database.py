@@ -1,8 +1,8 @@
 """short-filter-in-database
 
-Revision ID: bc31139e30c4
+Revision ID: 9ef3762a6889
 Revises: 23d4754077d1
-Create Date: 2024-12-16 18:47:42.909023
+Create Date: 2024-12-17 20:54:42.083741
 
 """
 from alembic import op
@@ -10,7 +10,7 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision = 'bc31139e30c4'
+revision = '9ef3762a6889'
 down_revision = '23d4754077d1'
 branch_labels = None
 depends_on = None
@@ -22,6 +22,11 @@ def upgrade() -> None:
     op.drop_index('ix_exposures_filter', table_name='exposures')
     op.create_index(op.f('ix_exposures__filter'), 'exposures', ['_filter'], unique=False)
     op.drop_column('exposures', 'filter')
+    op.create_check_constraint(
+        constraint_name='exposures_filter_or_array_check',
+        table_name='exposures',
+        condition='NOT(_filter IS NULL AND filter_array IS NULL)'
+    )
     # ### end Alembic commands ###
 
 
