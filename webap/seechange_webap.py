@@ -241,7 +241,7 @@ class Exposures( BaseView ):
         #  user....  perhaps we should disable it?
         subdict = {}
         if data['provenancetag'] is None:
-            q = ( 'SELECT e._id, e.filepath, e.mjd, e.target, e.project, e.filter, e.filter_array, e.exp_time, '
+            q = ( 'SELECT e._id, e.filepath, e.mjd, e.target, e.project, e._filter, e.filter_array, e.exp_time, '
                   '       i._id AS imgid, s._id AS subid, sl._id AS slid, sl.num_sources, '
                   '       COUNT(m._id) AS num_measurements '
                   'INTO TEMP TABLE temp_imgs '
@@ -259,7 +259,7 @@ class Exposures( BaseView ):
                   'GROUP BY e._id, i._id, s._id, sl._id '
                  )
         else:
-            q = ( 'SELECT e._id, e.filepath, e.mjd, e.target, e.filter, e.project, e.filter_array, e.exp_time, '
+            q = ( 'SELECT e._id, e.filepath, e.mjd, e.target, e._filter, e.project, e.filter_array, e.exp_time, '
                   '       i._id AS imgid, s._id AS subid, sl._id AS slid, sl.num_sources, '
                   '       COUNT(m._id) AS num_measurements '
                   'INTO TEMP TABLE temp_imgs '
