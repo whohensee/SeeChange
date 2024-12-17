@@ -34,6 +34,7 @@ FILTER_NAME_CONVERSIONS = {
     'z' : 'z DECam SDSS c0004 9260.0 1520.0',
 }
 
+
 class DECam(Instrument):
 
     def __init__(self, **kwargs):
@@ -388,17 +389,17 @@ class DECam(Instrument):
         try:
             shortname_index = longnames.index(filter)
             return shortnames[shortname_index]
-        except:
-            raise KeyError( f"No shortname for filter name: {filter} ")
-        
+        except Exception as e:
+            raise KeyError( f"No shortname for filter name: {filter} ") from e
+
     @classmethod
     def get_full_filter_name(cls, shortfilter):
-        """
-        Return the full version of each filter used by DECam from the shortname.
+        """Return the full version of each filter used by DECam from the shortname.
+
         e.g., returning "g" to "g DECam SDSS c0001 4720.0 1520.0".
         """
         return FILTER_NAME_CONVERSIONS[shortfilter]
-        
+
 
     @classmethod
     def gaia_dr3_to_instrument_mag( cls, filter, catdata ):

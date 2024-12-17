@@ -375,7 +375,8 @@ def test_decam_download_and_commit_exposure(
                 # Or, just trust that the archive works because it has its own tests.
                 assert exposure.instrument == 'DECam'
                 assert exposure.mjd == pytest.approx( decam_raw_origin_exposures._frame.iloc[i]['MJD-OBS'], abs=1e-5)
-                assert exposure.instrument_object.get_full_filter_name( exposure.filter ) == decam_raw_origin_exposures._frame.iloc[i].ifilter
+                assert ( exposure.instrument_object.get_full_filter_name( exposure.filter )
+                        == decam_raw_origin_exposures._frame.iloc[i].ifilter )
 
         # Make sure they're really in the database
         with SmartSession() as session:

@@ -269,7 +269,7 @@ class Exposure(Base, UUIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagBad
     @filter.setter
     def filter( self, val ):
         # Once instrument can only be a valid instrument, should add
-        # a check here which says "IF there is an instrument, only 
+        # a check here which says "IF there is an instrument, only
         # allow a valid filter for that instrument". Leaving the
         # ability to set any filter at the moment for tests.
         self._filter = val
@@ -414,7 +414,7 @@ class Exposure(Base, UUIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagBad
 
         # ensure we are working with short filter from here and below
         self.filter = self.instrument_object.get_short_filter_name( self.filter )
-        
+
         # this can happen if the instrument is not given, but the filepath is
         if self.provenance_id is None:
             prov = self.make_provenance(self.instrument)  # a default provenance for exposures
