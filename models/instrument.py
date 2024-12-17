@@ -1578,9 +1578,8 @@ class Instrument:
                     # This is the real reason we got the calibfile downloadlock, but of course
                     # we had to do it before searching for the file so that we don't have a race
                     # condition for multiple processes all downloading the file at once.
-                    fltr = self.get_short_filter_name( filter )
                     calib = self._get_default_calibrator( mjd, section, calibtype=calibtype,
-                                                          filter=fltr,
+                                                          filter=filter,
                                                           session=session )
                     SCLogger.debug( f"Got default calibrator {calib} for {calibtype} {section}" )
 
