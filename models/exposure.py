@@ -49,14 +49,6 @@ EXPOSURE_COLUMN_NAMES = [
 # but are still useful to keep around inside the "info" JSONB column.
 EXPOSURE_HEADER_KEYS = ['gain']  # TODO: add more here
 
-ALLOWED_DEFAULT_FILTER_NAMES = [
-    'r',
-    'g',
-    'i',
-    'z',
-    'Y',
-]
-
 
 class SectionData:
     """A helper class that lazy loads the section data from the database.
@@ -258,9 +250,8 @@ class Exposure(Base, UUIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagBad
 
     exp_time = sa.Column(sa.REAL, nullable=False, index=True, doc="Exposure time in seconds. ")
 
-    # WHPR make sure this doc is still accurate before pushing
     _filter = sa.Column(sa.Text,
-                        nullable=True,
+                        nullable=True,  #WHPR should this be nullable?
                         index=True,
                         doc=("Name of the filter used to make this exposure. "
                              "This is generally the short filter name - conversion "
@@ -270,29 +261,19 @@ class Exposure(Base, UUIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagBad
 
     @property
     def filter( self ):
-        # always return short filter name unless self.filter_long is used
         if self._filter is None:
             return None
         else:
             return self._filter
-            # if self.instrument_object is None:
-            #     # raise ValueError( "Exposure must have an instrument to set a filter" )
-            #     return self._filter
-            # else:
-            #     return self.instrument_object.get_full_filter_name( self._filter )
 
     @filter.setter
     def filter( self, val ):
+        # Once instrument can only be a valid instrument, should add
+        # a check here which says "IF there is an instrument, only 
+        # allow a valid filter for that instrument". Leaving the
+        # ability to set any filter at the moment for tests.
         self._filter = val
 
-        # if self.instrument_object is None:
-        #     # raise ValueError( "Exposure must have an instrument to set a filter" )
-        #     if val[0] not in ALLOWED_DEFAULT_FILTER_NAMES:
-        #         raise ValueError(f"attempted to set invalid filter without instrument: {val}")
-        #     self._filter = val[0]
-        # else:
-        #     self._filter = self.instrument_object.get_short_filter_name( val )
-    
     @property
     def filter_full(self):
         if self.instrument_object is None:
@@ -303,7 +284,8 @@ class Exposure(Base, UUIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagBad
         ARRAY(sa.Text, zero_indexes=True),
         nullable=True,
         index=True,
-        doc="Array of filter names, if multiple filters were used. "
+        doc=( "Array of filter names, if multiple filters were used. "
+              "Should be short filter names - instruments can convert to full. ")
     )
 
     instrument = sa.Column(
@@ -399,23 +381,13 @@ class Exposure(Base, UUIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagBad
         if 'header' in kwargs:
             kwargs['_header'] = kwargs.pop('header')
 
-        # filter needs to be set after instrument - this will be rerun
-        # THis is super annoying. Best solution I have is that if you want
-        # to pass a filter to an exposure without an explicit instrument, you must pass the short filter
-        # allowed by ALLOWED_DEFAULT_FILTER_NAMES which allows the filepath to be
-        # generated and the instrument to be guessed, then everything can work
-        
-        # filtername = kwargs.pop('filter') if 'filter' in kwargs else None
-        # if 'filter' in kwargs:
-        #     filtername = kwargs.pop('filter')
-
         # manually set all properties (columns or not, but don't
         # overwrite instance methods) Do this once here, because some of
         # the values are going to be needed by upcoming function calls.
         # We will run this exact code again later so that the keywords
         # can override what's detected from the header.
         self.set_attributes_from_dict( kwargs )
-        # NOTE: since this reads directly from header, it will often set
+        # NOTE: since above reads directly from header, it will often set
         # a full filter name without an instrument, which must be detected
         # and fixed below before making anything permanent (filepaths,
         # provenances etc).
@@ -443,19 +415,11 @@ class Exposure(Base, UUIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagBad
         # ensure we are working with short filter from here and below
         self.filter = self.instrument_object.get_short_filter_name( self.filter )
         
-
         # this can happen if the instrument is not given, but the filepath is
         if self.provenance_id is None:
             prov = self.make_provenance(self.instrument)  # a default provenance for exposures
             self.provenance_id = prov.id
 
-        # if filtername is not None:  #this has to happen after instrument but before using the filepath
-        #     self.filter = filtername
-
-        #     # make a proper filepath now that filter is set
-        #     if invent_filepath:
-        #         oldfilepath = self.filepath
-        #         self.filepath = self.invent_filepath()
 
         # instrument_obj is lazy loaded when first getting it
         if current_file is None:
@@ -466,10 +430,6 @@ class Exposure(Base, UUIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagBad
         # Allow passed keywords to override what's detected from the header
         self.set_attributes_from_dict( kwargs )
         self.filter = self.instrument_object.get_short_filter_name( self.filter )
-
-        # # create a proper filepath now that filter is loaded
-        # if invent_filepath:
-        #     self.filepath = self.invent_filepath()
 
         self.calculate_coordinates()  # galactic and ecliptic coordinates
 
@@ -534,7 +494,6 @@ class Exposure(Base, UUIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagBad
                         f"Header telescope {v} does not match Exposure telescope {self.telescope}"
                     )
             elif k == 'filter' and isinstance(v, list):
-                # WHPR convert filter array to use short filter names too
                 self.filter_array = self.instrument_object.get_short_filter_name( v )
             elif k == 'filter' and isinstance(v, str):
                 self.filter = self.instrument_object.get_short_filter_name( v )
