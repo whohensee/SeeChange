@@ -254,7 +254,7 @@ class Exposure(Base, UUIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagBad
                         nullable=True, #nullable because a constraint checks _filter or filter_array
                         index=True,
                         doc=("Name of the filter used to make this exposure. "
-                             "This is generally the short filter name - conversion "
+                             "This is the short filter name - conversion "
                              "to the proper name for each instrument happens in its code."))
 
     airmass = sa.Column(sa.REAL, nullable=True, index=True, doc="Airmass taken from the header of the exposure. ")
