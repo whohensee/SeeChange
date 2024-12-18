@@ -24,36 +24,33 @@ depends_on = None
 def get_filter_translations( longtoshort=True ):
     """Return a dictionary of instrument→(oldfilter→newfilter) mappings."""
 
-    # There may be a fancy alembic operation to get information out of
-    #   the database, but I don't know it, and I do know psycopg2 and
-    #   SQL, so, hey, whatevs.
-    with Psycopg2Connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute( "SELECT DISTINCT ON(instrument) instrument FROM images" )
-        image_instruments = [ row[0] for row in cursor.fetchall() ]
-        cursor.execute( "SELECT DISTINCT ON(instrument) instrument FROM exposures" )
-        exposure_instruments = [ row[0] for row in cursor.fetchall() ]
+    conn = op.get_bind()
+    image_instruments = conn.execute( sa.text( "SELECT DISTINCT ON(instrument) instrument FROM images" ) ).all()
+    image_instruments = [ i[0] for i in image_instruments ]
+    exposure_instruments = conn.execute( sa.text( "SELECT DISTINCT ON(instrument) instrument FROM exposures" ) ).all()
+    exposure_instruments = [ e[0] for e in exposure_instruments ]
 
-        unks = [ i for i in image_instruments if i not in models.instrument.INSTRUMENT_CLASSNAME_TO_CLASS ]
-        if len( unks ) > 0:
-            raise RuntimeError( f"Failed database migration: unknown instruments in the images table: [unks]" )
-        unks = [ i for i in exposure_instruments if i not in models.instrument.INSTRUMENT_CLASSNAME_TO_CLASS ]
-        if len( unks ) > 0:
-            raise RuntimeError( f"Failed database migration: unknown instruments in the exposures table: [unks]" )
+    unks = [ i for i in image_instruments if i not in models.instrument.INSTRUMENT_CLASSNAME_TO_CLASS ]
+    if len( unks ) > 0:
+        raise RuntimeError( f"Failed database migration: unknown instruments in the images table: {[unks]}" )
+    unks = [ i for i in exposure_instruments if i not in models.instrument.INSTRUMENT_CLASSNAME_TO_CLASS ]
+    if len( unks ) > 0:
+        raise RuntimeError( f"Failed database migration: unknown instruments in the exposures table: {[unks]}" )
 
-        all_instruments = set( image_instruments + exposure_instruments )
-        filter_translations = {}
+    all_instruments = set( image_instruments + exposure_instruments )
+    filter_translations = {}
 
-        for instr in all_instruments:
-            instrobj = get_instrument_instance( instr )
-            filter_translations[ instr ] = {}
-            cursor.execute( "SELECT DISTINCT ON(filter) filter FROM images WHERE instrument=%(instr)s",
-                            { 'instr': instr } )
-            for row in cursor.fetchall():
-                if longtoshort:
-                    filter_translations[ instr ][ row[0] ] = instrobj.get_short_filter_name( row[0] )
-                else:
-                    filter_translations[ instr ][ row[0] ] = instrobj.get_full_filter_name( row[0] )
+    for instr in all_instruments:
+        instrobj = get_instrument_instance( instr )
+        filter_translations[ instr ] = {}
+        filts = conn.execute( sa.text( "SELECT DISTINCT ON(filter) filter FROM images WHERE instrument=:instr" ),
+                              { 'instr': instr } ).all()
+        filts = [ f[0] for f in filts ]
+        for filt in filts:
+            if longtoshort:
+                filter_translations[ instr ][ filt ] = instrobj.get_short_filter_name( filt )
+            else:
+                filter_translations[ instr ][ filt ] = instrobj.get_full_filter_name( filt )
 
     # Now filter_translations is a dictionary keyed by instruments,
     #   and each value is itself an dictionary with a mapping of
