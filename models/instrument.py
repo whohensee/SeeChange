@@ -1210,6 +1210,7 @@ class Instrument:
         unless an instrument subclass has overridden these functions.
         """
 
+        # should be overridden: default is to return the input
         return shortfilter
 
     @classmethod
@@ -1499,7 +1500,8 @@ class Instrument:
         section: str
           The name of the SensorSection
         filter: str
-          The filter (can be None for some types, e.g. zero, linearity)
+          The filter (can be None for some types, e.g. zero, linearity). Should
+          be the short filter name, not the long filter name.
         mjd: float
           The mjd where the calibrator params are valid
         nofetch: bool
