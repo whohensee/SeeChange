@@ -251,7 +251,7 @@ class Exposure(Base, UUIDMixin, FileOnDiskMixin, SpatiallyIndexed, HasBitFlagBad
     exp_time = sa.Column(sa.REAL, nullable=False, index=True, doc="Exposure time in seconds. ")
 
     _filter = sa.Column(sa.Text,
-                        nullable=True,  #WHPR should this be nullable?
+                        nullable=True, #nullable because a constraint checks _filter or filter_array
                         index=True,
                         doc=("Name of the filter used to make this exposure. "
                              "This is generally the short filter name - conversion "
