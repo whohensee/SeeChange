@@ -32,6 +32,7 @@ def test_decam_exposure(decam_exposure):
     assert e.dec == -43.0096
     assert e.exp_time == 86.0
     assert e.filepath == 'c4d_230702_080904_ori.fits.fz'
+    assert e.filter == 'r'
     assert e.instrument_object.get_full_filter_name( e.filter ) == 'r DECam SDSS c0002 6415.0 1480.0'
     assert not e.from_db
     assert e.info == {}
