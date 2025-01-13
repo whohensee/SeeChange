@@ -186,10 +186,11 @@ def datastore_factory(data_dir, pipeline_factory, request):
         if 'subtraction' in stepstodo:
             inst_name = ds.image.instrument.lower() if ds.image else ds.exposure.instrument.lower()
             refset_name = f'test_refset_{inst_name}'
-            if inst_name == 'ptf':  # request the ptf_refset fixture dynamically:
-                request.getfixturevalue('ptf_refset')
-            if inst_name == 'decam':  # request the decam_refset fixture dynamically:
-                request.getfixturevalue('decam_refset')
+            # Removing these - the refsets should be created when the references are.
+            # if inst_name == 'ptf':  # request the ptf_refset fixture dynamically:
+            #     request.getfixturevalue('ptf_refset')
+            # if inst_name == 'decam':  # request the decam_refset fixture dynamically:
+            #     request.getfixturevalue('decam_refset')
 
             if 'subtraction' not in overrides:
                 overrides['subtraction'] = {}
@@ -239,7 +240,7 @@ def datastore_factory(data_dir, pipeline_factory, request):
         #
         # (We can only make reports if given an exposure, so skip all report stuff if we
         # were given an image.)
-        if isinstance( exporim, Exposure ):
+        if p._generate_report:
             report_was_loaded_from_cache = False
             report_cache_path = None
             if cache_base_path is not None:
@@ -563,10 +564,6 @@ def datastore_factory(data_dir, pipeline_factory, request):
                     SCLogger.debug( f"No refset found with name {refset_name}, returning." )
                     return ds
 
-                if len( refset.provenances ) == 0:
-                    SCLogger.debug( f"No reference provenances defined for refset {refset.name}, returning." )
-                    return ds
-
                 ref = ds.get_reference()
                 if ( ref is None ) and ( 'subtraction' in stepstodo ):
                     SCLogger.debug( "make_datastore : could not find a reference, returning." )
@@ -578,7 +575,7 @@ def datastore_factory(data_dir, pipeline_factory, request):
             if use_cache:  # try to find the subtraction image in the cache
                 SCLogger.debug( "make_datstore looking for subtraction image in cache..." )
 
-                sub_im = Image.from_new_and_ref( ds.image, ds.ref_image )
+                sub_im = Image.from_new_and_ref( ds.image, ds.reference )
                 sub_im.provenance_id = ds.prov_tree['subtraction'].id
                 cache_sub_name = pathlib.Path( sub_im.invent_filepath() )
 
@@ -635,8 +632,9 @@ def datastore_factory(data_dir, pipeline_factory, request):
                     SCLogger.debug('make_datastore loading subtraction image from cache: {sub_cache_path}" ')
                     tmpsubim =  copy_from_cache(Image, cache_dir, sub_cache_path, symlink=True)
                     tmpsubim.provenance_id = ds.prov_tree['subtraction'].id
-                    tmpsubim._upstream_ids = sub_im._upstream_ids
-                    tmpsubim.ref_image_id = ref.image_id
+                    # These next two should have been saved to the cache?  I hope.
+                    # tmpsubim.ref_id = ref.id
+                    # tmpsubim.new_image_id == <something>
                     tmpsubim.save(verify_md5=False)  # make sure it is also saved to archive
                     ds.sub_image = tmpsubim
                     if p.subtractor.pars.method == 'zogy':
@@ -839,7 +837,11 @@ def datastore_factory(data_dir, pipeline_factory, request):
                     copy_list_to_cache(ds.scores, cache_dir, deepscores_cache_path)
 
         # If necessary, save the report to the cache
-        if isinstance( exporim, Exposure ) and use_cache and ( not report_was_loaded_from_cache ):
+        if ( ( p._generate_report) and
+             isinstance( exporim, Exposure ) and
+             use_cache and
+             ( not report_was_loaded_from_cache )
+            ):
             ds.finalize_report()
             if ds.report is not None:
                 output_path = copy_to_cache( ds.report, cache_dir, report_cache_path )

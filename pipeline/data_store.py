@@ -10,7 +10,7 @@ from util.logger import SCLogger
 from models.base import SmartSession, FileOnDiskMixin, FourCorners
 from models.provenance import Provenance
 from models.exposure import Exposure
-from models.image import Image, image_upstreams_association_table
+from models.image import Image
 from models.source_list import SourceList
 from models.psf import PSF
 from models.background import Background
@@ -409,8 +409,8 @@ class DataStore:
                 raise ValueError( "DataStore.sub_image must have is_sub set" )
             if ( ( self._detections is not None ) and ( self._detections.image_id != val.id ) ):
                 raise ValueError( "Can't set a sub_image inconsistent with detections" )
-            if val.ref_image_id != self.ref_image.id:
-                raise ValueError( "Can't set a sub_image inconsistent with ref image" )
+            if val.ref_id != self.reference.id:
+                raise ValueError( "Can't set a sub_image inconsistent with reference" )
             if val.new_image_id != self.image.id:
                 raise ValueError( "Can't set a sub image inconsistent with image" )
             # TODO : check provenance upstream of sub_image to make sure it's consistent
@@ -798,7 +798,7 @@ class DataStore:
            wipe_tree: bool, default False
               If True, will wipe out the provenance tree before setting
               the provenances for the processes in provdict.
-              Otherwisel, will only wipe out provenances downstream from
+              Otherwise, will only wipe out provenances downstream from
               the provenances in provdict.
 
         """
@@ -1436,17 +1436,18 @@ class DataStore:
             if self.reference.provenance_id not in provenance_ids:
                 self.reference = None
 
-            elif skip_bad and self.reference.is_bad:
+            elif skip_bad and ( self.reference.bitflag != 0 ):
                 self.reference = None
 
-            elif match_filter and self.reference.filter != image.filter:
+            elif match_filter and self.reference.image.filter != image.filter:
                 self.reference = None
 
-            elif match_instrument and self.reference.instrument != image.instrument:
+            elif match_instrument and self.reference.image.instrument != image.instrument:
                 self.reference = None
 
             elif ( ( search_by in [ 'target/section', 'target/section_id' ] ) and
-                   ( ( self.reference.target != image.target ) or ( self.reference.section_id != image.section_id ) )
+                   ( ( self.reference.imagetarget != image.target ) or
+                     ( self.reference.imagesection_id != image.section_id ) )
                   ):
                 self.reference = None
 
@@ -1649,11 +1650,9 @@ class DataStore:
                 raise RuntimeError( "Can't get sub_image, don't have an image_id" )
 
             imgs = ( sess.query( Image )
-                     .join( image_upstreams_association_table,
-                            image_upstreams_association_table.c.downstream_id==Image._id )
-                     .filter( image_upstreams_association_table.c.upstream_id==self.image.id )
                      .filter( Image.provenance_id==provenance.id )
-                     .filter( Image.ref_image_id==self.reference.image_id )
+                     .filter( Image.new_image_id==self.image.id )
+                     .filter( Image.ref_id==self.reference.id )
                      .filter( Image.is_sub ) ).all()
             if len(imgs) > 1:
                 raise RuntimeError( "Found more than one matching sub_image in the database!  This shouldn't happen!" )

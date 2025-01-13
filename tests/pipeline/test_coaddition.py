@@ -350,10 +350,9 @@ def test_coaddition_run(coadder, ptf_reference_image_datastores, ptf_aligned_ima
 
     upstrims = ref_image.get_upstreams( only_images=True )
     assert [ i.id for i in upstrims ] == [ d.image.id for d in ptf_reference_image_datastores ]
-    assert ref_image.ref_image_id == refimlast.id
-    with pytest.raises( RuntimeError, match="new_image_id is not defined for images that aren't subtractions" ):
-        assert ref_image.new_image_id is None
-
+    assert ref_image.coadd_alignment_target == refimlast.id
+    assert ref_image.new_image_id is None
+    assert ref_image.ref_id is None
     assert ref_image.data is not None
     assert ref_image.data.shape == refimlast.data.shape
     assert ref_image.weight is not None
@@ -445,10 +444,6 @@ def test_coadded_reference(ptf_ref):
     assert isinstance(ref_wcs, WorldCoordinates)
     assert isinstance(ref_zp, ZeroPoint)
 
-    assert ptf_ref.target == ref_image.target
-    assert ptf_ref.filter == ref_image.filter
-    assert str(ptf_ref.section_id) == str(ref_image.section_id)
-
     ref_prov = Provenance.get( ptf_ref.provenance_id )
     # refimg_prov = Provenance.get( ref_image.provenance_id )
 
@@ -507,7 +502,7 @@ def test_coadd_partial_overlap_swarp( decam_four_offset_refs, decam_four_refs_al
     #   and needs investigation: Issue #361
     # For now, just verify that the spot with the star is a lot brighter
     #   than the neighboring spot
-    assert ( img.data[ 17:3231, 479:491 ].sum() / img.data[ 3217:3231, 509:521 ].sum() ) >= 400.
+    assert ( img.data[ 3217:3231, 479:491 ].sum() / img.data[ 3217:3231, 509:521 ].sum() ) >= 400.
 
     # Look at a spot with a galaxy and a nearby sky, in a place where there were
     #   two images in the sum

@@ -11,7 +11,7 @@ from models.provenance import Provenance, provenance_self_association_table
 from models.psf import PSF
 from models.world_coordinates import WorldCoordinates
 from models.cutouts import Cutouts
-from models.image import Image, image_upstreams_association_table
+from models.image import Image
 from models.source_list import SourceList
 from models.zero_point import ZeroPoint
 from models.enums_and_bitflags import measurements_badness_inverse
@@ -117,16 +117,13 @@ class Measurements(Base, UUIDMixin, SpatiallyIndexed, HasBitFlagBadness):
         if self._zp is None:
             sub_image = orm.aliased( Image )
             sub_sources = orm.aliased( SourceList )
-            imassoc = orm.aliased( image_upstreams_association_table )
             provassoc = orm.aliased( provenance_self_association_table )
             with SmartSession() as session:
                 zps = ( session.query( ZeroPoint )
                         .join( SourceList, SourceList._id == ZeroPoint.sources_id )
                         .join( provassoc, provassoc.c.upstream_id == SourceList.provenance_id )
-                        .join( imassoc, imassoc.c.upstream_id == SourceList.image_id )
                         .join( sub_image, sa.and_( sub_image.provenance_id == provassoc.c.downstream_id,
-                                                   sub_image._id == imassoc.c.downstream_id,
-                                                   sub_image.ref_image_id != SourceList.image_id ) )
+                                                   sub_image.new_image_id == SourceList.image_id ) )
                         .join( sub_sources, sub_sources.image_id == sub_image._id )
                         .join( Cutouts, sub_sources._id == Cutouts.sources_id )
                         .filter( Cutouts._id==self.cutouts_id )
@@ -161,13 +158,16 @@ class Measurements(Base, UUIDMixin, SpatiallyIndexed, HasBitFlagBadness):
     @property
     def flux_err(self):
         """The error on the background subtracted aperture flux in the "best" aperture. """
-        # we divide by the number of pixels of the background as that is how well we can estimate the b/g mean
         if self.best_aperture == -1:
-            return np.sqrt(self.flux_psf_err ** 2 + self.bkg_std ** 2 / self.bkg_pix * self.area_psf)
+            # we divide by the number of pixels of the background as that is how well we can estimate the b/g mean
+            err = self.flux_psf_err ** 2
+            if self.bkg_pix > 0:
+                err += self.bkg_std ** 2 / self.bkg_pix * self.area_psf
         else:
-            err = self.flux_apertures_err[self.best_aperture]
-            err += self.bkg_std ** 2 / self.bkg_pix * self.area_apertures[self.best_aperture]
-            return np.sqrt(err)
+            err = self.flux_apertures_err[self.best_aperture] ** 2
+            if self.bkg_pix > 0:
+                err += self.bkg_std ** 2 / self.bkg_pix * self.area_apertures[self.best_aperture]
+        return np.sqrt(err)
 
     @property
     def mag_psf(self):
@@ -530,7 +530,9 @@ class Measurements(Base, UUIDMixin, SpatiallyIndexed, HasBitFlagBadness):
 
         co_data_dict = cutouts.co_dict[groupname] # get just the subdict with data for this
 
-        for att in Cutouts.get_data_dict_attributes():
+        for att in Cutouts.get_data_array_attributes():
+            setattr( self, f"_{att}", co_data_dict.get(att) )
+        for att in Cutouts.get_data_scalar_attributes():
             setattr( self, f"_{att}", co_data_dict.get(att) )
 
 
@@ -690,6 +692,7 @@ class Measurements(Base, UUIDMixin, SpatiallyIndexed, HasBitFlagBadness):
             The area of the aperture.
 
         """
+
         if aperture is None:
             aperture = self.best_aperture
         if aperture == 'best':
@@ -708,21 +711,18 @@ class Measurements(Base, UUIDMixin, SpatiallyIndexed, HasBitFlagBadness):
                         .join( Cutouts, WorldCoordinates.sources_id==Cutouts.sources_id )
                         .filter( Cutouts.id==self.cutouts_id ) ).first()
             if wcs is None:
-                # There was no WorldCoordiantes for the sub image, so we're going to
+                # There was no WorldCoordinates for the sub image, so we're going to
                 #   make an assumption that we make elsewhere: that the wcs for the
-                #   sub image is the same as the wcs for the new image.  This is
+                #   sub image is the same as the wcs for the new image.
                 #   almost the same query that's used in zp() above.
                 sub_image = orm.aliased( Image )
                 sub_sources = orm.aliased( SourceList )
-                imassoc = orm.aliased( image_upstreams_association_table )
                 provassoc = orm.aliased( provenance_self_association_table )
                 wcs = ( session.query( WorldCoordinates )
                         .join( SourceList, SourceList._id == WorldCoordinates.sources_id )
                         .join( provassoc, provassoc.c.upstream_id == SourceList.provenance_id )
-                        .join( imassoc, imassoc.c.upstream_id == SourceList.image_id )
                         .join( sub_image, sa.and_( sub_image.provenance_id == provassoc.c.downstream_id,
-                                                   sub_image._id == imassoc.c.downstream_id,
-                                                   sub_image.ref_image_id != SourceList.image_id ) )
+                                                   sub_image.new_image_id == SourceList.image_id ) )
                         .join( sub_sources, sub_sources.image_id == sub_image._id )
                         .join( Cutouts, sub_sources._id == Cutouts.sources_id )
                         .filter( Cutouts._id==self.cutouts_id )

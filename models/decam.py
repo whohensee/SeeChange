@@ -283,6 +283,14 @@ class DECam(Instrument):
         )
         return t
 
+    def overscan_trim_keywords_to_strip( self ):
+        yanklist = [ 'DETSIZE' ]
+        for base in [ 'TRIMSEC', 'DATASEC', 'DETSEC', 'CCDSEC', 'PRESEC', 'POSTSEC', 'BIASSEC', 'AMPSEC' ]:
+            for suffix in [ '', 'A', 'B' ]:
+                yanklist.append( f"{base}{suffix}" )
+        return yanklist
+
+
     def get_standard_flags_image( self, section_id ):
         # NOTE : there's a race condition here; multiple
         # processes might try to locally cache the
@@ -651,7 +659,7 @@ class DECam(Instrument):
         newdata = np.zeros_like( data )
         ccdnum = header[ 'CCDNUM' ]
 
-        with fits.open( linearitydata.get_fullpath(), memmap=False ) as linhdu:
+        with fits.open( linearitydata.get_fullpath( nofile=False ), memmap=False ) as linhdu:
             for amp in ["A", "B"]:
                 ampdex = f'ADU_LINEAR_{amp}'
                 x0 = secs[amp]['destsec']['x0']

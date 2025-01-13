@@ -8,7 +8,7 @@ import sqlalchemy as sa
 from models.base import SmartSession, FileOnDiskMixin
 from models.provenance import Provenance, ProvenanceTag
 from models.exposure import Exposure
-from models.image import Image, image_upstreams_association_table
+from models.image import Image
 from models.calibratorfile import CalibratorFile
 from models.source_list import SourceList
 from models.psf import PSF
@@ -34,15 +34,20 @@ def check_datastore_and_database_have_everything(exp_id, sec_id, ref_id, ds):
     Parameters
     ----------
     exp_id: int
-        The exposure ID.
+        The Exposure ID.
+
     sec_id: str or int
-        The section ID.
+        The section_id of the image from the exposure.
+
     ref_id: int
-        The reference image ID.
+        The Reference ID.
+
     session: sqlalchemy.orm.session.Session
         The database session
+
     ds: datastore.DataStore
         The datastore object
+
     """
 
     with SmartSession() as session:
@@ -83,23 +88,7 @@ def check_datastore_and_database_have_everything(exp_id, sec_id, ref_id, ds):
         assert ds.zp.id == zp.id
 
         # find the subtraction image
-        aliased_table = sa.orm.aliased(image_upstreams_association_table)
-        sub = session.scalars(
-            sa.select(Image).join(
-                image_upstreams_association_table,
-                sa.and_(
-                    image_upstreams_association_table.c.upstream_id == ref_id,
-                    image_upstreams_association_table.c.downstream_id == Image._id,
-                )
-            ).join(
-                aliased_table,
-                sa.and_(
-                    aliased_table.c.upstream_id == im.id,
-                    aliased_table.c.downstream_id == Image._id,
-                )
-            )
-        ).first()
-
+        sub = session.query( Image ).filter( Image.new_image_id==im.id ).filter( Image.ref_id==ref_id ).first()
         assert sub is not None
         assert ds.sub_image.id == sub.id
 
@@ -187,13 +176,13 @@ def test_parameters( test_config ):
 # TODO : This really tests that there are no reference provenances defined for the refet
 # Also write a test where provenances exist but no reference exists, and then one where
 # a reference exists for a different field but not for this field.
-def test_running_without_reference(decam_exposure, decam_refset, decam_default_calibrators, pipeline_for_tests):
+def test_running_without_reference(decam_exposure, decam_default_calibrators, pipeline_for_tests):
     p = pipeline_for_tests
     p.subtractor.pars.refset = 'test_refset_decam'  # choosing ref set doesn't mean we have an actual reference
     p.pars.save_before_subtraction = True  # need this so images get saved even though it crashes on "no reference"
 
-    with pytest.raises( RuntimeError, match=( "Failed to create the provenance tree: No provenances found "
-                                              "for reference set test_refset_decam!" ) ):
+    with pytest.raises( RuntimeError, match=( "Failed to create the provenance tree: No reference set "
+                                              "with name test_refset_decam found in the database!" ) ):
         # Use the 'N1' sensor section since that's not one of the ones used in the regular
         #  DECam fixtures, so we don't have to worry about any session scope fixtures that
         #  load refererences.  (Though I don't think there are any.)
@@ -229,7 +218,7 @@ def test_data_flow(decam_exposure, decam_reference, decam_default_calibrators, p
     exposure = decam_exposure
 
     ref = decam_reference
-    sec_id = ref.section_id
+    sec_id = ref.image.section_id
     try:  # cleanup the file at the end
         p = pipeline_for_tests
         p.subtractor.pars.refset = 'test_refset_decam'
@@ -249,7 +238,7 @@ def test_data_flow(decam_exposure, decam_reference, decam_default_calibrators, p
             for process in expected_processes:
                 assert process in prov_processes
 
-            check_datastore_and_database_have_everything(exposure.id, sec_id, ref.image_id, ds)
+            check_datastore_and_database_have_everything(exposure.id, sec_id, ref.id, ds)
 
         # feed the pipeline the same data, but missing the upstream data.
         attributes = ['image', 'sources', 'sub_image', 'detections', 'cutouts', 'measurements', 'scores']
@@ -264,7 +253,7 @@ def test_data_flow(decam_exposure, decam_reference, decam_default_calibrators, p
             ds = p.run(ds)  # for each iteration, we should be able to recreate the data
             ds.save_and_commit()
 
-            check_datastore_and_database_have_everything(exposure.id, sec_id, ref.image_id, ds)
+            check_datastore_and_database_have_everything(exposure.id, sec_id, ref.id, ds)
 
         # make sure we can remove the data from the end to the beginning and recreate it
         # TODO : this is a test that the pipeline can pick up if it's partially done.
@@ -283,7 +272,7 @@ def test_data_flow(decam_exposure, decam_reference, decam_default_calibrators, p
             ds = p.run(ds)  # for each iteration, we should be able to recreate the data
             ds.save_and_commit()
 
-            check_datastore_and_database_have_everything(exposure.id, sec_id, ref.image_id, ds)
+            check_datastore_and_database_have_everything(exposure.id, sec_id, ref.id, ds)
 
     finally:
         if 'ds' in locals():
@@ -301,7 +290,7 @@ def test_bitflag_propagation(decam_exposure, decam_reference, decam_default_cali
     """
     exposure = decam_exposure
     ref = decam_reference
-    sec_id = ref.section_id
+    sec_id = ref.image.section_id
 
     try:  # cleanup the file at the end
         p = Pipeline( pipeline={'provenance_tag': 'test_bitflag_propagation'} )
@@ -428,7 +417,7 @@ def test_get_upstreams_and_downstreams(decam_exposure, decam_reference, decam_de
     """Test that get_upstreams() and get_downstreams() return the proper objects."""
     exposure = decam_exposure
     ref = decam_reference
-    sec_id = ref.section_id
+    sec_id = ref.image.section_id
 
     try:  # cleanup the file at the end
         p = Pipeline( pipeline={'provenance_tag': 'test_get_upstreams_and_downstreams'} )
@@ -446,13 +435,10 @@ def test_get_upstreams_and_downstreams(decam_exposure, decam_reference, decam_de
             assert [upstream.id for upstream in ds.wcs.get_upstreams(session=session)] == [ds.sources.id]
             assert [upstream.id for upstream in ds.psf.get_upstreams(session=session)] == [ds.sources.id]
             assert [upstream.id for upstream in ds.zp.get_upstreams(session=session)] == [ds.sources.id]
+            assert ( set( upstream.id for upstream in ds.reference.get_upstreams(session=session) )
+                     == { ds.reference.image_id, ds.reference.sources_id } )
             assert set([ upstream.id for upstream in ds.sub_image.get_upstreams( session=session ) ]) == set([
-                ds.ref_image.id,
-                ds.ref_sources.id,
-                ds.ref_psf.id,
-                ds.ref_bg.id,
-                ds.ref_wcs.id,
-                ds.ref_zp.id,
+                ds.reference.id,
                 ds.image.id,
                 ds.sources.id,
                 ds.psf.id,
@@ -499,6 +485,7 @@ def test_get_upstreams_and_downstreams(decam_exposure, decam_reference, decam_de
             assert [downstream.id for downstream in ds.psf.get_downstreams(session=session)] == [ds.sub_image.id]
             assert [downstream.id for downstream in ds.wcs.get_downstreams(session=session)] == [ds.sub_image.id]
             assert [downstream.id for downstream in ds.zp.get_downstreams(session=session)] == [ds.sub_image.id]
+            assert [downstream.id for downstream in ds.reference.get_downstreams(session=session)] == [ds.sub_image.id]
             assert [downstream.id for downstream in ds.sub_image.get_downstreams(session=session)] == [ds.detections.id]
             assert [downstream.id for downstream in ds.detections.get_downstreams(session=session)] == [ds.cutouts.id]
             measurement_ids = set([measurement.id for measurement in ds.measurements])
@@ -518,7 +505,7 @@ def test_get_upstreams_and_downstreams(decam_exposure, decam_reference, decam_de
         shutil.rmtree(os.path.join(archive.test_folder_path, '115'), ignore_errors=True)
 
 
-def test_provenance_tree(pipeline_for_tests, decam_refset, decam_exposure, decam_datastore, decam_reference):
+def test_provenance_tree(pipeline_for_tests, decam_exposure, decam_datastore, decam_reference):
     p = pipeline_for_tests
     p.subtractor.pars.refset = 'test_refset_decam'
 
@@ -543,11 +530,12 @@ def test_provenance_tree(pipeline_for_tests, decam_refset, decam_exposure, decam
     ptags = check_prov_tag( provs.values(), 'pipeline_for_tests' )
 
     t_start = datetime.datetime.utcnow()
-    ds = p.run(decam_exposure, 'S3')  # the data should all be there so this should be quick
+    ds = p.run(decam_exposure, 'S2')  # the data should all be there so this should be quick
     t_end = datetime.datetime.utcnow()
 
     assert ds.image.provenance_id == provs['preprocessing'].id
     assert ds.sources.provenance_id == provs['extraction'].id
+    assert ds.reference.provenance_id == provs['referencing'].id
     assert ds.sub_image.provenance_id == provs['subtraction'].id
     assert ds.detections.provenance_id == provs['detection'].id
     assert ds.cutouts.provenance_id == provs['cutting'].id

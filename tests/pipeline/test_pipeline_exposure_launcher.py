@@ -6,7 +6,7 @@ import logging
 from models.base import SmartSession
 from models.knownexposure import KnownExposure
 from models.exposure import Exposure
-from models.image import Image, image_upstreams_association_table
+from models.image import Image
 from models.source_list import SourceList
 from models.cutouts import Cutouts
 from models.measurements import Measurements
@@ -52,7 +52,7 @@ def test_exposure_launcher( conductor_connector,
     assert all( [ ke.hold for ke in kes if str(ke.id) != idtodo ] )
     assert all( [ not ke.hold for ke in kes if str(ke.id) == idtodo ] )
 
-    elaunch = ExposureLauncher( 'testcluster', 'testnode', numprocs=2, onlychips=['S3', 'N16'], verify=False,
+    elaunch = ExposureLauncher( 'testcluster', 'testnode', numprocs=2, onlychips=['S2', 'N16'], verify=False,
                                 worker_log_level=logging.DEBUG )
     elaunch.register_worker()
 
@@ -78,18 +78,16 @@ def test_exposure_launcher( conductor_connector,
             imgq = session.query( Image ).filter( Image.exposure_id==exposure.id ).order_by( Image.section_id )
             assert imgq.count() == 2
             images = imgq.all()
-            subq = ( session.query( Image ).join( image_upstreams_association_table,
-                                                  Image._id==image_upstreams_association_table.c.downstream_id ) )
-            sub0 = subq.filter( image_upstreams_association_table.c.upstream_id==images[0].id ).first()
-            sub1 = subq.filter( image_upstreams_association_table.c.upstream_id==images[1].id ).first()
+            sub0 = session.query( Image ).filter( Image.new_image_id==images[0].id ).first()
+            sub1 = session.query( Image ).filter( Image.new_image_id==images[1].id ).first()
             assert sub0 is not None
             assert sub1 is not None
 
             measq = session.query( Measurements ).join( Cutouts ).join( SourceList ).join( Image )
             meas0 = measq.filter( Image._id==sub0.id ).all()
             meas1 = measq.filter( Image._id==sub1.id ).all()
-            assert len(meas0) == 2
-            assert len(meas1) == 6
+            assert len(meas0) == 26
+            assert len(meas1) == 36
 
     finally:
         # Try to clean up everything.  If we delete the exposure, the two images and two subtraction images,
@@ -99,9 +97,7 @@ def test_exposure_launcher( conductor_connector,
                          .filter( KnownExposure.exposure_id==Exposure._id ) ).first()
             images = session.query( Image ).filter( Image.exposure_id==exposure.id ).all()
             imgids = [ i.id for i in images ]
-            subs = ( session.query( Image ).join( image_upstreams_association_table,
-                                                  Image._id==image_upstreams_association_table.c.downstream_id )
-                     .filter( image_upstreams_association_table.c.upstream_id.in_( imgids ) ) ).all()
+            subs = session.query( Image ).filter( Image.new_image_id.in_( imgids ) ).all()
         for sub in subs:
             sub.delete_from_disk_and_database( remove_folders=True, remove_downstreams=True, archive=True )
         for img in images:

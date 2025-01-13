@@ -40,11 +40,34 @@ class ParsMeasurer(Parameters):
             'adjust the annulus size for each image based on the PSF width. '
         )
 
-        self.use_annulus_for_centroids = self.add_par(
-            'use_annulus_for_centroids',
-            True,
+        # RKNOP 2024-12-20 : changing this default from True to False,
+        #   and also changing it in the default .yaml config.  I was
+        #   seeing cases where the seeing was biggish (several pixel
+        #   FWHM) and the recentroiding offsets were coming out clearly
+        #   absurd when this was True (as in it recentroided to a
+        #   position that was clearly wrong).  I didn't dig into why,
+        #   but in this case the default pixel-sized background annulus
+        #   was not big enough and did include the PSF wings.  In any
+        #   event, we're working on a sub image, so local background
+        #   subtraction should not be necessary.  If we *do* use it,
+        #   we shouldn't use a pixel radius for the annulus, but a FWHM
+        #   radius, and we should investigate what's going on.
+        # Note also that the PSF flux measurement *never* uses the
+        #   annulus!  (Call to m.get_flux_at_point; if you look
+        #   at models/measurements.py, get_flux_at_point has no
+        #   concept of a local background annulus.)  Given this,
+        #   I'm tempted to deprecate the annulus altogether until
+        #   we can make it work more consistently.  (Perhaps we
+        #   shoudl be using a standard photometry package like
+        #   photutils rather than rolling our own?)
+        self.use_annulus_background = self.add_par(
+            'use_annulus_backgrund',
+            False,
             bool,
-            'Use the local background measurements via an annulus to adjust the centroids and second moments. '
+            'Use the local background measurements for measurements on the sub image.  Because '
+            'this is a measurement on the difference image, usually you want this to be False. '
+            'Currently, the code will error out if you set this to True, because the pipeline as '
+            'a whole does not treat this consistently.'
         )
 
         self.analytical_cuts = self.add_par(
@@ -61,8 +84,47 @@ class ParsMeasurer(Parameters):
             3.0,
             float,
             'How many times the local background RMS the pixel flux must be '
-            'to be considered a negative or positive outlier pixel. '
+            'to be considered a negative or positive outlier pixel.  Something will '
+            'be flagged negative if: (a) at least abs_n_negatives_threshold pixels '
+            'were less than -outlier_sigma*bkg_sg, (b) at least '
+            'rel_n_negatives_threshold pixels, as a fraction of the '
+            'number of pixels within negatives_radius, were negative, and '
+            '(c) the number of negatives vs. the number of positives is '
+            'greater than the "negatives" threshold.' )
+
+        self.abs_n_negatives_threshold = self.add_par(
+            'abs_n_negatives_thresdhold',
+            3,
+            int,
+            'See outlier_sigma.'
         )
+
+        self.rel_n_negatives_thresdhold = self.add_par(
+            'rel_n_negatives_threshold',
+            0.005,
+            float,
+            'See outlier_sigma.'
+        )
+
+        self.negatives_radius = self.add_par(
+            'negatives_radius',
+            3.,
+            float,
+            'Radius around central pixel to look for too many negative pixels (dipole detector)'
+        )
+
+        self.negatives_radius_units = self.add_par(
+            'negatives_radius_units',
+            'fwhm',
+            str,
+            'Units of negatives_radius (pixels or fwhm)'
+        )
+
+        # ROB READ THIS -- think about augmenting the negatives cuts
+        #   to not only look at negatives/positives, but also the
+        #   fraction of the area that has negatives at all.  That
+        #   will avoid weird edge cases of things like 1 negative,
+        #   3 positives getting thrown out.
 
         self.bad_pixel_radius = self.add_par(
             'bad_pixel_radius',
@@ -106,7 +168,7 @@ class ParsMeasurer(Parameters):
         self.thresholds = self.add_par(
             'thresholds',
             {
-                'negatives': 0.3,
+                'negatives_rel_positives': 0.3,
                 'bad pixels': 1,
                 'offsets': 5.0,
                 'filter bank': 1,
@@ -152,6 +214,13 @@ class ParsMeasurer(Parameters):
 class Measurer:
     def __init__(self, **kwargs):
         self.pars = ParsMeasurer(**kwargs)
+
+        # Hack alert : Remove this if Issue #396 is fully resovled,
+        #   and we start doing annulus background subtraction in
+        #   a consistent manner.
+        if self.pars.use_annulus_background:
+            raise NotImplementedError( "Photometry with local background subtraction is not currently "
+                                       "implemented in a consistent manner." )
 
         # this is useful for tests, where we can know if
         # the object did any work or just loaded from DB or datastore
@@ -235,6 +304,9 @@ class Measurer:
                 self.has_recalculated = True
 
                 SCLogger.debug( f"Measurer performing measurements on {len(cutouts.co_dict)} cutouts" )
+                nextlog = 0
+                logevery = 10
+                onwhichone = 0
 
                 # prepare the filter bank for this batch of cutouts
 
@@ -244,6 +316,11 @@ class Measurer:
                 # go over each cutouts object and produce a measurements object
                 measurements_list = []
                 for key, co_subdict in cutouts.co_dict.items():
+                    if onwhichone >= nextlog:
+                        SCLogger.debug( f"....measurer on cutout {onwhichone} of {len(cutouts.co_dict)}" )
+                        nextlog += logevery
+                    onwhichone += 1
+
                     m = Measurements( cutouts_id=cutouts.id )
                     m.index_in_sources = int(key[13:]) # grab just the number from "source_index_xxx"
                     m.get_data_from_cutouts( cutouts=cutouts, detections=detections )
@@ -277,8 +354,17 @@ class Measurer:
                         flags,
                         radii=m.aper_radii,
                         annulus=annulus_radii_pixels,
-                        local_bg=self.pars.use_annulus_for_centroids,
+                        local_bg=self.pars.use_annulus_background,
                     )
+
+                    # This is a little bit kludgy, but I'm retrofitting the abitilty to not need
+                    #   a background annulus, and the code as designed originally assuming we
+                    #   were always doing to do that... except, sorta, not always, and not
+                    #   consistently.  I know that iterative_cutouts_photometry will have
+                    #   screwed up the background estimate if I didn't use an annulus.
+                    if not self.pars.use_annulus_background:
+                        output['background'] = ds.sub_image.bkg_mean_estimate
+                        output['variance'] = ds.sub_image.bkg_rms_estimate ** 2
 
                     m.flux_apertures = output['fluxes']
                     m.flux_apertures_err = [np.sqrt(output['variance']) * norm for norm in output['normalizations']]
@@ -333,6 +419,8 @@ class Measurer:
                     m.provenance_id = prov.id
 
                     # Apply analytic cuts to each stamp image, to rule out artefacts.
+                    # NOTE : I'm unappy about this absolute std cutoff.  It should
+                    #   be compared to the sub image bkg_rms or some such
                     m.disqualifier_scores = {}
                     if m.bkg_mean != 0 and m.bkg_std > 0.1:
                         norm_data = (m.sub_nandata - m.bkg_mean) / m.bkg_std  # normalize
@@ -347,33 +435,45 @@ class Measurer:
                             warnings.warn(f'Background mean= {m.bkg_mean}, std= {m.bkg_std}, normalization skipped!')
                         norm_data = m.sub_nandata  # no good background measurement, do not normalize!
 
-                    positives = np.sum(norm_data > self.pars.outlier_sigma)
-                    negatives = np.sum(norm_data < -self.pars.outlier_sigma)
+                    x, y = np.meshgrid(range(m.sub_data.shape[0]), range(m.sub_data.shape[1]))
+                    x = x - m.sub_data.shape[1] // 2 - m.offset_x
+                    y = y - m.sub_data.shape[0] // 2 - m.offset_y
+                    r = np.sqrt(x ** 2 + y ** 2)
+                    negrad = self.pars.negatives_radius
+                    if self.pars.negatives_radius_units == 'fwhm':
+                        negrad *= sub_psf.fwhm_pixels
+
+                    offset = np.sqrt(m.offset_x ** 2 + m.offset_y ** 2)
+                    m.disqualifier_scores['offsets'] = offset
+
+                    positives = np.sum(norm_data[ r <= negrad ] > self.pars.outlier_sigma)
+                    negatives = np.sum(norm_data[ r <= negrad ] < -self.pars.outlier_sigma)
                     if negatives == 0:
                         m.disqualifier_scores['negatives'] = 0.0
                     elif positives == 0:
                         m.disqualifier_scores['negatives'] = 1.0
                     else:
                         m.disqualifier_scores['negatives'] = negatives / positives
+                    if ( ( negatives < self.pars.abs_n_negatives_thresdhold ) or
+                         ( negatives < self.pars.rel_n_negatives_threshold * ( r < negrad ).sum() )
+                        ):
+                        m.disqualifier_scores['negatives'] = -1.0
 
-                    x, y = np.meshgrid(range(m.sub_data.shape[0]), range(m.sub_data.shape[1]))
-                    x = x - m.sub_data.shape[1] // 2 - m.offset_x
-                    y = y - m.sub_data.shape[0] // 2 - m.offset_y
-                    r = np.sqrt(x ** 2 + y ** 2)
                     bad_pixel_inclusion = r <= self.pars.bad_pixel_radius + 0.5
                     m.disqualifier_scores['bad pixels'] = np.sum(flags[bad_pixel_inclusion] > 0)
 
                     norm_data_no_nans = norm_data.copy()
                     norm_data_no_nans[np.isnan(norm_data)] = 0
+                    template_norm_fac = np.abs(norm_data_no_nans).sum()
 
                     filter_scores = []
                     for template in self._filter_bank:
-                        filter_scores.append(np.max(signal.correlate(abs(norm_data_no_nans), template, mode='same')))
+                        # It's not clear to me that abs is the right thing to do here.
+                        filter_scores.append(np.max(signal.correlate(abs(norm_data_no_nans),
+                                                                     template * template_norm_fac,
+                                                                     mode='same')))
 
                     m.disqualifier_scores['filter bank'] = np.argmax(filter_scores)
-
-                    offset = np.sqrt(m.offset_x ** 2 + m.offset_y ** 2)
-                    m.disqualifier_scores['offsets'] = offset
 
                     # TODO: add additional disqualifiers
 
@@ -385,9 +485,11 @@ class Measurer:
                     measurements_list.append(m)
 
                 SCLogger.debug( f"Running threshold cuts on {len(measurements_list)} measurements" )
+                nextlog = 0
+                logevery = 10
 
                 saved_measurements = []
-                for m in measurements_list:
+                for i, m in enumerate( measurements_list ):
                     # regardless of wether we created these now, or loaded from DB,
                     # the bitflag should be updated based on the most recent data
                     m._upstream_bitflag = 0
@@ -442,21 +544,34 @@ class Measurer:
     def make_filter_bank(self, imsize, psf_fwhm):
         """Make a filter bank matching the PSF width.
 
+        These filters will be run through scipy.signal.correlate( abs(subclip), filter, mode='same' )
+
+        The first thing in the filter bank is a gaussian the size of the
+        psf.  Ideally, this is the one that matches best.
+
+        The next len(width_filter_multipliers) are gaussians whose
+        sigmas are scaled by those factors from config.
+
+        Finally, there are a bunch of streaks, nominally.
+
         Parameters
         ----------
         imsize: int
             The size of the image cutouts, which is also the size of the filters. # TODO: allow smaller filters?
         psf_fwhm : float
             The FWHM of the PSF in pixels.
+
         """
         psf_sigma = psf_fwhm / 2.355  # convert FWHM to sigma
         templates = []
-        templates.append(make_gaussian(imsize=imsize, sigma_x=psf_sigma, sigma_y=psf_sigma, norm=2))
+        # We normalize everything to 1.  Later, before running the correlation, we will renormalize
+        #   everything to the sum of the data we're correlating with.
+        templates.append(make_gaussian(imsize=imsize, sigma_x=psf_sigma, sigma_y=psf_sigma, norm=1))
 
         # narrow gaussian to trigger on cosmic rays, wider templates for extended sources
         for multiplier in self.pars.width_filter_multipliers:
             templates.append(
-                make_gaussian(imsize=imsize, sigma_x=psf_sigma * multiplier, sigma_y=psf_sigma * multiplier, norm=2)
+                make_gaussian(imsize=imsize, sigma_x=psf_sigma * multiplier, sigma_y=psf_sigma * multiplier, norm=1)
             )
 
         # add some streaks:
@@ -472,7 +587,8 @@ class Measurer:
             streak = (1 / np.sqrt(2.0 * np.pi) / psf_sigma) * np.exp(
                 -0.5 * d ** 2 / psf_sigma ** 2
             )
-            streak /= np.sqrt(np.sum(streak ** 2))  # verify that the template is normalized
+            # streak /= np.sqrt(np.sum(streak ** 2))  # verify that the template is normalized
+            streak /= np.sum(streak)
 
             templates.append(streak)
 

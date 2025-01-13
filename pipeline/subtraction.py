@@ -596,11 +596,11 @@ class Subtractor:
 
                 # TODO: we can add additional parameters of get_reference() that come from
                 #  the subtraction config, such as skip_bad, match_filter, ignore_target_and_section, min_overlap
-                ref = ds.get_reference(provenances=refset.provenances, session=session)
+                ref = ds.get_reference(provenances=refset.provenance, session=session)
                 if ref is None:
                     raise ValueError(
                         f'Cannot find a reference image corresponding to the datastore inputs: {ds.inputs_str}; '
-                        f'referencing provs = {[ p._id for p in ds.prov_tree["referencing"] ]}'
+                        f'referencing prov = {ds.prov_tree["referencing"]}'
                     )
 
                 prov = ds.get_provenance('subtraction', self.pars.get_critical_pars(), session=session)
@@ -618,7 +618,7 @@ class Subtractor:
 
                     SCLogger.debug( f"Making new subtraction from image {image.id} path {image.filepath} , "
                                     f"reference {ds.ref_image.id} path {ds.ref_image.filepath}" )
-                    sub_image = Image.from_ref_and_new(ds.ref_image, image)
+                    sub_image = Image.from_ref_and_new(ds.reference, image)
                     sub_image.is_sub = True
                     sub_image.provenance_id = prov.id
                     sub_image.set_coordinates_to_match_target( image )

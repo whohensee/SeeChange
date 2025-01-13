@@ -14,6 +14,7 @@ import logging
 import base64
 import uuid
 
+import simplejson
 import numpy
 import h5py
 import PIL
@@ -29,6 +30,14 @@ from util.util import asUUID
 from models.user import AuthUser
 from models.deepscore import DeepScore
 from models.base import SmartSession
+
+
+class UUIDJSONEncoder( simplejson.JSONEncoder ):
+    def default( self, obj ):
+        if isinstance( obj, uuid.UUID ):
+            return str(obj)
+        else:
+            return super().default( obj )
 
 
 # ======================================================================
@@ -68,13 +77,25 @@ class BaseView( flask.views.View ):
             if ( self._admin_required ) and ( not self.user.isadmin ):
                 return "Action requires admin", 500
             try:
-                return self.do_the_things( *args, **kwargs )
+                retval = self.do_the_things( *args, **kwargs )
+                # Can't just use the default JSON handling, because it
+                #   writes out NaN which is not standard JSON and which
+                #   the javascript JSON parser chokes on.  Sigh.
+                if isinstance( retval, dict ) or isinstance( retval, list ):
+                    return ( simplejson.dumps( retval, ignore_nan=True, cls=UUIDJSONEncoder ),
+                             200, { 'Content-Type': 'application/json' } )
+                elif isinstance( retval, str ):
+                    return retval, 200, { 'Content-Type': 'text/plain; charset=utf-8' }
+                elif isinstance( retval, tuple ):
+                    return retval
+                else:
+                    return retval, 200, { 'Content-Type': 'application/octet-stream' }
             except Exception as ex:
                 # sio = io.StringIO()
                 # traceback.print_exc( file=sio )
                 # app.logger.debug( sio.getvalue() )
                 app.logger.exception( str(ex) )
-                return f"Exception handling request: {ex}", 500
+                return str(ex), 500
 
 
 # ======================================================================
@@ -148,9 +169,13 @@ class CloneProvTag( BaseView ):
     def do_the_things( self, existingtag, newtag, clobber=0 ):
         cursor = self.conn.cursor()
         if clobber:
-            cursor.execute( "DELETE FROM provenance_tags WHERE tag=%(tag)s", { 'tag': newtag } )
+            q = "DELETE FROM provenance_tags WHERE tag=%(tag)s"
+            # app.logger.debug( f"CloneProvTag running {cursor.mogrify(q,{'tag':newtag})}" )
+            cursor.execute( q, { 'tag': newtag } )
         else:
-            cursor.execute( "SELECT COUNT(*) FROM provenance_tags WHERE tag=%(tag)s", { 'tag': newtag } )
+            q = "SELECT COUNT(*) FROM provenance_tags WHERE tag=%(tag)s"
+            # app.logger.debug( f"CloneProvTag running {cursor.mogrify(q,{'tag':newtag})}" )
+            cursor.execute( q, { 'tag': newtag } )
             n = cursor.fetchone()[0]
             if n != 0:
                 return f"Tag {newtag} already exists and clobber was False", 500
@@ -159,12 +184,16 @@ class CloneProvTag( BaseView ):
         #   clever enough, except that I'd need to have a server default
         #   on provenance_tags for generating the primary key uuid, and
         #   right now we don't have that.
-        cursor.execute( "SELECT provenance_id FROM provenance_tags WHERE tag=%(tag)s", { 'tag': existingtag } )
+        q = "SELECT provenance_id FROM provenance_tags WHERE tag=%(tag)s"
+        # app.logger.debug( f"ConeProvTag running {cursor.mogrify(q,{'tag':existingtag})}" )
+        cursor.execute( q, { 'tag': existingtag } )
         rows = cursor.fetchall()
         for row in rows:
-            cursor.execute( "INSERT INTO provenance_tags(_id,tag,provenance_id) "
-                            "VALUES(%(id)s,%(tag)s,%(provid)s)",
-                            { 'id': uuid.uuid4(), 'tag': newtag, 'provid': row[0] } )
+            q = "INSERT INTO provenance_tags(_id,tag,provenance_id) VALUES(%(id)s,%(tag)s,%(provid)s)"
+            subdict = { 'id': uuid.uuid4(), 'tag': newtag, 'provid': row[0] }
+            # app.logger.debug( f"CloneProvTag running {cursor.mogrify(q,subdict)}" )
+            cursor.execute( q, subdict )
+        # app.logger.debug( "CloneProvTag comitting" )
         self.conn.commit()
 
         return { 'status': 'ok' }
@@ -247,12 +276,7 @@ class Exposures( BaseView ):
                   'INTO TEMP TABLE temp_imgs '
                   'FROM exposures e '
                   'LEFT JOIN images i ON i.exposure_id=e._id '
-                  'LEFT JOIN ( '
-                  '  SELECT su._id, ias.upstream_id '
-                  '  FROM images su '
-                  '  INNER JOIN image_upstreams_association ias ON ias.downstream_id=su._id '
-                  '  WHERE su.is_sub '
-                  ') s ON s.upstream_id=i._id '
+                  'LEFT JOIN images s ON s.new_image_id=i._id '
                   'LEFT JOIN source_lists sl ON sl.image_id=s._id '
                   'LEFT JOIN cutouts cu ON cu.sources_id=sl._id '
                   'LEFT JOIN measurements m ON m.cutouts_id=cu._id '
@@ -270,11 +294,10 @@ class Exposures( BaseView ):
                   '                                  AND impt.tag=%(provtag)s '
                   ') i ON i.exposure_id=e._id '
                   'LEFT JOIN ( '
-                  '  SELECT su._id, ias.upstream_id FROM images su '
-                  '  INNER JOIN image_upstreams_association ias ON ias.downstream_id=su._id AND su.is_sub '
+                  '  SELECT su._id, su.new_image_id FROM images su '
                   '  INNER JOIN provenance_tags supt ON supt.provenance_id=su.provenance_id '
                   '                                  AND supt.tag=%(provtag)s '
-                  ') s ON s.upstream_id=i._id '
+                  ') s ON s.new_image_id=i._id '
                   'LEFT JOIN ( '
                   '  SELECT sli._id, sli.image_id, sli.num_sources FROM source_lists sli '
                   '  INNER JOIN provenance_tags slpt ON slpt.provenance_id=sli.provenance_id '
@@ -442,8 +465,7 @@ class ExposureImages( BaseView ):
         q = ( 'SELECT i._id, s._id AS subid, sl.num_sources AS numsources, COUNT(m._id) AS nummeasurements '
               'INTO TEMP TABLE temp_exposure_images_counts '
               'FROM temp_exposure_images i '
-              'INNER JOIN image_upstreams_association ias ON ias.upstream_id=i._id '
-              'INNER JOIN images s ON s.is_sub AND s._id=ias.downstream_id '
+              'INNER JOIN images s ON s.is_sub AND s.new_image_id=i._id '
               'INNER JOIN provenance_tags spt ON spt.provenance_id=s.provenance_id AND spt.tag=%(provtag)s '
               'LEFT JOIN ( '
               '  SELECT sli._id, sli.image_id, sli.num_sources FROM source_lists sli '
@@ -576,9 +598,7 @@ class PngCutoutsForSubImage( BaseView ):
         if not issubid:
             # If we got an exposure id, make sure only to get subtractions of the requested provenance
             q += 'INNER JOIN provenance_tags spt ON s.provenance_id=spt.provenance_id AND spt.tag=%(provtag)s '
-        q +=  ( 'INNER JOIN image_upstreams_association ias ON ias.downstream_id=s._id '
-                '   AND s.ref_image_id != ias.upstream_id '
-                'INNER JOIN images i ON ias.upstream_id=i._id '
+        q +=  ( 'INNER JOIN images i ON s.new_image_id=i._id '
                 'INNER JOIN source_lists sl ON sl.image_id=i._id '
                 'INNER JOIN provenance_tags slpt ON sl.provenance_id=slpt.provenance_id AND slpt.tag=%(provtag)s '
                 'INNER JOIN zero_points z ON sl._id=z.sources_id ' )
@@ -648,19 +668,23 @@ class PngCutoutsForSubImage( BaseView ):
         # sourcesfiles = { c[cols['subimageid']]: c[cols['sources_path']] for c in rows }
         app.logger.debug( f"Got: {cutoutsfiles}" )
 
-        app.logger.debug( f"Getting measurements for sub images {subids}" )
+        # app.logger.debug( f"Getting measurements for sub images {subids}" )
+        app.logger.debug( f"Getting measurements for {len(subids)} sub images" )
         q = ( 'SELECT m.ra AS measra, m.dec AS measdec, m.index_in_sources, m.best_aperture, '
               '       m.flux, m.dflux, m.psfflux, m.dpsfflux, m.is_bad, m.name, m.is_test, m.is_fake, '
-              '       m.score, m._algorithm, s._id AS subid, s.section_id '
+              '       m.score, m._algorithm, m.center_x_pixel, m.center_y_pixel, m.offset_x, m.offset_y, '
+              '       m.disqualifier_scores,s._id AS subid, s.section_id '
               'FROM cutouts c '
               'INNER JOIN provenance_tags cpt ON cpt.provenance_id=c.provenance_id AND cpt.tag=%(provtag)s '
               'INNER JOIN source_lists sl ON c.sources_id=sl._id '
               'INNER JOIN images s ON sl.image_id=s._id '
-              'LEFT JOIN '
+              'INNER JOIN '
               '  ( SELECT meas.cutouts_id AS meascutid, meas.index_in_sources, meas.ra, meas.dec, meas.is_bad, '
               '           meas.best_aperture, meas.flux_apertures[meas.best_aperture+1] AS flux, '
               '           meas.flux_apertures_err[meas.best_aperture+1] AS dflux, '
               '           meas.flux_psf AS psfflux, meas.flux_psf_err AS dpsfflux, '
+              '           meas.center_x_pixel, meas.center_y_pixel, meas.offset_x, meas.offset_y, '
+              '           meas.disqualifier_scores, '
               '           obj.name, obj.is_test, obj.is_fake, score.score, score._algorithm '
               '    FROM measurements meas '
               '    INNER JOIN provenance_tags mpt ON meas.provenance_id=mpt.provenance_id AND mpt.tag=%(provtag)s '
@@ -678,13 +702,13 @@ class PngCutoutsForSubImage( BaseView ):
         if data['sortby'] == 'fluxdesc_chip_index':
             q += 'ORDER BY flux DESC NULLS LAST,s.section_id,m.index_in_sources '
         elif data['sortby'] == 'rbdesc_fluxdesc_chip_index':
-            q += 'ORDER BY score DESC NULLS LAST,flux DESC NULLS LAST,s.section_id,m.index_in_sources '
+            q += 'ORDER BY is_bad,score DESC NULLS LAST,flux DESC NULLS LAST,s.section_id,m.index_in_sources '
         else:
             raise RuntimeError( f"Unknown sort criterion {data['sortby']}" )
         if limit is not None:
             q += 'LIMIT %(limit)s OFFSET %(offset)s'
         subdict = { 'subids': tuple(subids), 'provtag': provtag, 'limit': limit, 'offset': offset }
-        app.logger.debug( f"Sending query to get measurements: {cursor.mogrify(q,subdict)}" )
+        # app.logger.debug( f"Sending query to get measurements: {cursor.mogrify(q,subdict)}" )
         cursor.execute( q, subdict )
         cols = { cursor.description[i][0]: i for i in range(len(cursor.description)) }
         rows = cursor.fetchall()
@@ -711,6 +735,9 @@ class PngCutoutsForSubImage( BaseView ):
                        'is_fake': [],
                        'x': [],
                        'y': [],
+                       'scores': [],
+                       'meas_x': [],
+                       'meas_y': [],
                        'w': [],
                        'h': [],
                        'new_png': [],
@@ -719,7 +746,7 @@ class PngCutoutsForSubImage( BaseView ):
                    }
                   }
 
-        scaler = astropy.visualization.ZScaleInterval()
+        scaler = astropy.visualization.ZScaleInterval( contrast=0.02 )
 
         # Open all the hdf5 files
 
@@ -760,16 +787,18 @@ class PngCutoutsForSubImage( BaseView ):
             scaledref = numpy.array( scaledref, dtype=numpy.uint8 )
             scaledsub = numpy.array( scaledsub, dtype=numpy.uint8 )
 
-            # TODO : transpose, flip for principle of least surprise
-            # Figure out what PIL.Image does.
-            #  (this will affect w and h below)
+            # Flip images vertically.  In DS9 and with FITS images,
+            #   we call the lower-left pixel (0,0).  Images on
+            #   web browsers call the upper-left pixel (0,0).
+            #   Flipping vertically will make it display the same
+            #   on the web browser as it will in DS9
 
             newim = io.BytesIO()
             refim = io.BytesIO()
             subim = io.BytesIO()
-            PIL.Image.fromarray( scalednew ).save( newim, format='png' )
-            PIL.Image.fromarray( scaledref ).save( refim, format='png' )
-            PIL.Image.fromarray( scaledsub ).save( subim, format='png' )
+            PIL.Image.fromarray( scalednew ).transpose( PIL.Image.FLIP_TOP_BOTTOM ).save( newim, format='png' )
+            PIL.Image.fromarray( scaledref ).transpose( PIL.Image.FLIP_TOP_BOTTOM ).save( refim, format='png' )
+            PIL.Image.fromarray( scaledsub ).transpose( PIL.Image.FLIP_TOP_BOTTOM ).save( subim, format='png' )
 
             retval['cutouts']['sub_id'].append( subid )
             retval['cutouts']['image_id'].append( imageids[subid] )
@@ -777,15 +806,15 @@ class PngCutoutsForSubImage( BaseView ):
             retval['cutouts']['new_png'].append( base64.b64encode( newim.getvalue() ).decode('ascii') )
             retval['cutouts']['ref_png'].append( base64.b64encode( refim.getvalue() ).decode('ascii') )
             retval['cutouts']['sub_png'].append( base64.b64encode( subim.getvalue() ).decode('ascii') )
-            # TODO : if we want to return x and y, we also have
-            #   to read the source list file...
-            # We could also copy them to the cutouts file as attributes
-            # retval['cutouts']['x'].append( row[cols['x']] )
-            # retval['cutouts']['y'].append( row[cols['y']] )
             retval['cutouts']['w'].append( scalednew.shape[0] )
             retval['cutouts']['h'].append( scalednew.shape[1] )
+            retval['cutouts']['x'].append( grp.attrs['new_x'] )
+            retval['cutouts']['y'].append( grp.attrs['new_y'] )
 
             if row is None:
+                retval['cutouts']['scores'].append( None )
+                retval['cutouts']['meas_x'].append( None )
+                retval['cutouts']['meas_y'].append( None )
                 retval['cutouts']['rb'].append( None )
                 retval['cutouts']['rbcut'].append( None )
                 retval['cutouts']['is_bad'].append( True )
@@ -796,6 +825,9 @@ class PngCutoutsForSubImage( BaseView ):
                 dflux = None
                 aperrad= 0.
             else:
+                retval['cutouts']['scores'].append( row[cols['disqualifier_scores']] )
+                retval['cutouts']['meas_x'].append( row[cols['center_x_pixel']] + row[cols['offset_x']] )
+                retval['cutouts']['meas_y'].append( row[cols['center_y_pixel']] + row[cols['offset_y']] )
                 retval['cutouts']['rb'].append( row[cols['score']] )
                 retval['cutouts']['rbcut'].append( None if row[cols['_algorithm']] is None
                                                    else DeepScore.get_rb_cut( row[cols['_algorithm']] ) )

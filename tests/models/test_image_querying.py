@@ -6,8 +6,7 @@ import sqlalchemy as sa
 from astropy.time import Time
 
 from models.base import SmartSession, FourCorners
-from models.provenance import Provenance
-from models.image import Image, image_upstreams_association_table
+from models.image import Image
 
 from tests.fixtures.simulated import ImageCleanup
 
@@ -424,9 +423,9 @@ def test_find_images(ptf_reference_image_datastores, ptf_ref,
     assert len(found5) < total
     assert len(found4) + len(found5) == total
 
-    # filter by images that contain this point (ELAIS-E1, chip S3)
-    ra = 7.449
-    dec = -42.926
+    # filter by images that contain this point (ELAIS-E1, chip S2)
+    ra = 7.025
+    dec = -42.923
     found1 = Image.find_containing( ra, dec )   # note: find_containing is a FourCorners method
     found1a = Image.find_images( ra=ra, dec=dec )
     assert set( i.id for i in found1 ) == set( i.id for i in found1a )
@@ -479,8 +478,8 @@ def test_find_images(ptf_reference_image_datastores, ptf_ref,
     assert len(found1) < total
 
     # filter by the two different project names for DECam:
-    found2 = Image.find_images(project=['many', '2023A-716082'])
-    assert all(im.project in ['many', '2023A-716082'] for im in found2)
+    found2 = Image.find_images(project=['many', '2021B-0149'])
+    assert all(im.project in ['many', '2021B-0149'] for im in found2)
     assert all(im.instrument == 'DECam' for im in found2)
     assert len(found2) < total
     assert len(found1) + len(found2) == total
@@ -643,9 +642,9 @@ def test_find_images(ptf_reference_image_datastores, ptf_ref,
     assert found1[0].instrument == 'PTF'
     assert found1[0].type == 'ComSci'
 
-    # cross the DECam target and section ID with the exposure time that's of the S3 ref image
+    # cross the DECam target and section ID with the exposure time that's of the S2 ref image
     target = 'ELAIS-E1'
-    section_id = 'S3'
+    section_id = 'S2'
     exp_time = 120.0
 
     found2 = Image.find_images(target=target, section_id=section_id, min_exp_time=exp_time)
@@ -684,86 +683,3 @@ def test_find_images(ptf_reference_image_datastores, ptf_ref,
     assert diff.lim_mag_estimate == new.lim_mag_estimate
     assert diff.fwhm_estimate == new.fwhm_estimate
     assert im_qual(diff) == im_qual(new)
-
-
-def test_image_get_upstream_images( ptf_ref, ptf_supernova_image_datastores, ptf_subtraction1_datastore ):
-    with SmartSession() as session:
-        # how many image to image associations are on the DB right now?
-        num_associations = session.execute(
-            sa.select(sa.func.count()).select_from(image_upstreams_association_table)
-        ).scalar()
-
-    refimg = Image.get_by_id( ptf_ref.image_id )
-    assert num_associations > len( refimg.upstream_image_ids )
-
-    prov = Provenance.get( refimg.provenance_id )
-    assert prov.process == 'coaddition'
-    images = refimg.get_upstreams( only_images=True )
-    assert len(images) > 1
-
-    loaded_image = Image.get_image_from_upstreams(images, prov.id)
-
-    assert loaded_image.id == refimg.id
-    assert loaded_image.id != ptf_subtraction1_datastore.image.id
-    with pytest.raises( RuntimeError, match="new_image_id is not defined for images that aren't subtractions" ):
-        assert loaded_image.id != ptf_subtraction1_datastore.image.new_image_id
-
-    new_image = None
-    new_image2 = None
-    new_image3 = None
-    try:
-        # make a new image with a new provenance
-        new_image = Image.copy_image(refimg)
-        newprov = Provenance.get( ptf_ref.provenance_id )
-        newprov.process = 'copy'
-        _ = newprov.upstreams    # Force newprov._upstreams to load
-        newprov.update_id()
-        newprov.insert()
-        new_image.provenance_id = newprov.id
-        # Not supposed to set _upstream_ids directly, so never do it
-        # anywhere in code; set the upstreams of an image by building it
-        # with Image.from_images() or Image.from_ref_and_now().  But, do
-        # this here for testing purposes.
-        new_image._upstream_ids = refimg.upstream_image_ids
-        new_image.save()
-        new_image.insert()
-
-        loaded_image = Image.get_image_from_upstreams(images, newprov.id)
-        assert loaded_image.id == new_image.id
-        assert new_image.id != refimg.id
-
-        # use the original provenance but take down an image from the upstreams
-        new_image2 = Image.copy_image( refimg )
-        new_image2.provenance_id = prov.id
-        # See note above about setting _upstream_ids directly (which is naughty)
-        new_image2._upstream_ids = refimg.upstream_image_ids[1:]
-        new_image2.save()
-        new_image2.insert()
-
-        images = [ Image.get_by_id( i ) for i in refimg.upstream_image_ids[1:] ]
-        loaded_image = Image.get_image_from_upstreams(images, prov.id)
-        assert loaded_image.id != refimg.id
-        assert loaded_image.id != new_image.id
-        assert loaded_image.id == new_image2.id
-
-        # use the original provenance but add images to the upstreams
-        upstrids = refimg.upstream_image_ids + [ d.image.id for d in ptf_supernova_image_datastores ]
-
-        new_image3 = Image.copy_image(refimg)
-        new_image3.provenance_id = prov.id
-        # See note above about setting _upstream_ids directly (which is naughty)
-        new_image3._upstream_ids = upstrids
-        new_image3.save()
-        new_image3.insert()
-
-        images = [ Image.get_by_id( i ) for i in upstrids ]
-        loaded_image = Image.get_image_from_upstreams(images, prov.id)
-        assert loaded_image.id == new_image3.id
-
-    finally:
-        if new_image is not None:
-            new_image.delete_from_disk_and_database()
-        if new_image2 is not None:
-            new_image2.delete_from_disk_and_database()
-        if new_image3 is not None:
-            new_image3.delete_from_disk_and_database()
