@@ -152,7 +152,7 @@ def test_parameters( test_config ):
         'subtraction': { 'method': 'override' },
         'detection': { 'threshold': 3.14 },
         'cutting': { 'cutout_size': 666 },
-        'measuring': { 'outlier_sigma': 3.5 }
+        'measuring': { 'negatives_n_sigma_outlier': 3.5 }
     }
 
     def check_override( new_values_dict, pars ):
@@ -313,6 +313,10 @@ def test_bitflag_propagation(decam_exposure, decam_reference, decam_default_cali
         assert ds.cutouts._upstream_bitflag == 2
         for m in ds.measurements:
             assert m._upstream_bitflag == 2
+        # ...why is ds.scores None?  Shouldn't the run
+        #   of the pipeline have run deepscoring?
+        # for s in ds.scores:
+        #     assert s._upstream_bitflag == 2
 
         # test part 2: Add a second bitflag partway through and check it propagates to downstreams
 
@@ -345,6 +349,10 @@ def test_bitflag_propagation(decam_exposure, decam_reference, decam_default_cali
         assert ds.cutouts._upstream_bitflag == desired_bitflag
         for m in ds.measurements:
             assert m._upstream_bitflag == desired_bitflag
+        # ...why is ds.scores None?  Shouldn't the run
+        #   of the pipeline have run deepscoring?
+        # for s in ds.scores:
+        #     assert s._upstream_bitflag == desired_bitflag
         assert ds.image.bitflag == 2  # not in the downstream of sources
 
         # test part 3: test update_downstream_badness() function by adding and removing flags

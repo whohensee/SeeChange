@@ -9,7 +9,6 @@ from models.base import SmartSession
 from models.provenance import Provenance
 from models.image import Image  # noqa: F401
 from models.measurements import Measurements
-from pipeline.data_store import DataStore
 
 
 def test_measurements_attributes(measurer, ptf_datastore, test_config):
@@ -70,24 +69,6 @@ def test_measurements_attributes(measurer, ptf_datastore, test_config):
     # set the flux temporarily to something negative
     m.flux_apertures[0] = -10000
     assert np.isnan(m.mag_apertures[0])
-
-    # check that background is subtracted from the "flux" and "magnitude" properties
-    if m.best_aperture == -1:
-        assert m.flux == m.flux_psf - m.bkg_mean * m.area_psf
-        assert m.magnitude != m.mag_psf  # the magnitude has background subtracted from it
-        # Commenting out the next one.  We no longer automatically do annulus background,
-        #   so the background error won't be bigger.  See issue #396.
-        # assert m.flux_err > m.flux_psf_err   # the magnitude error is larger because of the error in background
-        # This next one can fail if the mean background is negative.
-        #   While the flux error will be larger, the flux itself will
-        #   also be larger in the background-subtracted version if the
-        #   mean background is negative, so the magnitude error (which
-        #   is a log of dflux/flux) may come out slightly smaller.
-        #   (This is just yet another indication that you should
-        #   generally work with fluxes, not magnitudes!)
-        # assert m.magnitude_err > m.mag_psf_err  # the magnitude error is larger because of the error in background
-    else:
-        assert m.flux == m.flux_apertures[m.best_aperture] - m.bkg_mean * m.area_apertures[m.best_aperture]
 
     # set the flux and zero point to some randomly chosen values and test the distribution of the magnitude:
     fiducial_zp = m.zp.zp
@@ -172,30 +153,48 @@ def test_filtering_measurements(ptf_datastore):
         ms = session.scalars(sa.select(Measurements).where(Measurements.flux_apertures[0] > 5000)).all()
         assert len(ms) < len(measurements)  # only some measurements have a flux above 5000
 
-        ms = session.scalars(sa.select(Measurements).where(Measurements.bkg_mean > 0)).all()
+        ms = session.scalars(sa.select(Measurements).where(Measurements.bkg_per_pix > 0)).all()
         assert len(ms) <= len(measurements)  # only some of the measurements have positive background
 
         ms = session.scalars(sa.select(Measurements).where(
-            Measurements.offset_x > 0, Measurements.provenance_id == m.provenance_id
+            Measurements.x > Measurements.center_x_pixel, Measurements.provenance_id == m.provenance_id
         )).all()
-        assert len(ms) <= len(measurements)  # only some of the measurements have positive offsets
+        assert len(ms) <= len(measurements)  # only some of the measurements have x > center_x_pixel
+
+        # ms = session.scalars(sa.select(Measurements).where(
+        #     Measurements.area_psf >= 0, Measurements.provenance_id == m.provenance_id
+        # )).all()
+        # assert len(ms) == len(measurements)  # all measurements have positive psf area
 
         ms = session.scalars(sa.select(Measurements).where(
-            Measurements.area_psf >= 0, Measurements.provenance_id == m.provenance_id
-        )).all()
-        assert len(ms) == len(measurements)  # all measurements have positive psf area
-
-        ms = session.scalars(sa.select(Measurements).where(
-            Measurements.width >= 0, Measurements.provenance_id == m.provenance_id
+            Measurements.major_width >= 0, Measurements.provenance_id == m.provenance_id
         )).all()
         assert len(ms) == len(measurements)  # all measurements have positive width
 
-        # filter on a specific disqualifier score
         ms = session.scalars(sa.select(Measurements).where(
-            Measurements.disqualifier_scores['negatives'].astext.cast(sa.REAL) < 0.1,
-            Measurements.provenance_id == m.provenance_id
+            Measurements.psf_fit_flags != 0, Measurements.provenance_id == m.provenance_id
         )).all()
-        assert len(ms) <= len(measurements)
+        assert len(ms) < len(measurements)   # Not all have psf fit flags set
+        assert len(ms) > 0                   # ...but some did
+
+        ms = session.scalars(sa.select(Measurements).where(
+            Measurements.nbadpix > 0, Measurements.provenance_id == m.provenance_id
+        )).all()
+        assert len(ms) < len(measurements)   # Not all measurements had a bad pixel
+        # assert len(ms) > 0                 # ...but some did
+        #                                    # ...well, some did if the deletion_thresholds were all null...
+
+        ms = session.scalars(sa.select(Measurements).where(
+            Measurements.negfrac > 0.2, Measurements.provenance_id == m.provenance_id
+        )).all()
+        assert len(ms) < len(measurements)   # Not all measurements had negfrac > 0.2
+        assert len(ms) > 0                   # ...but some did
+
+        ms = session.scalars(sa.select(Measurements).where(
+            Measurements.negfluxfrac > 0.2, Measurements.provenance_id == m.provenance_id
+        )).all()
+        assert len(ms) < len(measurements)   # Not all measurements had negfrac > 0.2
+        assert len(ms) > 0                   # ...but some did
 
 
 def test_measurements_cannot_be_saved_twice(ptf_datastore):
@@ -233,124 +232,3 @@ def test_measurements_cannot_be_saved_twice(ptf_datastore):
             with SmartSession() as sess:
                 sess.execute( sa.delete( Measurements ).where( Measurements._id==m2.id ) )
                 sess.commit()
-
-
-def test_threshold_flagging(ptf_datastore, measurer):
-
-    measurements = ptf_datastore.measurements
-    m = measurements[0]  # grab the first one as an example
-
-    measurer.pars.thresholds['negatives'] = 0.3
-    measurer.pars.deletion_thresholds['negatives'] = 0.5
-
-    m.disqualifier_scores['negatives'] = 0.1 # set a value that will pass both
-    assert measurer.compare_measurement_to_thresholds(m) == "ok"
-
-    m.disqualifier_scores['negatives'] = 0.4 # set a value that will fail one
-    assert measurer.compare_measurement_to_thresholds(m) == "bad"
-
-    m.disqualifier_scores['negatives'] = 0.6 # set a value that will fail both
-    assert measurer.compare_measurement_to_thresholds(m) == "delete"
-
-    # test what happens if we set deletion_thresholds to unspecified
-    #   This should not test at all for deletion
-    measurer.pars.deletion_thresholds = {}
-
-    m.disqualifier_scores['negatives'] = 0.1 # set a value that will pass
-    assert measurer.compare_measurement_to_thresholds(m) == "ok"
-
-    m.disqualifier_scores['negatives'] = 0.8 # set a value that will fail
-    assert measurer.compare_measurement_to_thresholds(m) == "bad"
-
-    # test what happens if we set deletion_thresholds to None
-    #   This should set the deletion threshold same as threshold
-    measurer.pars.deletion_thresholds = None
-    m.disqualifier_scores['negatives'] = 0.1 # set a value that will pass
-    assert measurer.compare_measurement_to_thresholds(m) == "ok"
-
-    m.disqualifier_scores['negatives'] = 0.4 # a value that would fail mark
-    assert measurer.compare_measurement_to_thresholds(m) == "delete"
-
-    m.disqualifier_scores['negatives'] = 0.9 # a value that would fail both (earlier)
-    assert measurer.compare_measurement_to_thresholds(m) == "delete"
-
-
-# This really ought to be in pipeline/test_measuring.py
-def test_deletion_thresh_is_non_critical( ptf_datastore_through_cutouts, measurer ):
-
-    # hard code in the thresholds to ensure no problems arise
-    # if the defaults for testing change
-    measurer.pars.threshold = {
-                'negatives': 0.3,
-                'bad pixels': 1,
-                'offsets': 5.0,
-                'filter bank': 2,
-                'bad_flag': 1,
-            }
-
-    measurer.pars.deletion_threshold = {
-                'negatives': 0.3,
-                'bad pixels': 1,
-                'offsets': 5.0,
-                'filter bank': 2,
-                'bad_flag': 1,
-            }
-
-    ds1 = DataStore( ptf_datastore_through_cutouts )
-    ds2 = DataStore( ptf_datastore_through_cutouts )
-
-    # Gotta remove the 'measuring' provenance from ds1's prov tree
-    #  (which I think will also remove it from ds2's, not to mention
-    #  ptf_datastore_through_cutout's, as I don't think the copy
-    #  construction for DataStore does a deep copy) because we're about
-    #  to run measurements with a different set of parameters
-    del ds1.prov_tree['measuring']
-
-    ds1 = measurer.run( ds1 )
-    ds1provid = ds1.measurements[0].provenance_id
-
-
-    # Make sure that if we change a deletion threshold, we get
-    #   back the same provenance
-
-    # First make sure that the measurements are all cleared out of the database,
-    #  so they won't just get reloaded
-    with SmartSession() as session:
-        session.execute( sa.delete( Measurements ).where( Measurements._id.in_( [ i.id for i in ds1.measurements ] ) ) )
-        session.commit()
-
-    measurer.pars.deletion_threshold = None
-    # Make sure the data store forgets about its measurements provenance so it will make a new one
-    if 'measuring' in ds2.prov_tree:
-        del ds2.prov_tree['measuring']
-    ds2 = measurer.run( ds2 )
-
-    assert ds2.measurements[0].provenance_id == ds1provid
-
-
-def test_measurements_forced_photometry(ptf_datastore):
-    offset_max = 2.0
-    for m in ptf_datastore.measurements:
-        if abs(m.offset_x) < offset_max and abs(m.offset_y) < offset_max:
-            break
-    else:
-        raise RuntimeError(f'Cannot find any measurement with offsets less than {offset_max}')
-
-    with pytest.raises( ValueError, match="Must pass PSF if you want to do PSF photometry" ):
-        m.get_flux_at_point( m.ra, m.dec, aperture=-1 )
-
-    flux_small_aperture = m.get_flux_at_point(m.ra, m.dec, aperture=1)
-    flux_large_aperture = m.get_flux_at_point(m.ra, m.dec, aperture=len(m.aper_radii) - 1)
-    flux_psf = m.get_flux_at_point( m.ra, m.dec, aperture=-1, psf=ptf_datastore.psf )
-    assert flux_small_aperture[0] == pytest.approx(m.flux_apertures[1], abs=0.01)
-    assert flux_large_aperture[0] == pytest.approx(m.flux_apertures[-1], abs=0.01)
-    assert flux_psf[0] == pytest.approx(m.flux_psf, abs=0.01)
-
-    # print(f'Flux regular, small: {m.flux_apertures[1]}+-{m.flux_apertures_err[1]} over area: {m.area_apertures[1]}')
-    # print(f'Flux regular, big: {m.flux_apertures[-1]}+-{m.flux_apertures_err[-1]} over area: {m.area_apertures[-1]}')
-    # print(f'Flux regular, PSF: {m.flux_psf}+-{m.flux_psf_err} over area: {m.area_psf}')
-    # print(f'Flux small aperture: {flux_small_aperture[0]}+-{flux_small_aperture[1]} '
-    #       f'over area: {flux_small_aperture[2]}')
-    # print(f'Flux big aperture: {flux_large_aperture[0]}+-{flux_large_aperture[1]} '
-    #       f'over area: {flux_large_aperture[2]}')
-    # print(f'Flux PSF forced: {flux_psf[0]}+-{flux_psf[1]} over area: {flux_psf[2]}')

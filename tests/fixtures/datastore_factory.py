@@ -9,7 +9,7 @@ import numpy as np
 
 import sqlalchemy as sa
 
-from models.base import SmartSession
+from models.base import SmartSession, Psycopg2Connection
 from models.provenance import Provenance
 from models.enums_and_bitflags import BitFlagConverter #, string_to_bitflag, flag_image_bits_inverse
 from models.report import Report
@@ -596,6 +596,7 @@ def datastore_factory(data_dir, pipeline_factory, request):
                 f = ds.ref_image.invent_filepath()
                 f = f.replace('ComSci', 'Warped')  # not sure if this or 'Sci' will be in the filename
                 f = f.replace('Sci', 'Warped')     # in any case, replace it with 'Warped'
+                f = f[:-9]                         # strip the u-tag
                 f = f[:-6] + prov_aligned_ref.id[:6]  # replace the provenance ID
                 filename_aligned_ref = pathlib.Path( f )
                 filename_aligned_ref_bg = pathlib.Path( f'{f}_bg' )
@@ -787,11 +788,11 @@ def datastore_factory(data_dir, pipeline_factory, request):
                 [ setattr(m, 'cutouts_id', ds.cutouts.id) for m in ds.all_measurements ]
 
                 # Because the Object association wasn't run, we have to do that manually
-                with SmartSession() as sess:
+                with Psycopg2Connection() as conn:
                     for m in ds.measurements:
                         m.associate_object( p.measurer.pars.association_radius,
                                             is_testing=ds.prov_tree['measuring'].is_testing,
-                                            session=sess )
+                                            connection=conn )
 
             if ds.measurements is None:
                 SCLogger.debug( "make_datastore running measurer to create measurements" )
