@@ -209,18 +209,15 @@ email:
 #   server_url: string
 #      The url of the custom server
 #
-#   use_datalab: bool
-#      If true, use the NOIRLab datalab server using their queryClient
-#      code.
-#
 #   fallback_datalab: bool
-#      Only meaningful if use_server is true.  If the custom server is
-#      unavailable or fails after five tries, if this is true then try
-#      falling back to the NOIRLab server.
+#      If use_server is False, or if user_server is True and the custom
+#      server is unavailable or fails after five tries, then try falling
+#      back to the NOIRLab server if fallback_datalab is True.
 
 catalog_gaiadr3:
-  use_server: True
-  use_datalab: False
+  # use_server: True
+  # TEMPORARY 2025-01-27 : NERSC is down this week, so don't even try the spin server.
+  use_server: False
   fallback_datalab: True
   server_url: https://ls4-gaia-dr3.lbl.gov
   server_timeout_sec: 5.

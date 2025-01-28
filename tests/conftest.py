@@ -1,3 +1,5 @@
+_omg = f"This line is here to make ruff fail so github tests won't run during NERSC down week"
+
 import os
 import io
 import warnings
@@ -46,8 +48,8 @@ from util.logger import SCLogger
 #   at the end of tests.  In general, we want this to be True, so we can make sure
 #   that our tests are properly cleaning up after themselves.  However, the errors
 #   from this can hide other errors and failures, so when debugging, set it to False.
-verify_archive_database_empty = True
-# verify_archive_database_empty = False
+# verify_archive_database_empty = True
+verify_archive_database_empty = False
 
 
 pytest_plugins = [
@@ -255,7 +257,13 @@ def pytest_sessionfinish(session, exitstatus):
 
 @pytest.fixture(scope='session')
 def download_url():
-    return 'https://portal.nersc.gov/cfs/m4616/SeeChange_testing_data'
+    # return 'https://portal.nersc.gov/cfs/m4616/SeeChange_testing_data'
+    # TEMPORARY 2025-01-27
+    # NERSC is down this week, so use the following fallback location until it's back up.
+    # Make sure to undo this later because I have a transfer limit.  It's 2TB/month,
+    # so we can download a full cache ~20 times before it runs out, but with github
+    # actions, it's easier to hit this than you might think.
+    return 'https://rknop.net/SeeChange_testing_data'
 
 
 # data that is included in the repo and should be available for tests

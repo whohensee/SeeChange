@@ -41,6 +41,12 @@ class ParsPreprocessor(Parameters):
                       "One of the FlatTypeConverter enum. ",
                       critical=True )
 
+        self.add_par( 'purge_raw_data',
+                      True,
+                      bool,
+                      "Set the raw_data field of image to None in an attempt to preserve memory",
+                      critical=False )
+
         self._enforce_no_new_attrs = True
 
         self.override(kwargs)
@@ -143,9 +149,11 @@ class Preprocessor:
             # check if the image already exists in memory or in the database:
             image = ds.get_image(prov, session=session)
 
+            image_was_from_exposure = False
             if image is None:  # need to make new image
                 # get the single-chip image from the exposure
                 image = Image.from_exposure( ds.exposure, ds.section_id )
+                image_was_from_exposure = True
 
             if image is None:
                 raise ValueError('Image cannot be None at this point!')
@@ -166,6 +174,9 @@ class Preprocessor:
             # in case we skip all preprocessing steps
             if image._data is None:
                 image.data = image.raw_data
+                # Make sure the Exposure won't cache data we aren't using any more.
+                if image_was_from_exposure:
+                    ds.exposure.clear_cache()
 
             # The image keeps track of the steps already done to it in
             #   image.preproc_bitflag, which is translated into a string
@@ -196,6 +207,12 @@ class Preprocessor:
                     # Update the header ra/dec calculations now that we know the real width/height
                     image.set_corners_from_header_wcs(setradec=True)
                     image.preproc_bitflag |= string_to_bitflag( 'overscan', image_preprocessing_inverse )
+
+                # At this point, we won't use image.raw_data again.  Set it
+                #   to None so the memory will be freed if it's not also
+                #   referred somewhere else.
+                if self.pars.purge_raw_data:
+                    image.raw_data = None
 
                 # Apply steps in the order expected by the instrument
                 for step in self.pars.steps_required:
