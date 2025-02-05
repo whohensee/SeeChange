@@ -25,7 +25,7 @@ def test_subtraction_data_products( ptf_ref, ptf_supernova_image_datastores ):
     subtractor.pars.method = 'naive'
     subtractor.pars.refset = 'test_refset_ptf'
     assert subtractor.pars['alignment_index'] == 'new'  # make sure alignment is configured to new, not latest image
-    ds1.prov_tree = ds1._pipeline.make_provenance_tree( ds1.exposure, no_provtag=True )
+    ds1._pipeline.make_provenance_tree( ds1, no_provtag=True )
     ds = subtractor.run( ds1 )
     assert len( ds.exceptions ) == 0      # Make sure no exceptions from subtractor run
 
@@ -60,7 +60,7 @@ def test_subtraction_ptf_zogy(ptf_ref, ptf_supernova_image_datastores):
     subtractor.pars.method = 'zogy'  # this is the default, but it might not always be
     subtractor.pars.refset = 'test_refset_ptf'
     assert subtractor.pars['alignment_index'] == 'new'  # make sure alignment is configured to new, not latest image
-    ds1.prov_tree = ds1._pipeline.make_provenance_tree( ds1.exposure, no_provtag=True )
+    ds1._pipeline.make_provenance_tree( ds1, no_provtag=True )
     ds = subtractor.run( ds1 )
     assert len( ds.exceptions ) == 0      # Make sure no exceptions from subtractor run
 
@@ -111,7 +111,7 @@ def test_subtraction_ptf_hotpants( ptf_ref, ptf_supernova_image_datastores ):
     subtractor.pars.method = 'hotpants'
     subtractor.pars.refset = 'test_refset_ptf'
     detector.pars.method = 'sextractor'
-    ds1.prov_tree = ds1._pipeline.make_provenance_tree( ds1.exposure, no_provtag=True )
+    ds1._pipeline.make_provenance_tree( ds1, no_provtag=True )
     ds = subtractor.run( ds1 )
     assert len( ds.exceptions ) == 0      # Make sure no exceptions from subtractor run
 
@@ -129,7 +129,7 @@ def test_subtraction_ptf_hotpants( ptf_ref, ptf_supernova_image_datastores ):
 
     # no region should have more than 10000 pixels masked
     assert max(region_pixel_counts) < 10000
-    # No more than ~3% pixels masked.  (Hotpants method seems to maks more than zogy.)
+    # No more than ~3% pixels masked.  (Hotpants method seems to mask more than zogy.)
     assert np.sum(region_pixel_counts) / ds.sub_image.data.size < 0.031
 
     # check that a visually-identified blank region really is 0, and that
@@ -151,7 +151,7 @@ def test_warnings_and_exceptions( decam_datastore_through_zp, decam_reference, d
     if not SKIP_WARNING_TESTS:
         subtractor.pars.inject_warnings = 1
         subtractor.pars.refset = 'test_refset_decam'
-        ds.prov_tree = ds._pipeline.make_provenance_tree( ds.exposure )
+        ds._pipeline.make_provenance_tree( ds )
 
         with pytest.warns(UserWarning) as record:
             subtractor.run( ds )
@@ -162,6 +162,6 @@ def test_warnings_and_exceptions( decam_datastore_through_zp, decam_reference, d
     subtractor.pars.inject_warnings = 0
     subtractor.pars.inject_exceptions = 1
     ds.sub_image = None
-    ds.prov_tree = ds._pipeline.make_provenance_tree( ds.exposure )
+    ds._pipeline.make_provenance_tree( ds )
     with pytest.raises(Exception, match="Exception injected by pipeline parameters in process 'subtraction'."):
         ds = subtractor.run( ds )

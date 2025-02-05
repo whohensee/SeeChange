@@ -672,6 +672,8 @@ def decam_ref_datastore( decam_elais_e1_two_refs_datastore ):
     return decam_elais_e1_two_refs_datastore[0]
 
 
+# TODO -- the provenance upstreams are now wrong after PR #407
+# (It may be possible to go back to refmaker_factory?)
 @pytest.fixture
 def decam_elais_e1_two_references( decam_elais_e1_two_refs_datastore ):
     refs = []
@@ -696,8 +698,7 @@ def decam_elais_e1_two_references( decam_elais_e1_two_refs_datastore ):
                           decam_elais_e1_two_refs_datastore ):
         ref = Reference(
             _id = refid,
-            image_id = ds.image.id,
-            sources_id = ds.sources.id,
+            zp_id = ds.zp.id,
             provenance_id = refprov.id
         )
         ref.insert()
@@ -723,13 +724,8 @@ def decam_reference( decam_elais_e1_two_references ):
 
 @pytest.fixture(scope='session')
 def get_cached_decam_image( code_version, decam_cache_dir, download_url, datastore_factory ):
-    # Note that the "preprocessing" value may well be a lie.  Sometimes these images
-    #   were produced other ways.  But, oh well, this is just a test.
-    improv = Provenance( process="preprocessing",
-                         parameters={ "calibset": "externally_supplied",
-                                      "flattype": "externally_supplied",
-                                      "preprocessing": "noirlab_instcal",
-                                      "steps_required": ["overscan", "linearity", "flat", "fringe"] },
+    improv = Provenance( process="acquired",
+                         parameters={},
                          code_version_id=code_version.id,
                          upstreams=[],
                          is_testing=True )
