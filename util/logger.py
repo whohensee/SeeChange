@@ -8,7 +8,7 @@ _default_log_level = logging.INFO
 
 _default_datefmt = '%Y-%m-%d %H:%M:%S'
 # Normally you don't want to show milliseconds, because it's additional gratuitous information
-#  that makes the header longer.  But, if you're debugging timing stuff, you might want
+#  that makes log output lines longer.  But, if you're debugging timing stuff, you might want
 #  temporarily to set this to True.
 # _show_millisec = True
 _show_millisec = False
