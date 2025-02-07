@@ -1025,6 +1025,7 @@ def bogus_fakeset_saved( bogus_zp ):
     xs = [  1127.68, 1658.71, 1239.56, 1601.83, 1531.19, 921.57 ]
     ys = [  2018.91, 1998.84, 2503.77, 2898.47, 3141.27, 630.95  ]
     mags = [ 20.32,  19.90,   23.00,   22.00,  21.00,    23.30 ]
+    hostdexen = [ -1., 0., -1., -1., 5., -1. ]
 
     zpprov = Provenance.get( bogus_zp.provenance_id )
     prov = Provenance( code_version_id=zpprov.code_version_id,
@@ -1039,6 +1040,7 @@ def bogus_fakeset_saved( bogus_zp ):
     fakeset.fake_x = np.array( xs )
     fakeset.fake_y = np.array( ys )
     fakeset.fake_mag = np.array( mags )
+    fakeset.host_dex = np.array( hostdexen )
 
     fakeset.filepath = "bogus_fakeset.h5"
     fakeset.save()
