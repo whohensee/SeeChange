@@ -1,56 +1,28 @@
-import { rkAuth } from "./rkauth.js"
-import { rkWebUtil } from "./rkwebutil.js"
+import { rkWebUtil } from "./rkwebutil.js";
+import { seechange } from "./seechange_ns.js";
 
-// Namespace, which is the only thing exported
-
-var scconductor = {};
 
 // **********************************************************************
-// **********************************************************************
-// **********************************************************************
-// The global context
 
-scconductor.Context = class
+seechange.Conductor = class
 {
-    constructor()
+    constructor( context )
     {
-        this.parentdiv = document.getElementById( "pagebody" );
-        this.authdiv = document.getElementById( "authdiv" );
-        this.maindiv = rkWebUtil.elemaker( "div", this.parentdiv );
-        this.connector = new rkWebUtil.Connector( "/" );
-    };
-
-    init()
-    {
-        let self = this;
-
-        this.auth = new rkAuth( this.authdiv, "",
-                                () => { self.render_page(); },
-                                () => { window.location.reload(); } );
-        this.auth.checkAuth();
+        this.context = context;
+        this.div = rkWebUtil.elemaker( "div", null, { 'id': 'conductordiv' } );
+        this.connector = this.context.connector;
     };
 
     // **********************************************************************
 
-    render_page()
+    render()
     {
         let self = this;
 
         let p, span, hbox;
 
-        rkWebUtil.wipeDiv( this.authdiv );
-        p = rkWebUtil.elemaker( "p", this.authdiv,
-                                { "text": "Logged in as " + this.auth.username
-                                  + " (" + this.auth.userdisplayname + ") — ",
-                                  "classes": [ "italic" ] } );
-        span = rkWebUtil.elemaker( "span", p,
-                                   { "classes": [ "link" ],
-                                     "text": "Log Out",
-                                     "click": () => { self.auth.logout( () => { window.location.reload(); } ) }
-                                   } );
-
-        rkWebUtil.wipeDiv( this.maindiv );
-        this.frontpagediv = rkWebUtil.elemaker( "div", this.maindiv );
+        rkWebUtil.wipeDiv( this.div );
+        this.frontpagediv = rkWebUtil.elemaker( "div", this.div );
 
         hbox = rkWebUtil.elemaker( "div", this.frontpagediv, { "classes": [ "hbox" ] } );
 
@@ -92,9 +64,10 @@ scconductor.Context = class
                               "classes": [ "warning", "bold", "italic" ] } )
 
         if ( edit )
-            this.connector.sendHttpRequest( "/status", {}, (data) => { self.edit_config_status(data) } );
+            this.connector.sendHttpRequest( "conductor/status", {}, (data) => { self.edit_config_status(data) } );
         else
-            this.connector.sendHttpRequest( "/status", {}, (data) => { self.actually_show_config_status(data) } );
+            this.connector.sendHttpRequest( "conductor/status", {},
+                                            (data) => { self.actually_show_config_status(data) } );
     }
 
     // **********************************************************************
@@ -288,10 +261,11 @@ scconductor.Context = class
         if ( projects != null ) params['projects'] = projects;
         if ( Object.keys(params).length == 0 ) params = null;
 
-        this.connector.sendHttpRequest( "/updateparameters", { 'instrument': instrument,
-                                                               'pause': this.status_pause_wid.checked ? 1 : 0,
-                                                               'hold': this.status_hold_wid.checked ? 1 : 0,
-                                                               'updateargs': params },
+        this.connector.sendHttpRequest( "conductor/updateparameters",
+                                        { 'instrument': instrument,
+                                          'pause': this.status_pause_wid.checked ? 1 : 0,
+                                          'hold': this.status_hold_wid.checked ? 1 : 0,
+                                          'updateargs': params },
                                         () => self.show_config_status() );
     }
 
@@ -305,7 +279,7 @@ scconductor.Context = class
         rkWebUtil.elemaker( "span", this.forceconductorpoll_p,
                             { "text": "...forcing conductor poll...",
                               "classes": [ "warning", "bold", "italic" ] } );
-        this.connector.sendHttpRequest( "/forceupdate", {}, () => self.did_force_conductor_poll() );
+        this.connector.sendHttpRequest( "conductor/forceupdate", {}, () => self.did_force_conductor_poll() );
     }
 
     // **********************************************************************
@@ -326,7 +300,7 @@ scconductor.Context = class
         let self = this;
         rkWebUtil.wipeDiv( this.workersdiv );
         rkWebUtil.elemaker( "h3", this.workersdiv, { "text": "Known Pipeline Workers" } );
-        this.connector.sendHttpRequest( "/getworkers", {}, (data) => { self.show_workers(data); } );
+        this.connector.sendHttpRequest( "conductor/getworkers", {}, (data) => { self.show_workers(data); } );
     }
 
     // **********************************************************************
@@ -377,7 +351,7 @@ scconductor.Context = class
         let p = rkWebUtil.elemaker( "p", this.knownexpdiv,
                                     { "text": "Loading known exposures...",
                                       "classes": [ "warning", "bold", "italic" ] } );
-        let url = "/getknownexposures";
+        let url = "conductor/getknownexposures";
         if ( this.knownexp_mintwid.value.trim().length > 0 ) {
             let minmjd = rkWebUtil.mjdOfDate( rkWebUtil.parseDateAsUTC( this.knownexp_mintwid.value ) );
             url += "/minmjd=" + minmjd.toString();
@@ -506,7 +480,7 @@ scconductor.Context = class
         }
 
         if ( tohold.length > 0 ) {
-            let url = hold ? "/holdexposures" : "/releaseexposures"
+            let url = hold ? "conductor/holdexposures" : "conductor/releaseexposures"
             this.connector.sendHttpRequest( url, { 'knownexposure_ids': tohold },
                                             (data) => { self.process_hold_release_exposures(data, hold); } );
         }
@@ -540,4 +514,4 @@ scconductor.Context = class
 // **********************************************************************
 // Make this into a module
 
-export { scconductor };
+export { };
