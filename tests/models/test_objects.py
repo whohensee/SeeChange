@@ -6,7 +6,7 @@ import psycopg2.errors
 
 from astropy.time import Time
 
-from models.base import SmartSession
+from models.base import SmartSession, Psycopg2Connection
 from models.provenance import Provenance
 from models.measurements import Measurements
 from models.object import Object
@@ -36,6 +36,51 @@ def test_object_creation():
         assert obj2.name == obj.name
         # Fix this when object naming is re-implemented
         # assert re.match(r'\w+\d{4}\w+', obj2.name)
+
+
+def test_generate_names():
+    try:
+        # make sure that things in the year range 3500 aren't in the object_name_max_used table
+        with Psycopg2Connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute( "SELECT * FROM object_name_max_used WHERE year>=3500 AND year<3600" )
+            rows = cursor.fetchall()
+            if len(rows) > 0:
+                raise RuntimeError( "object_name_max_used table has rows in the range [3500,3600). "
+                                    "This shouldn't be.  Make sure another test isn't doing this." )
+
+        names = Object.generate_names( number=3, year=3500, formatstr="test_gen_name%y%a" )
+        assert names == [ "test_gen_name00a", "test_gen_name00b", "test_gen_name00c" ]
+        names = Object.generate_names( number=3, year=3501, formatstr="test_gen_name%y%a" )
+        assert names == [ "test_gen_name01a", "test_gen_name01b", "test_gen_name01c" ]
+        names = Object.generate_names( number=3, year=3501, formatstr="test_gen_name%Y%a" )
+        assert names == [ "test_gen_name3501d", "test_gen_name3501e", "test_gen_name3501f" ]
+        names = Object.generate_names( number=3, year=3501, formatstr="test_gen_name%Y%a" )
+        assert names == [ "test_gen_name3501g", "test_gen_name3501h", "test_gen_name3501i" ]
+        names = Object.generate_names( number=3, year=3501, formatstr="test_gen_name%Y_%n" )
+        assert names == [ "test_gen_name3501_9", "test_gen_name3501_10", "test_gen_name3501_11" ]
+        names = Object.generate_names( number=1, year=3502, formatstr="test_gen_name%Y%A" )
+        assert names == [ "test_gen_name3502A" ]
+
+        names = Object.generate_names( number=26**3, year=3503, formatstr="test_gen_name%Y%a" )
+        assert names[0] == "test_gen_name3503a"
+        assert names[25] == "test_gen_name3503z"
+        assert names[1*26 + 0] == "test_gen_name3503ba"
+        assert names[1*26 + 25] == "test_gen_name3503bz"
+        assert names[2*26 + 0] == "test_gen_name3503ca"
+        assert names[25*26 + 25] == "test_gen_name3503zz"
+        assert names[1*(26**2) + 0*26 + 0] == "test_gen_name3503baa"
+        assert names[25*(26**2) + 0*26 + 0] ==  "test_gen_name3503zaa"
+        assert names[25*(26**2) + 25*26 + 25] == "test_gen_name3503zzz"
+
+    finally:
+        with Psycopg2Connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute( "DELETE FROM object_name_max_used WHERE year>=3500 AND year<3600" )
+            cursor.execute( "DELETE FROM objects WHERE name LIKE 'test_gen_name35%' "
+                            "                       OR name LIKE 'test_gen_name00%'"
+                            "                       OR name LIKE 'test_gen_name01%'" )
+            conn.commit()
 
 
 # ...what does this next test have to do with Object?
@@ -103,15 +148,23 @@ def test_filtering_measurements_on_object(sim_lightcurves):
             m2.provenance_id = prov.id
             m2.ra += 0.05 * i / 3600.0  # move the RA by less than one arcsec
             m2.ra = m2.ra % 360.0  # make sure RA is in range
-            m2.associate_object(session)
-            m2 = session.merge(m2)
             new_measurements.append(m2)
+
+        Object.associate_measurements( measurements, year=2000 )
+        # Make sure measurement objects are properly saved to the database after association
+        # (Or, anyway, the mysterious and rather annoying SQLAlchemy equivalent.)
+        new_new_measurements = []
+        for m in new_measurements:
+            m2 = session.merge( m )
+            new_new_measurements.append( m2 )
+        new_measurements = new_new_measurements
 
         session.commit()
         session.refresh(obj)
         all_ids = [m.id for m in new_measurements + measurements]
         all_ids.sort()
         assert set([m.id for m in obj.measurements]) == set(all_ids)
+
 
     assert all([m.id is not None for m in new_measurements])
     assert all([m.id != m2.id for m, m2 in zip(new_measurements, measurements)])
@@ -227,51 +280,3 @@ def test_filtering_measurements_on_object(sim_lightcurves):
         # get the new and only if not found go to the old
         found = obj.get_measurements_list(prov_hash_list=[prov.id, measurements[0].provenance.id])
         assert set([m.id for m in found]) == set(new_id_list)
-
-
-@pytest.mark.xfail( reason="Issue #345" )
-def test_separate_good_and_bad_objects(measurer, ptf_datastore):
-    assert False
-    measurements = ptf_datastore.measurements
-    m = measurements[0]  # grab the first one as an example
-
-    with SmartSession() as session:
-        m = session.merge(m)
-
-        prov=Provenance(
-            process=m.provenance.process,
-            upstreams=m.provenance.upstreams,
-            code_version_id=m.provenance.code_version_id,
-            parameters=m.provenance.parameters.copy(),
-            is_testing=True,
-        )
-        prov.parameters['test_parameter'] = uuid.uuid4().hex
-        prov.update_id()
-        obj1 = session.merge(m.object)
-
-        m2 = Measurements()
-        for key, value in m.__dict__.items():
-            if key not in [
-                '_sa_instance_state',
-                'id',
-                'created_at',
-                'modified',
-                'from_db',
-                'provenance',
-                'provenance_id',
-                'object',
-                'object_id',
-            ]:
-                setattr(m2, key, value)
-        m2.provenance = prov
-        m2.provenance_id = prov.id
-        m2.is_bad = not m.is_bad # flip the is_bad tag
-        m2.associate_object(session)
-        m2 = session.merge(m2)
-        obj2 = session.merge(m2.object)
-
-        # check we got a new obj, proper badness on each, one of each badness
-        assert obj1 is not obj2
-        assert obj1.is_bad == m.is_bad
-        assert obj2.is_bad == m2.is_bad
-        assert not obj1.is_bad == obj2.is_bad

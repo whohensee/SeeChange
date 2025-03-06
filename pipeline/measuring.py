@@ -1,12 +1,13 @@
 import time
 
 import numpy as np
+import astropy.time
 
 from improc.photometry import photometry_and_diagnostics
 
-from models.base import Psycopg2Connection
 from models.cutouts import Cutouts
 from models.measurements import MeasurementSet
+from models.object import Object
 
 from pipeline.parameters import Parameters
 from pipeline.data_store import DataStore
@@ -110,7 +111,7 @@ class ParsMeasurer(Parameters):
             'do_not_associate',
             False,
             bool,
-            'By default, associate_object is called for each measurement, which will commit new '
+            'By default, Object.associate_measurements is called for measurements, which will commit new '
             'Object rowss to the database.  Set this flag to skip this step.'
         )
 
@@ -332,9 +333,8 @@ class Measurer:
 
                 # Associate objects with measurements that passed deletion thresholds
                 if not self.pars.do_not_associate:
-                    with Psycopg2Connection() as conn:
-                        for m in measurements:
-                            m.associate_object( radius=self.pars.association_radius, connection=conn )
+                    year = int( np.floor( astropy.time.Time( sub_image.mjd, format='mjd' ).jyear ) )
+                    Object.associate_measurements( measurements, self.pars.association_radius, year=year )
 
                 # Make sure the upstream bitflag is set for all measurements
                 measurement_set._upstream_bitflag = ds.cutouts.bitflag

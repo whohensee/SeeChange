@@ -1,5 +1,3 @@
-import uuid
-
 import numpy as np
 
 import sqlalchemy as sa
@@ -8,14 +6,12 @@ from sqlalchemy.schema import UniqueConstraint
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.ext.declarative import declared_attr
 
-from util.util import asUUID
 from models.base import ( Base,
                           SeeChangeBase,
                           UUIDMixin,
                           SpatiallyIndexed,
                           HasBitFlagBadness,
-                          SmartSession,
-                          Psycopg2Connection )
+                          SmartSession )
 from models.cutouts import Cutouts
 from models.image import Image
 from models.source_list import SourceList
@@ -617,91 +613,6 @@ class Measurements(Base, UUIDMixin, SpatiallyIndexed, HasBitFlagBadness):
         for att in Cutouts.get_data_scalar_attributes():
             setattr( self, f"_{att}", co_data_dict.get(att) )
 
-
-    def associate_object(self, radius, is_testing=False, is_fake=False, connection=None):
-        """Find or create a new object and associate it with this measurement.
-
-        If no Object is found, a new one is created and saved to the
-        database. Its coordinates will be identical to those of this
-        Measurements object.
-
-        This should only be done for measurements that have passed
-        deletion_threshold preliminary cuts, which mostly rules out
-        obvious artifacts.  Measurements which do pass those thresholds
-        and are saved still do get an object associated with them.  Good
-        objects will eventually have a mix of "good" and "bad"
-        measurements assocated with them, as there will be some low S/N
-        detections that will randomly not pass some of the thresholds.
-        (If the "bad" and "deletion" thresholds are the same, then no
-        is_bad measurements will get saved to the database in the first
-        place.)
-
-        Parameters
-        ----------
-          radius: float
-            Distance in arcseconds an existing Object must be within
-            compared to (self.ra, self.dec) to be considered the same
-            object.
-
-          is_testing: bool, default False
-            Set to True if the provenance of the measurement is a
-            testing provenance.
-
-          is_fake: bool, default False
-            Set to True if this is a measurement of a fake.
-
-          connection: psycopg2 connection or None
-
-        """
-        from models.object import Object  # avoid circular import
-
-        obj = None
-        with Psycopg2Connection( connection ) as conn:
-            try:
-                cursor = conn.cursor()
-                # Avoid race condition of two processes trying to
-                #   create the same object at once.
-                cursor.execute( "LOCK TABLE objects" )
-                cursor.execute( ( "SELECT _id, name, ra, dec, is_test, is_fake, is_bad FROM objects WHERE "
-                                  "q3c_radial_query( ra, dec, %(ra)s, %(dec)s, %(radius)s ) "
-                                  "AND is_fake=%(fake)s" ),
-                                { 'ra': self.ra, 'dec': self.dec, 'radius': radius/3600., 'fake': is_fake } )
-                rows = cursor.fetchall()
-                if len(rows) == 0:
-                    objid = uuid.uuid4()
-                    # TODO -- need a way to generate object names.  The way we were
-                    #   doing it before no longer works since it depended on numeric IDs.
-                    # (Issue #347)
-                    objname = str( objid )[-12:]
-                    cursor.execute( ( "INSERT INTO objects(_id,ra,dec,name,is_test,is_fake,is_bad) "
-                                      "VALUES(%(id)s, %(ra)s, %(dec)s, %(name)s, %(testing)s, FALSE, FALSE)" ),
-                                    { 'id': objid, 'name': objname, 'ra': self.ra, 'dec': self.dec,
-                                      'testing': is_testing } )
-                    conn.commit()
-                    obj = Object( _id=objid,
-                                  name=objname,
-                                  ra=self.ra,
-                                  dec=self.dec,
-                                  is_test=is_testing,
-                                  is_fake=is_fake,
-                                  is_bad=False )
-                else:
-                    obj = Object( _id=asUUID(rows[0][0]),
-                                  name=rows[0][1],
-                                  ra=rows[0][2],
-                                  dec=rows[0][3],
-                                  is_test=rows[0][4],
-                                  is_fake=rows[0][5],
-                                  is_bad=rows[0][6] )
-
-            finally:
-                conn.rollback()
-
-        if obj is None:
-            raise RuntimeError( "This should never happen." )
-
-        self.object_id = obj.id
-        return obj
 
     def _get_inverse_badness(self):
         return measurements_badness_inverse
