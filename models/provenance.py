@@ -349,7 +349,7 @@ class Provenance(Base):
 
     @classmethod
     def get( cls, provid, session=None ):
-        """Get a provenace given an id, or None if it doesn't exist."""
+        """Get a provenance given an id, or None if it doesn't exist."""
         with SmartSession( session ) as sess:
             return sess.query( Provenance ).filter( Provenance._id==provid ).first()
 
