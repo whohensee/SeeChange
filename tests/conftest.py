@@ -416,7 +416,9 @@ def code_version_dict():
     yield cv_dict
 
     with SmartSession() as session:
-        session.execute( sa.text( "DELETE FROM code_versions WHERE version=-1" ) )
+        session.execute( sa.text( "DELETE FROM code_versions WHERE version='-1'" ) )
+        # session.execute( sa.delete( CodeVersion ).where( CodeVersion.version==-1 ) )
+        session.commit()
         # Verify that the code hashes got cleaned out too
         # them = session.query( CodeHash ).filter( CodeHash.code_version_id == 'test_v1.0.0' ).all()
         # assert len(them) == 0

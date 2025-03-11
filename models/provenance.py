@@ -417,12 +417,15 @@ class Provenance(Base):
         if Provenance._current_code_version is None:
             code_version = None
             with SmartSession( session ) as session:
-                code_hash = session.scalars(sa.select(CodeHash).where(CodeHash._id == get_git_hash())).first()
-                if code_hash is not None:
-                    code_version = session.scalars( sa.select(CodeVersion)
-                                                    .where( CodeVersion._id == code_hash.code_version_id ) ).first()
+                # code_hash = session.scalars(sa.select(CodeHash).where(CodeHash._id == get_git_hash())).first()
+                # if code_hash is not None:
+                #     code_version = session.scalars( sa.select(CodeVersion)
+                #                                     .where( CodeVersion._id == code_hash.code_version_id ) ).first()
                 if code_version is None:
-                    code_version = session.scalars(sa.select(CodeVersion).order_by(CodeVersion._id.desc())).first()
+                    code_version = session.scalars(sa.select(CodeVersion)
+                                                   .where( CodeVersion.process == Provenance.process )
+                                                   .order_by(CodeVersion.version.desc())).first()
+                    breakpoint()
             if code_version is None:
                 raise RuntimeError( "There is no code_version in the database.  Put one there." )
             Provenance._current_code_version = code_version

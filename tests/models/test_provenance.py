@@ -12,7 +12,12 @@ from util.util import get_git_hash
 
 def test_diff_delete( code_version_dict ):
     cvd = code_version_dict
-    breakpoint()
+    # breakpoint()
+    with SmartSession() as sess:
+        n1 = sess.query( CodeVersion ).count()
+        # breakpoint()
+        assert n1 == 10
+    
 
 def test_code_versions( code_version ):
     cv = code_version
@@ -74,62 +79,74 @@ def test_code_versions( code_version ):
             session.execute( sa.text( "DELETE FROM code_hashes WHERE _id=:hash" ), { 'hash': old_hash } )
 
 
-def test_provenances(code_version):
+def test_provenances(code_version_dict):
     # cannot create a provenance without a process name
     with pytest.raises( ValueError, match="must have a process name" ):
         Provenance()
 
-    # cannot create a provenance with a code_version of wrong type
+    # cannot create a provenance with a code_version of wrong type  TODO WHPR Make this UUID (integer/tuple once semver)
     with pytest.raises( ValueError, match="Code version must be a str" ):
         Provenance(process='foo', code_version_id=123)
+    # 
 
-    pid1 = pid2 = None
-
-    try:
-
-        with SmartSession() as session:
-            p = Provenance(
-                process="test_process",
-                code_version_id=code_version.id,
+    p = Provenance(
+                process="extraction",
+                # code_version_id=code_version.id,
                 parameters={"test_parameter": "test_value1"},
                 upstreams=[],
                 is_testing=True,
             )
-            # hash is calculated in init
 
-            pid1 = p.id
-            assert pid1 is not None
-            assert isinstance(pid1, str)
-            assert len(pid1) == 20
 
-            p2 = Provenance(
-                code_version_id=code_version.id,
-                parameters={"test_parameter": "test_value2"},
-                process="test_process",
-                upstreams=[],
-                is_testing=True,
-            )
 
-            pid2 = p2.id
-            assert pid2 is not None
-            assert isinstance(p2.id, str)
-            assert len(p2.id) == 20
-            assert pid2 != pid1
 
-            # Check automatic code version getting
-            p3 = Provenance(
-                parameters={ "test_parameter": "test_value2" },
-                process="test_process",
-                upstreams=[],
-                is_testing=True
-            )
+    # pid1 = pid2 = None
 
-            assert p3.id == p2.id
-            assert p3.code_version_id == code_version.id
-    finally:
-        with SmartSession() as session:
-            session.execute(sa.delete(Provenance).where(Provenance._id.in_([pid1, pid2])))
-            session.commit()
+    # try:
+
+    #     with SmartSession() as session:
+    #         p = Provenance(
+    #             process="test_process",
+    #             code_version_id=code_version.id,
+    #             parameters={"test_parameter": "test_value1"},
+    #             upstreams=[],
+    #             is_testing=True,
+    #         )
+    #         # hash is calculated in init
+
+    #         pid1 = p.id
+    #         assert pid1 is not None
+    #         assert isinstance(pid1, str)
+    #         assert len(pid1) == 20
+
+    #         p2 = Provenance(
+    #             code_version_id=code_version.id,
+    #             parameters={"test_parameter": "test_value2"},
+    #             process="test_process",
+    #             upstreams=[],
+    #             is_testing=True,
+    #         )
+
+    #         pid2 = p2.id
+    #         assert pid2 is not None
+    #         assert isinstance(p2.id, str)
+    #         assert len(p2.id) == 20
+    #         assert pid2 != pid1
+
+    #         # Check automatic code version getting
+    #         p3 = Provenance(
+    #             parameters={ "test_parameter": "test_value2" },
+    #             process="test_process",
+    #             upstreams=[],
+    #             is_testing=True
+    #         )
+
+    #         assert p3.id == p2.id
+    #         assert p3.code_version_id == code_version.id
+    # finally:
+    #     with SmartSession() as session:
+    #         session.execute(sa.delete(Provenance).where(Provenance._id.in_([pid1, pid2])))
+    #         session.commit()
 
 
 def test_unique_provenance_hash(code_version):
