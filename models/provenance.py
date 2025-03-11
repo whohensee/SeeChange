@@ -10,6 +10,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.declarative import declared_attr
 from sqlalchemy.schema import UniqueConstraint
+from sqlalchemy.dialects.postgresql import UUID as sqlUUID
 import psycopg2.extras
 import psycopg2.errors
 
@@ -32,11 +33,12 @@ class CodeHash(Base):
     def id( self, val ):
         self._id = val
 
-    code_version_id = sa.Column(sa.String, sa.ForeignKey("code_versions._id",
-                                                         ondelete="CASCADE",
-                                                         name='code_hashes_code_version_id_fkey'),
+    # code_version_id = sa.Column(sa.String, sa.ForeignKey("code_versions._id",
+    #                                                      ondelete="CASCADE",
+    #                                                      name='code_hashes_code_version_id_fkey'),
+    #                             index=True )
+    code_version_id = sa.Column(sa.String,
                                 index=True )
-
 
     @property
     def code_version( self ):
@@ -49,23 +51,41 @@ class CodeHash(Base):
 
 
 
-class CodeVersion(Base):
+class CodeVersion(Base, UUIDMixin):
     __tablename__ = 'code_versions'
 
-    _id = sa.Column(
-        sa.String,
+    version = sa.Column(
+        sa.Integer,
         primary_key=True,
         nullable=False,
-        doc='Version of the code. Can use semantic versioning or date/time, etc. '
+        doc='Version of the code. Uses semantic versioning. '
+        # TODO WHPR: Change this from integer to perhaps a tuple or multiple columns for semver
     )
 
-    @property
-    def id( self ):
-        return self._id
+    process = sa.Column(
+        sa.String,
+        nullable=False,
+        doc='Process for this CodeVersion'
+    )
 
-    @id.setter
-    def id( self, val ):
-        self._id = val
+    # @property
+    # def id( self ):
+    #     return self._id
+
+    # @id.setter
+    # def id( self, val ):
+    #     self._id = val
+
+    # represents the versions of each process in the current repository
+    VERSION_DICT = {
+        'preprocessing': 1, # (0,1,1),
+        'extraction':    1, #(0,1,1),
+        'subtraction':   1, #(0,1,1),
+        'detection':     1, #(0,1,1),
+        'cutting':       1, #(0,1,1),
+        'measuring':     1, #(0,1,1),
+        'scoring':       1, #(0,1,1),
+    }
 
 
     # There is a kind of race condition in making this property the way we do, that in practice
@@ -120,7 +140,7 @@ class CodeVersion(Base):
         self._code_hashes = None
 
     def __repr__( self ):
-        return f"<CodeVersion {self.id}>"
+        return f"<CodeVersion process: {self.process}, version: {self.version}, id: {self.id}>"
 
 
 provenance_self_association_table = sa.Table(

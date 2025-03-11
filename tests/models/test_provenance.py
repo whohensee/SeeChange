@@ -10,6 +10,10 @@ from models.provenance import CodeHash, CodeVersion, Provenance, ProvenanceTag
 from util.util import get_git_hash
 
 
+def test_diff_delete( code_version_dict ):
+    cvd = code_version_dict
+    breakpoint()
+
 def test_code_versions( code_version ):
     cv = code_version
     git_hash = get_git_hash()

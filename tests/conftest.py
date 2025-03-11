@@ -216,7 +216,8 @@ def pytest_sessionfinish(session, exitstatus):
 
         # delete the CodeVersion object (this should remove all provenances as well,
         # and that should cascade to almost everything else)
-        dbsession.execute(sa.delete(CodeVersion).where(CodeVersion._id == 'test_v1.0.0'))
+        # dbsession.execute(sa.delete(CodeVersion).where(CodeVersion._id == 'test_v1.0.0'))
+        dbsession.execute(sa.delete(CodeVersion).where(CodeVersion.process == 'testing'))
 
         # remove any Object objects from tests, as these are not automatically cleaned up:
         dbsession.execute(sa.delete(Object).where(Object.is_test.is_(True)))
@@ -353,27 +354,72 @@ def test_config():
     return Config.get()
 
 
+# @pytest.fixture(scope="session", autouse=True)
+# def code_version():
+#     cv = CodeVersion( id="test_v1.0.0" )
+#     # cv.insert()
+#     # A test was failing on this line saying test_v1.0.0 already
+#     # existed.  This happened on github actions, but *not* locally.  I
+#     # can't figure out what's up.  So, for now, work around by just
+#     # doing upsert.
+#     cv.upsert()
+
+#     with SmartSession() as session:
+#         newcv = session.scalars( sa.select(CodeVersion ) ).first()
+#         assert newcv is not None
+
+#     yield cv
+
+#     with SmartSession() as session:
+#         session.execute( sa.text( "DELETE FROM code_versions WHERE _id='test_v1.0.0'" ) )
+#         # Verify that the code hashes got cleaned out too
+#         them = session.query( CodeHash ).filter( CodeHash.code_version_id == 'test_v1.0.0' ).all()
+#         assert len(them) == 0
+
 @pytest.fixture(scope="session", autouse=True)
-def code_version():
-    cv = CodeVersion( id="test_v1.0.0" )
+def code_version_dict():
+
+    PROCESS_NAMES = {
+        'preprocessing': 'preprocessor',
+        'extraction': 'extractor',
+        'bg': 'backgrounder',
+        'wcs': 'astrometor',
+        'zp': 'photometor',
+        'subtraction': 'subtractor',
+        'detection': 'detector',
+        'cutting': 'cutter',
+        'measuring': 'measurer',
+        'scoring': 'scorer',
+    }
+    PROCESS_NAMES = list(PROCESS_NAMES.keys())
+    # processes = ["testing1, testing2"]
+    cv_dict = {}
+
+    for process_name in PROCESS_NAMES:
+        cv = CodeVersion( process=process_name, version=-1 )
+        cv.upsert()
+        cv_dict[process_name] = cv
+
+    # cv = CodeVersion( process="testing", version=-1 )  # WHPR used -1 for testing
     # cv.insert()
     # A test was failing on this line saying test_v1.0.0 already
     # existed.  This happened on github actions, but *not* locally.  I
     # can't figure out what's up.  So, for now, work around by just
     # doing upsert.
-    cv.upsert()
+    # breakpoint()
+    # cv.upsert()
 
     with SmartSession() as session:
         newcv = session.scalars( sa.select(CodeVersion ) ).first()
         assert newcv is not None
 
-    yield cv
+    yield cv_dict
 
     with SmartSession() as session:
-        session.execute( sa.text( "DELETE FROM code_versions WHERE _id='test_v1.0.0'" ) )
+        session.execute( sa.text( "DELETE FROM code_versions WHERE version=-1" ) )
         # Verify that the code hashes got cleaned out too
-        them = session.query( CodeHash ).filter( CodeHash.code_version_id == 'test_v1.0.0' ).all()
-        assert len(them) == 0
+        # them = session.query( CodeHash ).filter( CodeHash.code_version_id == 'test_v1.0.0' ).all()
+        # assert len(them) == 0
 
 
 @pytest.fixture
