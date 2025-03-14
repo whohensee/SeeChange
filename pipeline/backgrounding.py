@@ -42,17 +42,19 @@ class ParsBackgrounder(Parameters):
 
         self.sep_box_size = self.add_par(
             'sep_box_size',
-            128,
-            int,
-            'Size of the box in pixels to use for the background estimation using sep. ',
+            None,
+            ( int, None ),
+            ( "Size of the box in pixels to use for the background estimation using sep; "
+              "None = use instrument's background_box_size" ),
             critical=True
         )
 
         self.sep_filt_size = self.add_par(
             'sep_filt_size',
-            3,
-            int,
-            'Size of the filter to use for the background estimation using sep. ',
+            None,
+            ( int, None ),
+            ( "Size of the filter to use for the background estimation using sep; "
+              "None = use instruments' background_filt_size" ),
             critical=True
         )
 
@@ -76,7 +78,9 @@ class Backgrounder:
         """Calculate the background for the given image.
 
         Arguments are parsed by the DataStore.parse_args() method.
-        Returns a DataStore object with the products of the processing.
+
+        Returns a Background object.
+
         """
         self.has_recalculated = False
 
@@ -89,24 +93,25 @@ class Backgrounder:
 
             self.pars.do_warning_exception_hangup_injection_here()
 
-            # get the provenance for this step:
-            prov = ds.get_provenance('backgrounding', self.pars.get_critical_pars())
-
             # try to find the background object in memory or in the database:
-            bg = ds.get_background( provenance=prov )
+            bg = ds.get_background()
 
             if bg is None:  # need to produce a background object
                 self.has_recalculated = True
                 image = ds.get_image()
-                sources = ds.get_sources()
-                if ( image is None ) or ( sources is None ):
-                    raise RuntimeError( "Backgrounding can't proceed unless the DataStore "
-                                        "already has image and sources" )
+                # Maybe todo in the future: if we ever actually implement a background algorithm
+                #   that looks at sources for masking, check that sources exist too
+                if image is None:
+                    raise RuntimeError( "Backgrounding can't proceed unless the DataStore already has image" )
 
                 if self.pars.method == 'sep':
                     # Estimate the background mean and RMS with sep
                     boxsize = self.pars.sep_box_size
+                    if boxsize is None:
+                        boxsize = image.instrument_object.background_box_size
                     filtsize = self.pars.sep_filt_size
+                    if filtsize is None:
+                        filtsize = image.instrument_object.background_filt_size
                     SCLogger.debug("Backgrounder estimating sky level and RMS")
                     # Dysfunctionality alert: sep requires a *float* image for the mask
                     # IEEE 32-bit floats have 23 bits in the mantissa, so they should
@@ -123,7 +128,6 @@ class Backgrounder:
                     del fmask
                     del tmpimagedata
                     bg = Background(
-                        provenance_id=prov.id,
                         value=float(np.nanmedian(sep_bg_obj.back())),
                         noise=float(np.nanmedian(sep_bg_obj.rms())),
                         counts=sep_bg_obj.back(),
@@ -137,26 +141,13 @@ class Backgrounder:
                 else:
                     raise ValueError(f'Unknown background method "{self.pars.method}"')
 
-                bg.sources_id = sources.id
-
             # since these are "first look estimates" we don't update them if they are already set
             if ds.image.bkg_mean_estimate is None and ds.image.bkg_rms_estimate is None:
                 ds.image.bkg_mean_estimate = float( bg.value )
                 ds.image.bkg_rms_estimate = float( bg.noise )
 
-            sources = ds.get_sources()
-            if sources is None:
-                raise ValueError(f'Cannot find a SourceList corresponding to the datastore inputs: {ds.inputs_str}')
-            psf = ds.get_psf()
-            if psf is None:
-                raise ValueError(f'Cannot find a PSF corresponding to the datastore inputs: {ds.inputs_str}')
-
-            bg._upstream_bitflag = 0
-            bg._upstream_bitflag |= ds.image.bitflag
-            bg._upstream_bitflag |= sources.bitflag
-            bg._upstream_bitflag |= psf.bitflag
-
-            ds.bg = bg
+            # Not updating the background upstream bitflags here; that will be done
+            #   in detection.py, which is probably what this was called from anyway.
 
             if ds.update_runtimes:
                 ds.runtimes['backgrounding'] = time.perf_counter() - t_start
@@ -164,7 +155,7 @@ class Backgrounder:
                 import tracemalloc
                 ds.memory_usages['backgrounding'] = tracemalloc.get_traced_memory()[1] / 1024 ** 2  # in MB
 
-            return ds
+            return bg
 
         except Exception as e:
             SCLogger.exception( f"Exception in Backgrounder.run: {e}" )

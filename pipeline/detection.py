@@ -18,6 +18,7 @@ from util.logger import SCLogger
 
 from pipeline.parameters import Parameters
 from pipeline.data_store import DataStore
+from pipeline.backgrounding import Backgrounder
 
 from models.base import FileOnDiskMixin, CODE_ROOT
 from models.image import Image  # noqa: F401
@@ -30,6 +31,14 @@ from improc.tools import sigma_clipping
 class ParsDetector(Parameters):
     def __init__(self, **kwargs):
         super().__init__()
+
+        self.sequence = self.add_par(
+            'sequence',
+            'background_first',
+            str,
+            "Sequence: background_first, extraction_first, or iterative",
+            critical=True
+        )
 
         self.method = self.add_par(
             'method', 'sextractor', str, 'Method to use (sextractor, sep, filter)', critical=True
@@ -113,6 +122,50 @@ class ParsDetector(Parameters):
             critical=False,
         )
 
+        self.sextractor_back_type = self.add_par(
+            'sextractor_back_type',
+            'MANUAL',
+            str,
+            ( "-BACK_TYPE parameter for sextractor: AUTO or MANUAL.  You usually want this to be MANUAL ",
+              "(with sextractor_back_value=0) because background subtraction is run separately from sextractor" ),
+            critical=True
+        )
+
+        self.sextractor_back_value = self.add_par(
+            'sextractor_back_value',
+            0,
+            float,
+            "-BACK_VALUE parameter for sextractor.  Ignored if sextractor_back_type is AUTO",
+            critical=True
+        )
+
+        self.sextractor_back_size = self.add_par(
+            'sextractor_back_size',
+            None,
+            ( int, None ),
+            ( "-BACK_SIZE parameter for sextractor.  Ignored if sextractor_back_type is MANUAL.  "
+              "Defaults to the Instrument's background_box_size" ),
+            critical=True
+        )
+
+        self.sextractor_back_filtersize = self.add_par(
+            'sextractor_back_filtersize',
+            None,
+            ( int, None ),
+            ( "-BACK_FILTERSIZE parameter for sextractor.  Ignored if sextractor_back_type is MANUAL.  "
+              "Defaults to the Instrument's background_filt_size" ),
+            critical=True
+        )
+
+        self.backgrounding = self.add_par(
+            'backgrounding',
+            { 'format': 'scalar', 'method': 'zero' },
+            dict,
+            ( "Parameters for background subtraction; see backgrounding.py.  If subtraction is True, "
+              "then backgrounding.method must be zero" ),
+            critical=True
+        )
+
         self._enforce_no_new_attrs = True
 
         self.override(kwargs)
@@ -159,6 +212,9 @@ class Detector:
     def __init__(self, **kwargs):
         """Initialize Detector.
 
+        NOTE : if you change self.pars.backgrounding, call make_backgrounder to
+        get an updated backgrounding object!
+
         Parmameters
         -----------
           method: str, default sextractor
@@ -196,10 +252,16 @@ class Detector:
         """
 
         self.pars = ParsDetector(**kwargs)
+        self.make_backgrounder()
 
         # this is useful for tests, where we can know if
         # the object did any work or just loaded from DB or datastore
         self.has_recalculated = False
+
+
+    def make_backgrounder( self ):
+        self.backgrounder = Backgrounder( **(self.pars.backgrounding) )
+
 
     def run(self, *args, **kwargs):
         """Extract sources (and possibly a psf) from a regular image or a subtraction image.
@@ -211,6 +273,9 @@ class Detector:
         self.has_recalculated = False
 
         if self.pars.subtraction:
+            if ( self.pars.sequence != "background_first" ) or ( self.backgrounder.pars.method != 'zero' ):
+                raise ValueError( "Running detection on a subtraction requires sequence=background_first "
+                                  "and backgrounding.method=zero" )
             try:
                 ds = DataStore.from_args(*args, **kwargs)
                 t_start = time.perf_counter()
@@ -246,7 +311,7 @@ class Detector:
                     #  is also implicitly built into measurements.py,
                     #  and in subtraction.py there is a RuntimeError if
                     #  you try to align to ref instead of new.
-                    detections, _, _, _ = self.extract_sources( ds.sub_image,
+                    detections, _, _, _ = self.extract_sources( ds.sub_image, None,
                                                                 wcs=ds.wcs,
                                                                 score=getattr( ds, 'zogy_score', None  ),
                                                                 zogy_alpha=getattr( ds, 'zogy_alpha', None ) )
@@ -278,15 +343,24 @@ class Detector:
                 ds = DataStore.from_args(*args, **kwargs)
                 prov = ds.get_provenance('extraction', self.pars.get_critical_pars())
 
+                if self.pars.sequence not in ( 'background_first', 'extraction_first', 'iterative' ):
+                    raise ValueError( f"Unknown sequence value {self.pars.sequence}" )
+                if self.pars.sequence == 'iterative':
+                    raise NotImplementedError( "Iterative detection/backgrounding sequence not supported" )
+
+                sources = ds.get_sources(provenance=prov)
+                psf = ds.get_psf(provenance=prov)
+                bg = ds.get_background()
+
+                if ( self.pars.sequence == 'background_first' ) and ( bg is None ):
+                    bg = self.backgrounder.run( ds )
+
                 t_start = time.perf_counter()
                 if ds.update_memory_usages:
                     import tracemalloc
                     tracemalloc.reset_peak()  # start accounting for the peak memory usage from here
 
                 self.pars.do_warning_exception_hangup_injection_here()
-
-                sources = ds.get_sources(provenance=prov)
-                psf = ds.get_psf(provenance=prov)
 
                 if sources is None or psf is None:
                     # TODO: when only one of these is not found (which is a strange situation)
@@ -305,7 +379,7 @@ class Detector:
                         raise ValueError(f'Cannot find an image corresponding to the datastore inputs: '
                                          f'{ds.inputs_str}')
 
-                    sources, psf, _, _ = self.extract_sources( image, wcs=ds.wcs )
+                    sources, psf, _, _ = self.extract_sources( image, bg, wcs=ds.wcs )
 
                     sources.image_id = image.id
                     psf.sources_id = sources.id
@@ -328,6 +402,18 @@ class Detector:
                     import tracemalloc
                     ds.memory_usages['extraction'] = tracemalloc.get_traced_memory()[1] / 1024 ** 2  # in MB
 
+                if ( self.pars.sequence == "extraction_first" ) and ( bg is None ):
+                    bg = self.backgrounder.run( ds )
+
+                bg.sources_id = sources.id
+                # See Issue #440
+                bg._upstream_bitflag = 0
+                bg._upstream_bitflag |= ds.image.bitflag
+                bg._upstream_bitflag |= sources.bitflag
+                bg._upstream_bitflag |= psf.bitflag
+
+                ds.bg = bg
+
                 return ds
 
             except Exception as e:
@@ -335,13 +421,16 @@ class Detector:
                 ds.exceptions.append(e)
                 raise
 
-    def extract_sources(self, image, wcs=None, score=None, zogy_alpha=None):
+    def extract_sources(self, image, bg, wcs=None, score=None, zogy_alpha=None):
         """Calls one of the extraction methods, based on self.pars.method.
 
         Parameters
         ----------
         image: Image
           The Image object from which to extract sources.
+
+        bg : Background or None
+          The Background object.  If not None, will be subtracted from the image before extraction.
 
         wcs: WorldCoordiantes or None
           Needed if self.pars.method is 'filter'.  If self.pars.method
@@ -376,7 +465,7 @@ class Detector:
             if self.pars.subtraction:
                 sources, _, _, _ = self.extract_sources_sextractor(image, psffile=None)
             else:
-                sources, psf, bkg, bkgsig = self.extract_sources_sextractor(image)
+                sources, psf, bkg, bkgsig = self.extract_sources_sextractor(image, bg)
         elif self.pars.method == 'filter':
             if self.pars.subtraction:
                 if ( wcs is None ) or ( score is None ) or ( zogy_alpha is None ):
@@ -394,7 +483,7 @@ class Detector:
 
         return sources, psf, bkg, bkgsig
 
-    def extract_sources_sextractor( self, image, psffile=None, wcs=None ):
+    def extract_sources_sextractor( self, image, bg, psffile=None, wcs=None ):
         tempnamebase = ''.join( random.choices( 'abcdefghijklmnopqrstuvwxyz', k=10 ) )
         sourcepath = pathlib.Path( FileOnDiskMixin.temp_path ) / f'{tempnamebase}.sources.fits'
         psfpath = pathlib.Path( psffile ) if psffile is not None else None
@@ -416,7 +505,7 @@ class Detector:
                     if image.instrument_object.pixel_scale is not None:
                         aperrad *= 2. / image.instrument_object.pixel_scale
                 SCLogger.debug( "detection: running sextractor once without PSF to get sources" )
-                sources, _, _ = self._run_sextractor_once( image, apers=[aperrad],
+                sources, _, _ = self._run_sextractor_once( image, bg, apers=[aperrad],
                                                            psffile=None, wcs=wcs, tempname=tempnamebase )
 
                 # Get the PSF
@@ -446,6 +535,7 @@ class Detector:
 
             sources, bkg, bkgsig = self._run_sextractor_once(
                 image,
+                bg,
                 apers=apers,
                 psffile=psfpath,
                 psfnorm=psf_norm,
@@ -476,7 +566,7 @@ class Detector:
 
         return sources, psf, bkg, bkgsig
 
-    def _run_sextractor_once(self, image, apers=[5, ], psffile=None, psfnorm=3.0, wcs=None,
+    def _run_sextractor_once(self, image, bg, apers=[5, ], psffile=None, psfnorm=3.0, wcs=None,
                              tempname=None, seeing_fwhm=1.2, do_not_cleanup=False):
         """Extract a SourceList from a FITS image using SExtractor.
 
@@ -487,6 +577,9 @@ class Detector:
           image: Image
             The Image object from which to extract.  This routine will
             use all of image, weight, and flags data.
+
+          bg: Background or None
+            If not None, a background to subtract from the image
 
           apers: list of float
             Aperture radii in pixels in which to do aperture photometry.
@@ -592,6 +685,25 @@ class Detector:
             psfargs = []
             paramfilebase = astromatic_dir / "sourcelist_sextractor.param"
 
+        # Background params
+        bgargs = []
+        if self.pars.sextractor_back_type == 'AUTO':
+            bgargs.extend( [ '-BACK_TYPE', 'AUTO',
+                             '-BACK_SIZE', ( str( self.pars.sextractor_back_size )
+                                             if self.pars.sextractor_back_size is not None
+                                             else str( image.instrument_object.background_box_size ) ),
+                             '-BACK_FILTERSIZE', ( str( self.pars.sextractor_back_filtersize )
+                                                   if self.pars.sextractor_back_filtersize is not None
+                                                   else str( image.instrument_object.background_filt_size ) )
+                            ] )
+        elif self.pars.sextractor_back_type == 'MANUAL':
+            bgargs.extend( [ '-BACK_TYPE', 'MANUAL',
+                             '-BACK_VALUE', str( self.pars.sextractor_back_value) ] )
+        else:
+            raise ValueError( f"Unknown sextractor_back_type {self.pars.sextractor_back_type}, "
+                              f"must be AUTO or MANUAL" )
+
+
         # SExtractor reads the measurements it produces from a parameters
         # file.  We need to edit it, though, so that the number of
         # apertures we have matches the apertures we ask for.
@@ -630,14 +742,12 @@ class Detector:
             if wcs is not None:
                 hdr.update( wcs.wcs.to_header() )
 
-            fits.writeto( tmpimage, image.data, header=hdr )
+            imgdata = image.data if bg is None else bg.subtract_me( image.data )
+            fits.writeto( tmpimage, imgdata, header=hdr )
+            del imgdata
+
             fits.writeto( tmpweight, image.weight )
             fits.writeto( tmpflags, image.flags )
-
-            # TODO : right now, we're assuming that the default background
-            #  subtraction is fine.  Experience shows that in crowded fields
-            #  (e.g. star-choked galactic fields), a much slower algorithm
-            #  can do a lot better.
 
             # TODO: Understand RESCALE_WEIGHTS and WEIGHT_GAIN.
             #  Since we believe our weight image is right, we don't
@@ -662,10 +772,10 @@ class Detector:
             # SEEING_FWHM to be ±20% right for CLASS_STAR to be reasonable for
             # bright sources, ±5% for dim.  We have a hardcore chicken-and-egg
             # problem here.  The default SEEING_FWHM is 1.2; try just going with that,
-            # and give it PIXEL_SCALE that's right.  We may need to move to
-            # doing this iteratively (i.e. go from two to three runs of SExtractor;
-            # first time around, do whatever, but look at the distribution of FWHMs
-            # in an attempt to figure out what the actual seeing FWHM is.)
+            # and give it PIXEL_SCALE that's right.  When this is called in actual
+            # use, a later call will have run psfex and should have a good seeing_fwhm
+            # estimate.  The only issue is if the first try was good enough to
+            # give psfex the right things to fit.
 
             args = [ "source-extractor",
                      "-CATALOG_NAME", tmpsources,
@@ -690,13 +800,11 @@ class Detector:
                      "-STARNNW_NAME", nnw,
                      "-SEEING_FWHM", str( seeing_fwhm ),
                      "-PIXEL_SCALE", str( image.instrument_object.pixel_scale ),
-                     "-BACK_TYPE", "AUTO",
-                     "-BACK_SIZE", str( image.instrument_object.background_box_size ),
-                     "-BACK_FILTERSIZE", str( image.instrument_object.background_filt_size ),
                      "-MEMORY_OBJSTACK", str( 20000 ),  # TODO: make these configurable?
                      "-MEMORY_PIXSTACK", str( 1000000 ),
                      "-MEMORY_BUFSIZE", str( 4096 ),
                     ]
+            args.extend( bgargs )
             args.extend( psfargs )
             args.append( tmpimage )
             res = subprocess.run(args, cwd=tmpimage.parent, capture_output=True, timeout=self.pars.sextractor_timeout)
@@ -882,6 +990,8 @@ class Detector:
 
         # TODO: finish this
         # TODO: this should also generate an estimate of the PSF?
+        # TODO: handle background subtraction or lack thereof!  Needs
+        #       to be configurable as in the case of sextractor.
 
         data = image.data
 
