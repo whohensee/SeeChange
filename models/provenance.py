@@ -391,10 +391,23 @@ class Provenance(Base):
     # This is a cache.  It won't change in one run, so we can save
     #  querying the database repeatedly in get_code_version by saving
     #  the result.
-    _current_code_version = None
+    _current_code_version = None # remove this eventually
+
+    _current_code_version_dict = {
+        'preprocessing': None,
+        'extraction': None,
+        'bg': None,
+        'wcs': None,
+        'zp': None,
+        'subtraction': None,
+        'detection': None,
+        'cutting': None,
+        'measuring': None,
+        'scoring': None,
+    }
 
     @classmethod
-    def get_code_version(cls, session=None):
+    def get_code_version(cls, process, session=None):
         """Get the most relevant or latest code version.
 
         Tries to match the current git hash with a CodeHash
@@ -414,7 +427,7 @@ class Provenance(Base):
             CodeVersion object
         """
 
-        if Provenance._current_code_version is None:
+        if Provenance._current_code_version_dict[process] is None:
             code_version = None
             with SmartSession( session ) as session:
                 # code_hash = session.scalars(sa.select(CodeHash).where(CodeHash._id == get_git_hash())).first()
@@ -423,14 +436,14 @@ class Provenance(Base):
                 #                                     .where( CodeVersion._id == code_hash.code_version_id ) ).first()
                 if code_version is None:
                     code_version = session.scalars(sa.select(CodeVersion)
-                                                   .where( CodeVersion.process == Provenance.process )
+                                                   .where( CodeVersion.process == process )
                                                    .order_by(CodeVersion.version.desc())).first()
                     breakpoint()
             if code_version is None:
                 raise RuntimeError( "There is no code_version in the database.  Put one there." )
-            Provenance._current_code_version = code_version
+            Provenance._current_code_version_dict[process] = code_version
 
-        return Provenance._current_code_version
+        return Provenance._current_code_version_dict[process]
 
 
     def insert( self, session=None, _exists_ok=False ):
