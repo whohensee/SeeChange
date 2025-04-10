@@ -379,19 +379,31 @@ def test_config():
 @pytest.fixture(scope="session", autouse=True)
 def code_version_dict():
 
-    PROCESS_NAMES = {
-        'preprocessing': 'preprocessor',
-        'extraction': 'extractor',
-        'bg': 'backgrounder',
-        'wcs': 'astrometor',
-        'zp': 'photometor',
-        'subtraction': 'subtractor',
-        'detection': 'detector',
-        'cutting': 'cutter',
-        'measuring': 'measurer',
-        'scoring': 'scorer',
-    }
-    PROCESS_NAMES = list(PROCESS_NAMES.keys())
+
+    # WHPR grab this list from Provenance.current_code_version_dict to not have to update both  !!!
+    # PROCESS_NAMES = {   # WHPR: since there are so many processes with no object, just do this
+    #                     # list manually
+    #                     # When adding here, also add in Provenance above get_code_version definition
+    #     'preprocessing': 'preprocessor',
+    #     'extraction': 'extractor',
+    #     'bg': 'backgrounder',
+    #     'wcs': 'astrometor',
+    #     'zp': 'photometor',
+    #     'subtraction': 'subtractor',
+    #     'detection': 'detector',
+    #     'cutting': 'cutter',
+    #     'measuring': 'measurer',
+    #     'scoring': 'scorer',
+    #     'referencing' : 'no_object',
+    #     'download' : 'no_object',
+    #     'DECam Default Calibrator' : 'no_object',
+    #     'import_external_reference' : 'no_object',
+    #     'no_process': 'no_object',
+    #     'alignment' : 'no_object',
+    # }
+    # PROCESS_NAMES = list(PROCESS_NAMES.keys())
+    PROCESS_NAMES = list(Provenance._current_code_version_dict.keys())
+    PROCESS_NAMES.append('test_process') # for some testing
     # processes = ["testing1, testing2"]
     cv_dict = {}
 
@@ -425,10 +437,10 @@ def code_version_dict():
 
 
 @pytest.fixture
-def provenance_base(code_version):
+def provenance_base(code_version_dict):
     p = Provenance(
-        process="test_base_process",
-        code_version_id=code_version.id,
+        process="test_process",
+        code_version_id=code_version_dict["test_process"].id,
         parameters={"test_parameter": uuid.uuid4().hex},
         upstreams=[],
         is_testing=True,
@@ -485,10 +497,10 @@ def provenance_tags_loaded( provenance_base, provenance_extra ):
 
 # use this to make all the pre-committed Image fixtures
 @pytest.fixture(scope="session")
-def provenance_preprocessing(code_version):
+def provenance_preprocessing(code_version_dict):
     p = Provenance(
         process="preprocessing",
-        code_version_id=code_version.id,
+        code_version_id=code_version_dict['preprocessing'].id,
         parameters={"test_parameter": "test_value"},
         upstreams=[],
         is_testing=True,
@@ -878,7 +890,7 @@ def browser():
 # Fake objects for testing stuff
 
 @pytest.fixture
-def bogus_image( code_version, provenance_base ):
+def bogus_image( code_version_dict, provenance_base ):
     img = Image( _id=uuid.UUID('13de30a0-cb73-40d7-a708-10354005b7e4'),
                  format='fits',
                  type='Sci',

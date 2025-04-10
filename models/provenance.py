@@ -300,12 +300,12 @@ class Provenance(Base):
 
         if 'code_version_id' in kwargs:
             code_version_id = kwargs.get('code_version_id')
-            if not isinstance(code_version_id, str ):
-                raise ValueError(f'Code version must be a str. Got {type(code_version_id)}.')
+            if not isinstance(code_version_id, uuid.UUID ):
+                raise ValueError(f'Code version must be a uuid. Got {type(code_version_id)}.')
             else:
                 self.code_version_id = code_version_id
         else:
-            cv = Provenance.get_code_version()
+            cv = Provenance.get_code_version( process=self.process )
             self.code_version_id = cv.id
 
         self.parameters = kwargs.get('parameters', {})
@@ -364,11 +364,16 @@ class Provenance(Base):
         if self.process is None or self.parameters is None or self.code_version_id is None:
             raise ValueError('Provenance must have process, code_version_id, and parameters defined. ')
 
+        # use string version of uuid for json encoding
+        # if self.code_version_id is not None:
+        #     cvid = str( self.code_version_id)
+        cvid = str( self.code_version_id ) if self.code_version_id is not None else None
+
         superdict = dict(
             process=self.process,
             parameters=self.parameters,
             upstream_hashes=[ u.id for u in self._upstreams ],  # this list is ordered by upstream ID
-            code_version=self.code_version_id
+            code_version=cvid
         )
         json_string = json.dumps(superdict, sort_keys=True)
 
@@ -391,7 +396,7 @@ class Provenance(Base):
     # This is a cache.  It won't change in one run, so we can save
     #  querying the database repeatedly in get_code_version by saving
     #  the result.
-    _current_code_version = None # remove this eventually
+    _current_code_version = None # WHPR remove this eventually
 
     _current_code_version_dict = {
         'preprocessing': None,
@@ -404,6 +409,18 @@ class Provenance(Base):
         'cutting': None,
         'measuring': None,
         'scoring': None,
+        'test_process' : None,
+        'referencing' : None,
+        'download': None,
+        'DECam Default Calibrator' : None,
+        'import_external_reference' : None,
+        'no_process' : None,
+        'alignment' : None,
+        'coaddition' : None,
+        'astrocal' : None,
+        'manual_reference' : None,
+        'gratuitous image' : None,
+        'gratuitous sources' : None,
     }
 
     @classmethod
@@ -438,7 +455,7 @@ class Provenance(Base):
                     code_version = session.scalars(sa.select(CodeVersion)
                                                    .where( CodeVersion.process == process )
                                                    .order_by(CodeVersion.version.desc())).first()
-                    breakpoint()
+                    # breakpoint()
             if code_version is None:
                 raise RuntimeError( "There is no code_version in the database.  Put one there." )
             Provenance._current_code_version_dict[process] = code_version

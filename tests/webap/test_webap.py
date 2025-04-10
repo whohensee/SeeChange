@@ -177,7 +177,7 @@ def test_webap( webap_browser_logged_in, webap_url, decam_datastore ):
 
         # Create a throwaway provenance and provenance tag so we can test
         #  things *not* being found
-        cv = Provenance.get_code_version()
+        cv = Provenance.get_code_version( process='no_process' )
         junkprov = Provenance( process='no_process', code_version_id=cv.id, is_testing=True )
         junkprov.insert()
         ProvenanceTag.addtag( 'no_such_tag', [ junkprov ] )
