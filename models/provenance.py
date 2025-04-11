@@ -421,6 +421,9 @@ class Provenance(Base):
         'manual_reference' : None,
         'gratuitous image' : None,
         'gratuitous sources' : None,
+        "acquired" : None,
+        'fakeinjection' : None,
+        'exposure' : None,
     }
 
     @classmethod

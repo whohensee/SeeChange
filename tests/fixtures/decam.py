@@ -119,10 +119,10 @@ def decam_default_calibrators(cache_dir, data_dir):
 
 
 @pytest.fixture(scope='session')
-def provenance_decam_prep(code_version):
+def provenance_decam_prep(code_version_dict):
     p = Provenance(
         process="preprocessing",
-        code_version_id=code_version.id,
+        code_version_id=code_version_dict["preprocessing"].id,
         parameters={
             'steps': None,
             'calibset': None,
@@ -727,10 +727,10 @@ def decam_reference( decam_elais_e1_two_references ):
 
 
 @pytest.fixture(scope='session')
-def get_cached_decam_image( code_version, decam_cache_dir, download_url, datastore_factory ):
+def get_cached_decam_image( code_version_dict, decam_cache_dir, download_url, datastore_factory ):
     improv = Provenance( process="acquired",
                          parameters={},
-                         code_version_id=code_version.id,
+                         code_version_id=code_version_dict["acquired"].id,
                          upstreams=[],
                          is_testing=True )
     improv.insert_if_needed()
@@ -895,8 +895,8 @@ def decam_fakeset( decam_datastore_through_zp ):
 
 
 @pytest.fixture
-def decam_fakeset_loaded( decam_fakeset, code_version ):
-    prov = Provenance( code_version_id=code_version.id,
+def decam_fakeset_loaded( decam_fakeset, code_version_dict ):
+    prov = Provenance( code_version_id=code_version_dict['fakeinjection'].id,
                        process='fakeinjection',
                        parameters={ 'random_seed': decam_fakeset.random_seed },
                        upstreams=[ Provenance.get( decam_fakeset.zp.provenance_id ) ],
