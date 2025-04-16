@@ -12,6 +12,7 @@ from pipeline.detection import Detector
 from pipeline.cutting import Cutter
 from pipeline.measuring import Measurer
 from pipeline.scoring import Scorer
+from pipeline.alerting import Alerting
 from pipeline.fakeinjection import FakeInjector
 
 from models.exposure import Exposure
@@ -34,6 +35,7 @@ _PROCESS_OBJECTS = {
     'cutting': 'cutter',
     'measuring': 'measurer',
     'scoring': 'scorer',
+    'alerting': 'alerter',
 }
 
 
@@ -56,6 +58,18 @@ class ParsPipeline(Parameters):
             "if there is no reference, will not continue to doing subtraction "
             "but will still save the products up to that point. "
             "(It's possible the pipeline won't work if this is False...)",
+            critical=False,
+        )
+
+        self.save_before_alerting = self.add_par(
+            'save_before_alerting',
+            True,
+            bool,
+            "Save all data products to the database before trying to "
+            "send alerts.  Usually you want this to be True.  (Think about "
+            "situations where some alerts are sent but it crashes so nothing "
+            "gets saved, etc.)  Will only matter if 'scoring' and 'alerting' "
+            "are in the steps to do.",
             critical=False,
         )
 
@@ -131,7 +145,7 @@ class ParsPipeline(Parameters):
 
 class Pipeline:
     ALL_STEPS = [ 'preprocessing', 'extraction', 'astrocal', 'photocal', 'subtraction',
-                  'detection', 'cutting', 'measuring', 'scoring', ]
+                  'detection', 'cutting', 'measuring', 'scoring', 'alerting' ]
 
     def __init__(self, **kwargs):
         config = Config.get()
@@ -195,6 +209,11 @@ class Pipeline:
         scoring_config.update(kwargs.get('scoring', {}))
         self.pars.add_defaults_to_dict(scoring_config)
         self.scorer = Scorer(**scoring_config)
+
+        # send alerts
+        # Can't override alerting parameters at runtime; the Alerting
+        #   object just reads the config directly.
+        self.alerter = Alerting()
 
         # fake injection
         # (Make the object even if self.pars.inject_fakes is false
@@ -335,6 +354,7 @@ class Pipeline:
                  'cutting': self.cutter.pars.get_critical_pars(),
                  'measuring': self.measurer.pars.get_critical_pars(),
                  'scoring': self.scorer.pars.get_critical_pars(),
+                 'alerting': {},
                  'report': {}
                 }
 
@@ -423,9 +443,21 @@ class Pipeline:
         return ds.prov_tree
 
 
+    def save_data_products( self, step, ds ):
+        t_start = time.perf_counter()
+        try:
+            SCLogger.info(f"Saving at step {step} for image id {ds.image.id}")
+            ds.save_and_commit()
+        except Exception as e:
+            SCLogger.exception(f"Failed to save at step {step} for image id {ds.image.id}")
+            raise e
+        if ds.update_runtimes:
+            ds.runtimes[step] = time.perf_counter() - t_start
+
+
     def __call__( self, *args, **kwargs ):
         """See self.run()"""
-        self.run( *args, **kwargs )
+        return self.run( *args, **kwargs )
 
 
     def run(self, *args, **kwargs):
@@ -468,9 +500,9 @@ class Pipeline:
                 import tracemalloc
                 tracemalloc.start()  # trace the size of memory that is being used
 
+
             with warnings.catch_warnings(record=True) as w:
                 ds.warnings_list = w  # appends warning to this list as it goes along
-                # run dark/flat preprocessing, cut out a specific section of the sensor
 
                 process_objects = { 'preprocessing': self.preprocessor,
                                     'extraction': self.extractor,
@@ -480,10 +512,14 @@ class Pipeline:
                                     'detection': self.detector,
                                     'cutting': self.cutter,
                                     'measuring': self.measurer,
-                                    'scoring': self.scorer
+                                    'scoring': self.scorer,
+                                    'alerting': self.alerter,
                                    }
+                # ...counting on python dictionaries being ordered...
+                steps = list( process_objects.keys() )
+                everything_saved = True
 
-                for step, procobj in process_objects.items():
+                for stepi, (step, procobj) in enumerate( process_objects.items() ):
                     if step in stepstodo:
                         SCLogger.info( f'Pipeline starting {step}' )
                         ds = procobj.run( ds )
@@ -491,36 +527,28 @@ class Pipeline:
 
                         if step == 'preprocessing':
                             SCLogger.info( f"preprocessing complete: image id={ds.image.id}, "
-                                           "filepath={ds.image.filepath}" )
+                                           f"filepath={ds.image.filepath}" )
                         else:
                             SCLogger.info( f"{step} complete for image {ds.image.id}" )
 
-                        # Maybe we want to do an intermediate save after the zp step
-                        if ( step == 'photocal' ) and self.pars.save_before_subtraction:
-                            t_start = time.perf_counter()
-                            try:
-                                SCLogger.info(f"Saving intermediate image for image id {ds.image.id}")
-                                ds.save_and_commit()
-                            except Exception as e:
-                                step = 'save intermediate'
-                                SCLogger.exception(f"Failed to save intermediate image for image id {ds.image.id}")
-                                raise e
+                        # Alerting has no data products to save; every other step does
+                        if step != 'alerting':
+                            everything_saved = False
 
-                            if ds.update_runtimes:
-                                ds.runtimes['save_intermediate'] = time.perf_counter() - t_start
+                        # There are a couple of steps where we might want to save
+                        #   before being completely finished
+                        if ( not everything_saved ) and ( stepi < len(steps)-1 ):
+                            if self.pars.save_before_subtraction and ( steps[stepi+1] == 'subtraction' ):
+                                self.save_data_products( 'save_before_subtraction', ds )
+                                everything_saved = True
 
-                if self.pars.save_at_finish and ( 'subtraction' in stepstodo ):
-                    t_start = time.perf_counter()
-                    try:
-                        SCLogger.info(f"Saving final products for image id {ds.image.id}")
-                        ds.save_and_commit()
-                    except Exception as e:
-                        step = 'save final'
-                        SCLogger.exception(f"Failed to save final products for image id {ds.image.id}")
-                        raise e
+                            if self.pars.save_before_alerting and ( steps[stepi+1] == 'alerting' ):
+                                self.save_data_products( 'save_before_alerting', ds )
+                                everything_saved = True
 
-                    if ds.update_runtimes:
-                        ds.runtimes['save_final'] = time.perf_counter() - t_start
+                if self.pars.save_at_finish and ( not everything_saved ):
+                    self.save_data_products( 'final', ds )
+
 
                 # Parallel pipeline path for fake injection
                 if ( all( s in stepstodo
@@ -536,7 +564,7 @@ class Pipeline:
                     #   waste memory by making it so convenient to stuff references to things all
                     #   over the place.  Security schmeurity, there are advantages to the C way of
                     #   doing things were you know you can free stuff and aren't dependent on a
-                    #   mysterious garbage collector and to keep your memory usage from getting out
+                    #   mysterious garbage collector and can keep your memory usage from getting out
                     #   of hand.
                     if ds.sub_image is not None:
                         ds.sub_image.free()
