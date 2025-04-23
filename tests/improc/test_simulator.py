@@ -12,13 +12,10 @@ from improc.sky_flat import sigma_clipping
 from util.logger import SCLogger
 from util.util import env_as_bool
 
-# uncomment this to run the plotting tests interactively
-# os.environ['INTERACTIVE'] = '1'
 
-
-@pytest.mark.skipif( not env_as_bool('INTERACTIVE'), reason='Set INTERACTIVE to run this test' )
+@pytest.mark.skipif( not env_as_bool('MAKE_PLOTS'), reason='Set MAKE_PLOTS to run this test' )
 def test_make_star_field(blocking_plots):
-    s = Simulator( image_size_x=256, star_number=1000, galaxy_number=0)
+    s = Simulator( image_size_x=256, star_number=1000, galaxy_number=0 )
     s.make_image()
     vmin = np.percentile(s.image, 1)
     vmax = np.percentile(s.image, 99)
@@ -31,7 +28,7 @@ def test_make_star_field(blocking_plots):
     plt.savefig(filename+'.pdf')
 
 
-@pytest.mark.skipif( not env_as_bool('INTERACTIVE'), reason='Set INTERACTIVE to run this test' )
+@pytest.mark.skipif( not env_as_bool('MAKE_PLOTS'), reason='Set MAKE_PLOTS to run this test' )
 def test_make_galaxy_field(blocking_plots):
     s = Simulator( image_size_x=256, star_number=0, galaxy_number=1000, galaxy_min_width=1, galaxy_min_flux=1000 )
     t0 = time.time()
@@ -62,7 +59,9 @@ def test_making_galaxy_in_image(exp_scale, blocking_plots):
     cos_i = 0.5
     cutoff_radius = exp_scale * 5.0
 
-    im1 = SimGalaxies.make_galaxy_image(
+    galsimmer = SimGalaxies( np.random.default_rng() )
+
+    im1 = galsimmer.make_galaxy_image(
         imsize=imsize,
         center_x=center_x,
         center_y=center_y,
@@ -76,7 +75,7 @@ def test_making_galaxy_in_image(exp_scale, blocking_plots):
     )
 
     im2 = np.zeros(imsize)
-    SimGalaxies.add_galaxy_to_image(
+    galsimmer.add_galaxy_to_image(
         image=im2,
         center_x=center_x,
         center_y=center_y,
@@ -161,7 +160,7 @@ def test_bleeding_pixels(blocking_plots):
         plt.show(block=True)
 
 
-@pytest.mark.skipif( not env_as_bool('INTERACTIVE'), reason='Set INTERACTIVE to run this test' )
+@pytest.mark.skipif( not env_as_bool('MAKE_PLOTS'), reason='Set MAKE_PLOTS to run this test' )
 def test_streak_images(blocking_plots):
     # if blocking_plots:
     # im = SimStreaks.make_streak_image(center_x=50.3, length=25)
@@ -176,7 +175,9 @@ def test_streak_images(blocking_plots):
         plt.show(block=True)
 
 
-@pytest.mark.skipif( not env_as_bool('INTERACTIVE'), reason='Set INTERACTIVE to run this test' )
+# This test is broken; see comment on pylandau import at top of simulator.py
+@pytest.mark.skipif( not env_as_bool('MAKE_PLOTS'), reason='Set MAKE_PLOTS to run this test' )
+@pytest.mark.xfail( reason='pylandau broken' )
 def test_track_images(blocking_plots):
 
     # if blocking_plots:
