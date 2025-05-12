@@ -413,7 +413,6 @@ def code_version_dict():
     # }
     # PROCESS_NAMES = list(PROCESS_NAMES.keys())
     PROCESS_NAMES = list(Provenance._current_code_version_dict.keys())
-    PROCESS_NAMES.append('test_process') # for some testing
     # processes = ["testing1, testing2"]
     cv_dict = {}
 

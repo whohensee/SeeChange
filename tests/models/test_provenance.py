@@ -16,7 +16,8 @@ def test_diff_delete( code_version_dict ):
     with SmartSession() as sess:
         n1 = sess.query( CodeVersion ).count()
         # breakpoint()
-        assert n1 == 12
+        # WHPR this should match the number present in `provenance._current_code_version_dict` 
+        assert n1 == 25
     
 
 # WHPR this test is deactivated as git_hashes are removed atm

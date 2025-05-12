@@ -188,6 +188,7 @@ class Provenance(Base):
         doc="Name of the process (pipe line step) that produced these results. "
     )
 
+    # WHPR this cannot be used in provenance hash, because code_version_id is a UUID
     code_version_id = sa.Column(
         sa.ForeignKey("code_versions._id", ondelete="CASCADE", name='provenances_code_version_id_fkey'),
         nullable=False,
@@ -367,13 +368,19 @@ class Provenance(Base):
         # use string version of uuid for json encoding
         # if self.code_version_id is not None:
         #     cvid = str( self.code_version_id)
-        cvid = str( self.code_version_id ) if self.code_version_id is not None else None
+        # cvid = str( self.code_version_id ) if self.code_version_id is not None else None
+        cv_string = None
+        if self.code_version_id is not None:
+            with SmartSession() as sess:
+                cv = sess.query( CodeVersion ).filter( CodeVersion._id == self.code_version_id ).first()
+                cv_string = str(cv.version)
+
 
         superdict = dict(
             process=self.process,
             parameters=self.parameters,
             upstream_hashes=[ u.id for u in self._upstreams ],  # this list is ordered by upstream ID
-            code_version=cvid
+            code_version=cv_string
         )
         json_string = json.dumps(superdict, sort_keys=True, cls=NumpyAndUUIDJsonEncoder)
 
