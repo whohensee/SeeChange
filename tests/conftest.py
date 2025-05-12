@@ -524,10 +524,10 @@ def provenance_preprocessing(code_version_dict):
 
 
 @pytest.fixture(scope="session")
-def provenance_extraction(code_version):
+def provenance_extraction(code_version_dict):
     p = Provenance(
         process="extraction",
-        code_version_id=code_version.id,
+        code_version_id=code_version_dict["extraction"].id,
         parameters={"test_parameter": "test_value"},
         upstreams=[],
         is_testing=True,
@@ -953,7 +953,7 @@ def bogus_image_factory( code_version_dict, provenance_base ):
 
 
 @pytest.fixture
-def bogus_sources_factory( code_version, provenance_base ):
+def bogus_sources_factory( code_version_dict, provenance_base ):
     def load_bogus_sources( _id, filepath, image ):
         improv = Provenance.get( image.provenance_id )
         prov = Provenance( code_version_id=improv.code_version_id,
