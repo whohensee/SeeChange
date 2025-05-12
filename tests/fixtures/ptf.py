@@ -20,7 +20,7 @@ from models.provenance import Provenance
 from models.exposure import Exposure
 from models.image import Image
 from models.source_list import SourceList
-from models.psf import PSF
+from models.psf import PSFExPSF
 from models.background import Background
 from models.world_coordinates import WorldCoordinates
 from models.zero_point import ZeroPoint
@@ -203,7 +203,7 @@ def ptf_datastore_through_zp( datastore_factory, ptf_exposure, ptf_ref, ptf_cach
         overrides={'extraction': {'threshold': 5}, 'subtraction': {'refset': 'test_refset_ptf'}},
         bad_pixel_map=ptf_bad_pixel_map,
         provtag='ptf_datastore',
-        through_step='zp'
+        through_step='photocal'
     )
 
     # Just make sure through_step did what it was supposed to
@@ -400,7 +400,7 @@ def ptf_aligned_image_datastores(request, ptf_reference_image_datastores, ptf_ca
             ds.sources = copy_from_cache( SourceList, cache_dir, sourcesfile )
             ds.sources.provenance_id = warped_sources_prov.id
             ds.bg = copy_from_cache( Background, cache_dir, bgfile, add_to_dict={ 'image_shape': ds.image.data.shape } )
-            ds.psf = copy_from_cache( PSF, cache_dir, psffile )
+            ds.psf = copy_from_cache( PSFExPSF, cache_dir, psffile )
             ds.wcs = copy_from_cache( WorldCoordinates, cache_dir, wcsfile )
             ds.wcs.provenance_id = warped_wcs_prov.id
             ds.zp = copy_from_cache( ZeroPoint, cache_dir, imfile + '.zp' )
@@ -516,7 +516,7 @@ def ptf_ref(
             coadd_datastore.sources = copy_from_cache(
                 SourceList, ptf_cache_dir, cache_base_name + f'.sources_{refmaker.coadd_ex_prov.id[:6]}.fits'
             )
-            coadd_datastore.psf = copy_from_cache( PSF, ptf_cache_dir,
+            coadd_datastore.psf = copy_from_cache( PSFExPSF, ptf_cache_dir,
                                                    cache_base_name + f'.psf_{refmaker.coadd_ex_prov.id[:6]}' )
             coadd_datastore.bg = copy_from_cache( Background, ptf_cache_dir,
                                                   cache_base_name + f'.bg_{refmaker.coadd_ex_prov.id[:6]}.h5',
@@ -684,7 +684,7 @@ def ptf_subtraction1_datastore( ptf_ref, ptf_supernova_image_datastores, subtrac
     ds.edit_prov_tree( 'referencing', prov=Provenance.get( ptf_ref.provenance_id ), new_step=True  )
     subprov = Provenance( process='subtraction',
                           parameters=subtractor.pars.get_critical_pars(),
-                          upstreams=[ds.prov_tree[p] for p in ['referencing','zp']],
+                          upstreams=[ds.prov_tree[p] for p in ['referencing','photocal']],
                           code_version_id=code_version_dict['subtraction'].id,
                           is_testing=True )
     subprov.insert_if_needed()

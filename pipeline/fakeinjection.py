@@ -203,7 +203,7 @@ class FakeInjector:
         # Make the provenance tree right
 
         fakeds.edit_prov_tree( ProvenanceTree( ds.prov_tree, ds.prov_tree.upstream_steps ) )
-        fakeds.prov_tree.upstream_steps['fakeinjection'] = [ 'zp' ]
+        fakeds.prov_tree.upstream_steps['fakeinjection'] = [ 'photocal' ]
         if 'subtraction' in fakeds.prov_tree.upstream_steps:
             fakeds.prov_tree.upstream_steps['subtraction'] = [ 'referencing', 'fakeinjection' ]
         fakeds.edit_prov_tree( 'fakeinjection', prov=fakeprov, new_step=True )
@@ -309,8 +309,8 @@ class FakeInjector:
             zpprov = Provenance.get( zp.provenance_id )
             process=self.pars.get_process_name()
             prov = Provenance( code_version_id=Provenance.get_code_version( process=process ).id,
-                               process=process,
-                               params=params,
+                               process=self.pars.get_process_name(),
+                               parameters=params,
                                upstreams=[zpprov] )
             prov.insert_if_needed()
 

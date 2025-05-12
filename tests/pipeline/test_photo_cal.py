@@ -11,8 +11,6 @@ from models.zero_point import ZeroPoint
 
 from tests.conftest import SKIP_WARNING_TESTS
 
-# os.environ['INTERACTIVE'] = '1'  # for diagnostics only
-
 
 def test_decam_photo_cal( decam_datastore_through_wcs, blocking_plots ):
     ds = decam_datastore_through_wcs
@@ -21,7 +19,7 @@ def test_decam_photo_cal( decam_datastore_through_wcs, blocking_plots ):
     photometor.run(ds)
     assert photometor.has_recalculated
 
-    if os.getenv('INTERACTIVE', False):  # skip this on github actions
+    if os.getenv('MAKE_PLOTS', False):  # skip this on github actions
         fig = plt.figure( figsize=(6, 8), dpi=150, layout='tight' )
         ax = fig.add_subplot( 2, 1, 1 )
 
@@ -79,7 +77,7 @@ def test_decam_photo_cal( decam_datastore_through_wcs, blocking_plots ):
     ds.zp = None
     photometor.pars.test_parameter = uuid.uuid4().hex
     ds._provtag = None
-    ds.edit_prov_tree( 'zp', photometor.pars.get_critical_pars() )
+    ds.edit_prov_tree( 'photocal', photometor.pars.get_critical_pars() )
     photometor.run(ds)
     assert photometor.has_recalculated
 

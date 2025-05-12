@@ -2,8 +2,6 @@ import datetime
 import time
 import warnings
 
-import sqlalchemy as sa
-
 from pipeline.parameters import Parameters
 from pipeline.data_store import DataStore
 from pipeline.preprocessing import Preprocessor
@@ -14,9 +12,9 @@ from pipeline.detection import Detector
 from pipeline.cutting import Cutter
 from pipeline.measuring import Measurer
 from pipeline.scoring import Scorer
+from pipeline.alerting import Alerting
 from pipeline.fakeinjection import FakeInjector
 
-from models.base import SmartSession
 from models.exposure import Exposure
 from models.report import Report
 
@@ -30,13 +28,14 @@ from util.logger import SCLogger
 _PROCESS_OBJECTS = {
     'preprocessing': 'preprocessor',
     'extraction': 'extractor',
-    'wcs': 'astrometor',
-    'zp': 'photometor',
+    'astrocal': 'astrometor',
+    'photocal': 'photometor',
     'subtraction': 'subtractor',
     'detection': 'detector',
     'cutting': 'cutter',
     'measuring': 'measurer',
     'scoring': 'scorer',
+    'alerting': 'alerter',
 }
 
 
@@ -59,6 +58,18 @@ class ParsPipeline(Parameters):
             "if there is no reference, will not continue to doing subtraction "
             "but will still save the products up to that point. "
             "(It's possible the pipeline won't work if this is False...)",
+            critical=False,
+        )
+
+        self.save_before_alerting = self.add_par(
+            'save_before_alerting',
+            True,
+            bool,
+            "Save all data products to the database before trying to "
+            "send alerts.  Usually you want this to be True.  (Think about "
+            "situations where some alerts are sent but it crashes so nothing "
+            "gets saved, etc.)  Will only matter if 'scoring' and 'alerting' "
+            "are in the steps to do.",
             critical=False,
         )
 
@@ -99,8 +110,8 @@ class ParsPipeline(Parameters):
             None,
             ( None, str ),
             "Stop after this step.  None = run the whole pipeline.  String values can be "
-            "any of preprocessing, extraction, wcs, zp, subtraction, detection, "
-            "cutting, measuring, scoring",
+            "any of preprocessing, extraction, astrocal, photocal, subtraction, detection, "
+            "cutting, measuring, scoring.  (See Pipeline.ALL_STEPS)",
             critical=False
         )
 
@@ -133,8 +144,8 @@ class ParsPipeline(Parameters):
 
 
 class Pipeline:
-    ALL_STEPS = [ 'preprocessing', 'extraction', 'wcs', 'zp', 'subtraction',
-                  'detection', 'cutting', 'measuring', 'scoring', ]
+    ALL_STEPS = [ 'preprocessing', 'extraction', 'astrocal', 'photocal', 'subtraction',
+                  'detection', 'cutting', 'measuring', 'scoring', 'alerting' ]
 
     def __init__(self, **kwargs):
         config = Config.get()
@@ -157,14 +168,14 @@ class Pipeline:
         self.extractor = Detector(**extraction_config)
 
         # astrometric fit using a first pass of sextractor and then astrometric fit to Gaia
-        astrometor_config = config.value('wcs', {})
-        astrometor_config.update(kwargs.get('wcs', {}))
+        astrometor_config = config.value('astrocal', {})
+        astrometor_config.update(kwargs.get('astrocal', {}))
         self.pars.add_defaults_to_dict(astrometor_config)
         self.astrometor = AstroCalibrator(**astrometor_config)
 
         # photometric calibration:
-        photometor_config = config.value('zp', {})
-        photometor_config.update(kwargs.get('zp', {}))
+        photometor_config = config.value('photocal', {})
+        photometor_config.update(kwargs.get('photocal', {}))
         self.pars.add_defaults_to_dict(photometor_config)
         self.photometor = PhotCalibrator(**photometor_config)
 
@@ -198,6 +209,11 @@ class Pipeline:
         scoring_config.update(kwargs.get('scoring', {}))
         self.pars.add_defaults_to_dict(scoring_config)
         self.scorer = Scorer(**scoring_config)
+
+        # send alerts
+        # Can't override alerting parameters at runtime; the Alerting
+        #   object just reads the config directly.
+        self.alerter = Alerting()
 
         # fake injection
         # (Make the object even if self.pars.inject_fakes is false
@@ -299,24 +315,15 @@ class Pipeline:
 
 
         if self._generate_report:
-            try:  # must make sure the report is on the DB
-                report = Report( exposure_id=ds.exposure.id, section_id=ds.section_id )
+            try:
+                if ds.exposure is not None:
+                    report = Report( exposure_id=ds.exposure.id, section_id=ds.section_id )
+                elif ds.image is not None:
+                    report = Report( image_id=ds.image.id )
+                else:
+                    raise RuntimeError( "This should never happen.")
                 report.start_time = datetime.datetime.now( tz=datetime.UTC )
-                report.provenance_id = provs['report'].id
-                with SmartSession() as dbsession:
-                    # check how many times this report was generated before
-                    prev_rep = dbsession.scalars(
-                        sa.select(Report).where(
-                            Report.exposure_id == ds.exposure.id,
-                            Report.section_id == str( ds.section_id ),
-                            Report.provenance_id == provs['report'].id,
-                        )
-                    ).all()
-                    report.num_prev_reports = len(prev_rep)
-                    report.insert( session=dbsession )
-
-                if report.exposure_id is None:
-                    raise RuntimeError('Report did not get a valid exposure_id!')
+                report.process_provid = { k: v.id for k, v in provs.items() }
             except Exception as e:
                 raise RuntimeError('Failed to create or merge a report for the exposure!') from e
 
@@ -340,13 +347,14 @@ class Pipeline:
         # The contents of this dictionary must be synced with _PROCESS_OBJECTS above.
         return { 'preprocessing': self.preprocessor.pars.get_critical_pars(),
                  'extraction': self.extractor.pars.get_critical_pars(),
-                 'wcs': self.astrometor.pars.get_critical_pars(),
-                 'zp': self.photometor.pars.get_critical_pars(),
+                 'astrocal': self.astrometor.pars.get_critical_pars(),
+                 'photocal': self.photometor.pars.get_critical_pars(),
                  'subtraction': self.subtractor.pars.get_critical_pars(),
                  'detection': self.detector.pars.get_critical_pars(),
                  'cutting': self.cutter.pars.get_critical_pars(),
                  'measuring': self.measurer.pars.get_critical_pars(),
                  'scoring': self.scorer.pars.get_critical_pars(),
+                 'alerting': {},
                  'report': {}
                 }
 
@@ -427,22 +435,29 @@ class Pipeline:
         else:
             stepstogenerateprov = self._get_stepstodo()
 
-        if ( stepstogenerateprov == self.ALL_STEPS ) and ( self.pars.generate_report ):
-            stepstogenerateprov.append( 'report' )
-
         parsdict = self.get_critical_pars_dicts()
         ds.make_prov_tree( stepstogenerateprov, parsdict,
                            provtag=None if no_provtag else self.pars.provenance_tag,
                            ok_no_ref_prov=ok_no_ref_prov )
 
-        if 'report' not in ds.prov_tree:
-            if self.pars.generate_report:
-                SCLogger.warning( "generate_report is true but no report will be generated!" )
-                self._generate_report = False
-            else:
-                self._generate_report = True
-
         return ds.prov_tree
+
+
+    def save_data_products( self, step, ds ):
+        t_start = time.perf_counter()
+        try:
+            SCLogger.info(f"Saving at step {step} for image id {ds.image.id}")
+            ds.save_and_commit()
+        except Exception as e:
+            SCLogger.exception(f"Failed to save at step {step} for image id {ds.image.id}")
+            raise e
+        if ds.update_runtimes:
+            ds.runtimes[step] = time.perf_counter() - t_start
+
+
+    def __call__( self, *args, **kwargs ):
+        """See self.run()"""
+        return self.run( *args, **kwargs )
 
 
     def run(self, *args, **kwargs):
@@ -464,9 +479,11 @@ class Pipeline:
         """
 
         ds = None
+        step = None
         try:
             ds = self.setup_datastore(*args, **kwargs)
             stepstodo = self._get_stepstodo()
+            SCLogger.debug( f"Pipeline going to do steps: {stepstodo}" )
 
             if ds.image is not None:
                 SCLogger.info(f"Pipeline starting for image {ds.image.id} ({ds.image.filepath}), "
@@ -484,97 +501,82 @@ class Pipeline:
                 import tracemalloc
                 tracemalloc.start()  # trace the size of memory that is being used
 
+
             with warnings.catch_warnings(record=True) as w:
                 ds.warnings_list = w  # appends warning to this list as it goes along
-                # run dark/flat preprocessing, cut out a specific section of the sensor
 
-                if 'preprocessing' in stepstodo:
-                    SCLogger.info("preprocessor")
-                    ds = self.preprocessor.run(ds)
-                    ds.update_report('preprocessing')
-                    SCLogger.info(f"preprocessing complete: image id = {ds.image.id}, filepath={ds.image.filepath}")
+                process_objects = { 'preprocessing': self.preprocessor,
+                                    'extraction': self.extractor,
+                                    'astrocal': self.astrometor,
+                                    'photocal': self.photometor,
+                                    'subtraction': self.subtractor,
+                                    'detection': self.detector,
+                                    'cutting': self.cutter,
+                                    'measuring': self.measurer,
+                                    'scoring': self.scorer,
+                                    'alerting': self.alerter,
+                                   }
+                # ...counting on python dictionaries being ordered...
+                steps = list( process_objects.keys() )
+                everything_saved = True
 
-                # extract sources and make a SourceList, PSF, and Background from the image
-                if 'extraction' in stepstodo:
-                    SCLogger.info(f"extractor for image id {ds.image.id}")
-                    ds = self.extractor.run(ds)
-                    ds.update_report('extraction')
+                for stepi, (step, procobj) in enumerate( process_objects.items() ):
+                    if step in stepstodo:
+                        SCLogger.info( f'Pipeline starting {step}' )
+                        ds = procobj.run( ds )
+                        ds.update_report( step )
 
-                # find astrometric solution, save WCS into Image object and FITS headers
-                if 'wcs' in stepstodo:
-                    SCLogger.info(f"astrometor for image id {ds.image.id}")
-                    ds = self.astrometor.run(ds)
-                    ds.update_report('astrocal')
+                        if step == 'preprocessing':
+                            SCLogger.info( f"preprocessing complete: image id={ds.image.id}, "
+                                           f"filepath={ds.image.filepath}" )
+                        else:
+                            SCLogger.info( f"{step} complete for image {ds.image.id}" )
 
-                # cross-match against photometric catalogs and get zero point, save into Image object and FITS headers
-                if 'zp' in stepstodo:
-                    SCLogger.info(f"photometor for image id {ds.image.id}")
-                    ds = self.photometor.run(ds)
-                    ds.update_report('photocal')
+                        # Alerting has no data products to save; every other step does
+                        if step != 'alerting':
+                            everything_saved = False
 
-                if self.pars.save_before_subtraction:
-                    t_start = time.perf_counter()
-                    try:
-                        SCLogger.info(f"Saving intermediate image for image id {ds.image.id}")
-                        ds.save_and_commit()
-                    except Exception as e:
-                        ds.update_report('save intermediate')
-                        SCLogger.error(f"Failed to save intermediate image for image id {ds.image.id}")
-                        SCLogger.error(e)
-                        raise e
+                        # There are a couple of steps where we might want to save
+                        #   before being completely finished
+                        if ( not everything_saved ) and ( stepi < len(steps)-1 ):
+                            if self.pars.save_before_subtraction and ( steps[stepi+1] == 'subtraction' ):
+                                self.save_data_products( 'save_before_subtraction', ds )
+                                everything_saved = True
 
-                    if ds.update_runtimes:
-                        ds.runtimes['save_intermediate'] = time.perf_counter() - t_start
+                            if self.pars.save_before_alerting and ( steps[stepi+1] == 'alerting' ):
+                                self.save_data_products( 'save_before_alerting', ds )
+                                everything_saved = True
 
-                # fetch reference images and subtract them, save subtracted Image objects to DB and disk
-                if 'subtraction' in stepstodo:
-                    SCLogger.info(f"subtractor for image id {ds.image.id}")
-                    ds = self.subtractor.run(ds)
-                    ds.update_report('subtraction')
+                if self.pars.save_at_finish and ( not everything_saved ):
+                    self.save_data_products( 'final', ds )
 
-                # find sources, generate a source list for detections
-                if 'detection' in stepstodo:
-                    SCLogger.info(f"detector for image id {ds.image.id}")
-                    ds = self.detector.run(ds)
-                    ds.update_report('detection')
-
-                # make cutouts of all the sources in the "detections" source list
-                if 'cutting' in stepstodo:
-                    SCLogger.info(f"cutter for image id {ds.image.id}")
-                    ds = self.cutter.run(ds)
-                    ds.update_report('cutting')
-
-                # extract photometry and analytical cuts
-                if 'measuring' in stepstodo:
-                    SCLogger.info(f"measurer for image id {ds.image.id}")
-                    ds = self.measurer.run(ds)
-                    ds.update_report('measuring')
-
-                # measure deep learning models on the cutouts/measurements
-                if 'scoring' in stepstodo:
-                    SCLogger.info(f"scorer for image id {ds.image.id}")
-                    ds = self.scorer.run(ds)
-                    ds.update_report('scoring')
-
-                if self.pars.save_at_finish and ( 'subtraction' in stepstodo ):
-                    t_start = time.perf_counter()
-                    try:
-                        SCLogger.info(f"Saving final products for image id {ds.image.id}")
-                        ds.save_and_commit()
-                    except Exception as e:
-                        ds.update_report('save final')
-                        SCLogger.error(f"Failed to save final products for image id {ds.image.id}")
-                        SCLogger.error(e)
-                        raise e
-
-                    if ds.update_runtimes:
-                        ds.runtimes['save_final'] = time.perf_counter() - t_start
 
                 # Parallel pipeline path for fake injection
                 if ( all( s in stepstodo
                           for s in [ 'subtraction', 'detection', 'cutting', 'measuring', 'scoring' ] )
                      and ( self.pars.inject_fakes )
                     ):
+                    # Try to free up some memory of stuff we don't need any more in the datastore,
+                    #   to reduce overall memory usage.  (We're gonna create new copies of all of
+                    #   this with the fake subtraction.)
+                    # ...this doesn't do much.  The peak usage of fakeanalysis is still high (~900MB
+                    #   more than subtraction, for test decam images).  Maybe it's the large number
+                    #   of cutouts?  Dunno.  Probably worth looking into.  Python encourages you to
+                    #   waste memory by making it so convenient to stuff references to things all
+                    #   over the place.  Security schmeurity, there are advantages to the C way of
+                    #   doing things were you know you can free stuff and aren't dependent on a
+                    #   mysterious garbage collector and can keep your memory usage from getting out
+                    #   of hand.
+                    if ds.sub_image is not None:
+                        ds.sub_image.free()
+                        ds.sub_image = None
+                        # TODO : this is in the weeds.  This function shouldn't
+                        #   have to know about internals of subtraction methods
+                        #   Related to Issue #350.
+                        for prop in [ 'zogy_score', 'zogy_alpha', 'zogy_alpha_err', 'zogy_psf' ]:
+                            if hasattr( ds, prop ) and ( getattr( ds, prop ) is not None ):
+                                setattr( ds, prop, None )
+
                     t_start = time.perf_counter()
                     if ds.update_memory_usages:
                         import tracemalloc
@@ -596,21 +598,11 @@ class Pipeline:
                             ds.fakes.save()
                             ds.fakes.insert()
 
-                        SCLogger.info( f"Running subtraction with fake-injected image id {ds.image.id}" )
-                        fakeds = self.subtractor.run( fakeds )
-
-                        SCLogger.info( f"Running detection on fake-injected subtraction of image id {ds.image.id}" )
-                        fakeds = self.detector.run( fakeds )
-
-                        SCLogger.info( f"Running cutting on fake-injected subtraction of image id {ds.image.id}" )
-                        fakeds = self.cutter.run( fakeds )
-
-                        SCLogger.info( f"Running measuring on fake-injected subtraction of image id {ds.image.id}" )
-                        fakeds = self.measurer.run( fakeds )
-
-                        SCLogger.info( f"Running scoring of detections on fake-injected subtraction "
-                                       f"of image id {ds.image.id}" )
-                        fakeds = self.scorer.run( fakeds )
+                        for step, procobj in zip( [ 'subtraction', 'detection', 'cutting', 'measuring', 'scoring' ],
+                                                  [ self.subtractor, self.detector, self.cutter,
+                                                    self.measurer, self.scorer ] ):
+                            SCLogger.info( f"Running {step} with fake-injected image id {ds.image.id}" )
+                            fakeds = procobj.run( fakeds )
 
                         SCLogger.info( f"Looking to see which fakes are detected on fake-injected subtraction "
                                        f"of image id {ds.image.id}" )
@@ -642,4 +634,6 @@ class Pipeline:
             SCLogger.exception( f"Exception in Pipeline.run: {e}" )
             if ds is not None:
                 ds.exceptions.append( e )
+                if step is not None:
+                    ds.update_report( step )
             raise

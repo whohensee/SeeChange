@@ -248,7 +248,10 @@ class FlatTypeConverter( EnumConverter ):
 class PSFFormatConverter( EnumConverter ):
     _dict = {
         0: 'unknown',
-        1: 'psfex'
+        1: 'psfex',
+        2: 'delta',
+        3: 'gaussian',
+        4: 'image'
     }
     _allowed_values = None
     _dict_filtered = None

@@ -3,9 +3,12 @@ import pytest
 import shutil
 import datetime
 
-import sqlalchemy as sa
+import numpy as np
 
-from models.base import SmartSession, FileOnDiskMixin
+import sqlalchemy as sa
+import sqlalchemy.orm as orm
+
+from models.base import SmartSession, FileOnDiskMixin, Psycopg2Connection
 from models.provenance import Provenance, ProvenanceTag
 from models.exposure import Exposure
 from models.image import Image
@@ -173,8 +176,8 @@ def test_parameters( test_config ):
     overrides = {
         'preprocessing': { 'steps': [ 'overscan', 'linearity'] },
         'extraction': {'threshold': 3.14 },
-        'wcs': {'cross_match_catalog': 'override'},
-        'zp': {'cross_match_catalog': 'override'},
+        'astrocal': {'cross_match_catalog': 'override'},
+        'photocal': {'cross_match_catalog': 'override'},
         'subtraction': { 'method': 'override' },
         'detection': { 'threshold': 3.14 },
         'cutting': { 'cutout_size': 666 },
@@ -191,8 +194,8 @@ def test_parameters( test_config ):
 
     assert check_override(overrides['preprocessing'], pipeline.preprocessor.pars)
     assert check_override(overrides['extraction'], pipeline.extractor.pars)
-    assert check_override(overrides['wcs'], pipeline.astrometor.pars)
-    assert check_override(overrides['zp'], pipeline.photometor.pars)
+    assert check_override(overrides['astrocal'], pipeline.astrometor.pars)
+    assert check_override(overrides['photocal'], pipeline.photometor.pars)
     assert check_override(overrides['subtraction'], pipeline.subtractor.pars)
     assert check_override(overrides['detection'], pipeline.detector.pars)
     assert check_override(overrides['cutting'], pipeline.cutter.pars)
@@ -234,11 +237,207 @@ def test_running_without_reference(decam_exposure, decam_default_calibrators, pi
         session.commit()
 
 
+def check_full_run_results( ds, exposure, sec_id, ref, expected ):
+    # Make sure that the provenances are all in the database
+    with SmartSession() as session:
+        for prov in ds.prov_tree.values():
+            provs = session.query( Provenance ).filter( Provenance._id==prov.id ).all()
+            assert len(provs) == 1
+
+    # Check that all the data products are in the database
+    check_datastore_and_database_have_everything( exposure.id, sec_id, ref.id, ds )
+
+    # Get the measurements and deepscores.
+    # Filter only on the DeepScoreSet provenance since that's the lowest
+    #   one down, so by going at upstreams from the DeepScoreSet we know
+    #   we're getting the right things.
+    # (This is perhaps gratuitous, since the measurements and deescores
+    #   should aready be in DataStore ds, but, well, I guess this is
+    #   also checking it all got saved right to the database.)
+    detections = orm.aliased( SourceList )
+    subim = orm.aliased( Image )
+    with SmartSession() as session:
+        res = ( session.query( MeasurementSet, DeepScoreSet )
+                .join( Cutouts, MeasurementSet.cutouts_id==Cutouts._id )
+                .join( detections, Cutouts.sources_id==detections._id )
+                .join( subim, detections.image_id==subim._id )
+                .join( image_subtraction_components, subim._id==image_subtraction_components.c.image_id )
+                .join( ZeroPoint, image_subtraction_components.c.new_zp_id==ZeroPoint._id )
+                .join( WorldCoordinates, ZeroPoint.wcs_id==WorldCoordinates._id )
+                .join( SourceList, WorldCoordinates.sources_id==SourceList._id )
+                .join( Image, SourceList.image_id==Image._id )
+                .filter( DeepScoreSet.measurementset_id==MeasurementSet._id )
+                .filter( DeepScoreSet.provenance_id==ds.prov_tree['scoring'].id )
+                .filter( Image.exposure_id==exposure.id )
+               ).all()
+        assert len(res) == 1
+        meas, deep = res[0]
+
+    # ---> REGRESSION TEST : look at some of the results to make
+    #   sure that things behaved as expected.  If not, then either
+    #   find the errors, or, if there no errors and it's legitimate
+    #   changes, then *some* process version numbers should be
+    #   bumped.  Good luck figuring out which one(s)!  (Hopefully,
+    #   other test failures will give you a clue.)  (This is
+    #   probably not a sufficient regression test; also
+    #   test_pipeline_exposure_launcher, with some checking of
+    #   measurements and scores there, should be run, at the very
+    #   least!)
+    #
+    # Since this is a regression test, you might argue that the abs= and rel=
+    # values in the pytest.approx calls below should be smaller.
+
+    assert len( meas.measurements ) == len( expected['x'] )
+    assert len( deep.deepscores ) == len( meas.measurements )
+    for m, d in zip( meas.measurements, deep.deepscores ):
+        # We don't care about things being in the same order, but the set of
+        #   measurements and deepscores should match.  Find the match based
+        #   on x and y being both within 0.05 of what's expected.
+        w = np.where( ( np.fabs( expected['x'] - m.x ) < 0.05 ) & ( np.fabs( expected['y'] - m.y ) < 0.05 ) )[0]
+        assert len(w) == 1
+        i = w[0]
+        assert expected['gfit_x'][i] == pytest.approx( m.gfit_x, abs=0.05 )
+        assert expected['gfit_y'][i] == pytest.approx( m.gfit_y, abs=0.05 )
+        assert expected['major_width'][i] == pytest.approx( m.major_width, abs=0.05 )
+        assert expected['minor_width'][i] == pytest.approx( m.minor_width, abs=0.05 )
+        assert expected['neg_frac'][i] == pytest.approx( m.negfrac, abs=0.02 )
+        assert expected['neg_flux_frac'][i] == pytest.approx( m.negfluxfrac, abs=0.05 )
+        assert expected['psf_flux_err'][i] == pytest.approx( m.flux_psf_err, rel=0.05 )
+        assert expected['psf_flux'][i] == pytest.approx( m.flux_psf, abs=m.flux_psf_err / 20. )
+        assert expected['aper_flux_err'][i] == pytest.approx( m.flux_apertures_err[0], rel=0.05 )
+        assert expected['aper_flux'][i] == pytest.approx( m.flux_apertures[0], abs=m.flux_apertures_err[0] / 20. )
+        assert expected['rb'][i] == pytest.approx( d.score, abs=0.03 )
+
+
+# The user fixture is here because this is a convenient test for looking
+#  to see what we've got on the weabp.  This will only work if you're
+#  running the tests on the dekstop or laptop you're sitting at.  Put a
+#  breakpoint at the end of the test, and then go log into the webap
+#  (which will be at https://localhost:8081, with 8081 replaced with the
+#  value of WEBAP_PORT If you set that when running the docker compose
+#  file), log in with username "test" and password "test_password",
+#  and check things out.
+def test_full_run_zogy( decam_exposure, decam_reference, decam_default_calibrators, user ):
+    # The source at 1619.22, 1881.40 is a real SN
+    expected = {
+        'x':      np.array( [ 1409.12, 1452.93, 1439.33, 1451.45, 1619.22,
+                              1441.11,  167.42, 1358.36,  457.95, 1518.02 ] ),
+        'y':      np.array( [  757.66,  807.50, 1463.51, 1627.39, 1881.40,
+                               2048.16, 3330.82, 3492.01, 4008.18, 4043.67 ] ),
+        'gfit_x':           [ 1408.75, 1451.44, 1438.01, 1450.81, 1619.22,
+                              1441.14,  167.30, 1358.17,  457.76, 1516.70 ],
+        'gfit_y':           [  757.65,  809.33, 1464.80, 1628.01, 1881.28,
+                               2048.16, 3330.97, 3492.07, 4006.97, 4041.61 ],
+        'major_width': [ 6.53, 8.58, 7.75, 6.62, 4.01, 3.39, 3.75, 9.73, 7.13, 7.70 ],
+        'minor_width': [ 4.36, 6.79, 7.34, 5.97, 3.15, 2.27, 2.10, 4.25, 5.13, 7.35 ],
+        'neg_frac':      [ 0.23, 0.11, 0.09, 0.10, 0.10, 0.18, 0.14, 0.17, 0.11, 0.02 ],
+        'neg_flux_frac': [ 0.10, 0.10, 0.06, 0.11, 0.05, 0.21, 0.16, 0.14, 0.10, 0.05 ],
+        'psf_flux':      [ 91677, 10377,  3262, 10777,  2275,   676,   573,   822,  2935, 20224 ],
+        'psf_flux_err':  [   468,   184,   133,   178,    97,   109,    90,    87,   123,   217 ],
+        'aper_flux':     [ 70381, 11255,  3789,  9661,  1870,   676,   382,  1067,  2781, 27620 ],
+        'aper_flux_err': [   559,   207,   146,   189,   106,   124,   101,   101,   150,   267 ],
+        'rb': [ 0.459, 0.386, 0.569, 0.451, 0.797, 0.618, 0.609, 0.463, 0.630, 0.434 ]
+    }
+
+    try:
+        # subtraction.method zogy and detection.method filter should already
+        #   be in the defaults from the config file, but be explicit
+        #   here for clarity (and comparison to test_full_run_hotpants)
+        pipeline = Pipeline( pipeline={ 'provenance_tag': 'test_full_run_zogy' },
+                             subtraction={ 'method': 'zogy',
+                                           'refset': 'test_refset_decam' },
+                             detection={ 'method': 'filter' } )
+        ds = pipeline.run( decam_exposure, decam_reference.image.section_id )
+        ds.save_and_commit()
+        check_full_run_results( ds, decam_exposure, decam_reference.image.section_id, decam_reference, expected )
+
+    finally:
+        if 'ds' in locals():
+            ds.delete_everything()
+        with Psycopg2Connection() as con:
+            cursor = con.cursor()
+            cursor.execute( "DELETE FROM provenance_tags WHERE tag='test_full_run_zogy'" )
+            con.commit()
+
+
+# See comment on test_full_run_zogy for the reason for the user fixture
+def test_full_run_hotpants( decam_exposure, decam_reference, decam_default_calibrators, user ):
+    # A lot of the stuff that pass the cuts is really bad -- lots of CRs getting through.
+    # I think they didn't get through with zogy because zogy effectively convolved them out
+    # a bit (as the ref had worse seeing the the new here), and the blurring led to
+    # Gaussian fits that did a better job of seeing very non-round things.  Perhaps thought
+    # required on our analytic cuts.  But, also, R/B really needs to be trained better to
+    # get rid of all of that, as a lot of these 27 are junk with high R/B.
+    #
+    # The source at 1619.21, 1881.41 is a real SN.
+
+    expected = {
+        'x': np.array( [  593.75, 1358.12, 1358.47, 1265.51,  949.14,  903.47, 1752.72,  998.42,  983.28,
+                         1984.89, 1619.21, 1581.49, 1452.15, 1451.69, 1143.22, 1438.59, 1434.72, 1185.98,
+                          246.24, 1452.19, 1452.99, 1450.43, 1409.05, 1435.25, 1576.60, 1573.30 ] ),
+        'y': np.array( [ 3527.50, 3490.86, 3494.41, 3409.27, 2847.72, 2747.91, 2620.64, 2278.11, 2273.60,
+                         2025.91, 1881.41, 1665.81, 1632.07, 1627.86, 1571.47, 1465.02, 1464.57, 1085.24,
+                          933.89,  812.52,  808.72,  806.15,  758.32,  477.55,  181.67,  180.33 ] ),
+        'gfit_x':      [  593.56, 1358.18, 1358.18, 1265.73,  949.17,  903.51, 1752.83,  998.43,  983.31,
+                         1985.06, 1619.22, 1581.51, 1451.01, 1451.01, 1143.42, 1438.36, 1438.36, 1186.01,
+                          246.33, 1451.63, 1451.63, 1451.63, 1408.80, 1435.30, 1576.84, 1575.26 ],
+        'gfit_y':      [ 3527.32, 3492.07, 3492.07, 3409.50, 2847.63, 2747.88, 2620.62, 2278.16, 2273.17,
+                         2025.84, 1881.32, 1665.88, 1628.45, 1628.45, 1571.61, 1465.16, 1465.16, 1085.21,
+                          933.92,  809.37,  809.37,  809.37,  758.12,  477.70,  181.84,  180.84 ],
+        'major_width': [ 1.52, 9.73, 9.72, 4.68, 3.70, 2.19, 2.48, 3.53, 2.51, 5.26, 3.91, 3.01, 7.52,
+                         7.52, 1.84, 8.22, 8.22, 2.34, 2.08, 8.07, 8.07, 8.07, 7.27, 1.40, 2.74, 6.30 ],
+        'minor_width': [ 0.58, 4.16, 4.16, 1.81, 1.41, 1.37, 1.56, 1.21, 1.04, 3.19, 3.18, 1.51, 6.55,
+                         6.55, 0.68, 7.34, 7.34, 1.67, 1.53, 7.29, 7.29, 7.29, 5.07, 0.96, 1.74, 2.94 ],
+        'neg_frac':      [ 0.23, 0.23, 0.19, 0.23, 0.15, 0.15, 0.13, 0.22, 0.12, 0.17, 0.10, 0.09, 0.14,
+                           0.14, 0.24, 0.13, 0.12, 0.16, 0.21, 0.11, 0.11, 0.09, 0.15, 0.23, 0.06, 0.07 ],
+        'neg_flux_frac': [ 0.02, 0.19, 0.15, 0.02, 0.02, 0.02, 0.01, 0.03, 0.01, 0.20, 0.06, 0.01, 0.07,
+                           0.07, 0.02, 0.08, 0.07, 0.02, 0.02, 0.07, 0.07, 0.06, 0.08, 0.02, 0.00, 0.01 ],
+        'psf_flux':      [   4038,    839,    795,  12908,   7400,   8254,  13014,   6464,   5641,   1242,
+                             2341,   8754,   4839,   9961,   6368,   3707,   1998,   8408,   9597,   7288,
+                            11034,   7253, 103951,   8025,  16503,  14254 ],
+        'psf_flux_err':  [     95,     86,     86,    113,    104,    106,    116,    102,     99,    108,
+                               96,    108,    125,    175,    104,    149,    108,    108,    111,    147,
+                              195,    136,    461,    109,    121,    116 ],
+        'aper_flux':     [   4702,   1025,    947,  13487,   5639,   6608,  11532,   5389,   5415,   1158,
+                             1908,   6790,   4759,   9172,   5910,   3289,   2476,   6383,   7293,   7400,
+                             9272,   6501,  83536,   9115,  16072,  14672 ],
+        'aper_flux_err': [    105,    100,    100,    115,    106,    107,    113,    105,    105,    120,
+                              105,    108,    150,    173,    107,    138,    127,    107,    108,    164,
+                              188,    156,    440,    110,    118,    116 ],
+        'rb': [ 0.628, 0.458, 0.484, 0.789, 0.778, 0.891, 0.852, 0.601, 0.613, 0.819, 0.779, 0.777, 0.470,
+                0.487, 0.838, 0.619, 0.452, 0.841, 0.808, 0.583, 0.582, 0.476, 0.531, 0.812, 0.814, 0.325 ]
+    }
+
+    try:
+        pipeline = Pipeline( pipeline={ 'provenance_tag': 'test_full_run_hotpants' },
+                             subtraction={ 'method': 'hotpants',
+                                           'refset': 'test_refset_decam' },
+                             detection={ 'method': 'sextractor' } )
+        ds = pipeline.run( decam_exposure, decam_reference.image.section_id )
+        ds.save_and_commit()
+        check_full_run_results( ds, decam_exposure, decam_reference.image.section_id, decam_reference, expected )
+
+    finally:
+        if 'ds' in locals():
+            ds.delete_everything()
+        with Psycopg2Connection() as con:
+            cursor = con.cursor()
+            cursor.execute( "DELETE FROM provenance_tags WHERE tag='test_full_run_hotpants'" )
+            con.commit()
+
+
+
+@pytest.mark.skipif( not env_as_bool('RUN_SLOW_TESTS'), reason="Set RUN_SLOW_TEST=1 to run this test" )
 def test_data_flow(decam_exposure, decam_reference, decam_default_calibrators, pipeline_for_tests, archive):
     """Test that the pipeline runs end-to-end.
 
     Also check that it regenerates things that are missing. The
     iteration of that makes this a slow test....
+
+    TODO : given test_full_run_zogy above, we should make a faster
+    version of this to check that things are regenerated or not as
+    expected, e.g. using a small sample image that will run through very
+    quickly.
 
     """
     exposure = decam_exposure
@@ -303,10 +502,6 @@ def test_data_flow(decam_exposure, decam_reference, decam_default_calibrators, p
     finally:
         if 'ds' in locals():
             ds.delete_everything()
-        # added this cleanup to make sure the temp data folder is cleaned up
-        # this should be removed after we add datastore failure modes (issue #150)
-        shutil.rmtree(os.path.join(os.path.dirname(exposure.get_fullpath()), '115'), ignore_errors=True)
-        shutil.rmtree(os.path.join(archive.test_folder_path, '115'), ignore_errors=True)
 
 
 def test_bitflag_propagation(decam_exposure, decam_reference, decam_default_calibrators, pipeline_for_tests, archive):
@@ -688,7 +883,6 @@ def test_inject_warnings_errors(decam_datastore, decam_reference, pipeline_for_t
             # these are used to find the report later on
             exp_id = ds.exposure_id
             sec_id = ds.section_id
-            prov_id = ds.report.provenance_id
 
             # set the error instead
             getattr(p, obj).pars.inject_warnings = False
@@ -706,11 +900,9 @@ def test_inject_warnings_errors(decam_datastore, decam_reference, pipeline_for_t
                     sa.select(Report).where(
                         Report.exposure_id == exp_id,
                         Report.section_id == sec_id,
-                        Report.provenance_id == prov_id
                     ).order_by(Report.start_time.desc())
                 ).all()
                 report = reports[0]  # the last report is the one we just generated
-                assert len(reports) - 1 == report.num_prev_reports
                 assert not report.success
                 assert report.error_step == process_step
                 assert report.error_type == 'RuntimeError'
