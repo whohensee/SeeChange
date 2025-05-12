@@ -237,6 +237,7 @@ def datastore_factory(data_dir, pipeline_factory, request, code_version_dict):
                 report_cache_path = cache_dir / cache_base_path.parent / f'{cache_base_path.name}.report.json'
                 ds.cache_base_path = cache_dir / cache_base_path
             elif new_cache_base_path != cache_base_path:
+                # breakpoint()
                 warnings.warn( f'Determined cache_base_path {new_cache_base_path} '
                                f'from exposure/section_id, but it does not match the '
                                f'pre-existing cache_base_path {cache_base_path}' )
