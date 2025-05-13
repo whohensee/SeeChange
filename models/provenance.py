@@ -431,6 +431,7 @@ class Provenance(Base):
         "acquired" : None,
         'fakeinjection' : None,
         'exposure' : None,
+        'photocal' : None,
     }
 
     @classmethod
