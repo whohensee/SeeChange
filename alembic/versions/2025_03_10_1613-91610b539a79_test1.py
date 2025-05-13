@@ -25,7 +25,10 @@ def upgrade() -> None:
     op.drop_constraint('provenances_code_version_id_fkey', 'provenances', type_='foreignkey')
     op.drop_column('provenances', 'code_version_id')
 
-    op.add_column('code_versions', sa.Column('version', sa.Integer(), nullable=False))
+    op.add_column('code_versions', sa.Column('version_major', sa.Integer(), nullable=False))
+    op.add_column('code_versions', sa.Column('version_minor', sa.Integer(), nullable=False))
+    op.add_column('code_versions', sa.Column('version_patch', sa.Integer(), nullable=False))
+
     op.add_column('code_versions', sa.Column('process', sa.String(), nullable=False))
     op.alter_column('code_versions', '_id',
                existing_type=sa.VARCHAR(),
@@ -46,7 +49,9 @@ def downgrade() -> None:
                type_=sa.VARCHAR(),
                existing_nullable=False)
     op.drop_column('code_versions', 'process')
-    op.drop_column('code_versions', 'version')
+    op.drop_column('code_versions', 'version_patch')
+    op.drop_column('code_versions', 'version_minor')
+    op.drop_column('code_versions', 'version_major')
 
     op.add_column('provenances', sa.Column('code_version_id', sa.VARCHAR(), autoincrement=False, nullable=False))
     op.create_foreign_key('provenances_code_version_id_fkey', 'provenances', 'code_versions', ['code_version_id'], ['_id'], ondelete='CASCADE')

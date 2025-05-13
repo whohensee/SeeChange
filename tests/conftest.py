@@ -417,7 +417,7 @@ def code_version_dict():
     cv_dict = {}
 
     for process_name in PROCESS_NAMES:
-        cv = CodeVersion( process=process_name, version=-1 )
+        cv = CodeVersion( process=process_name, version_major=-1, version_minor=-1, version_patch=-1 )
         cv.upsert()
         cv_dict[process_name] = cv
 
@@ -437,7 +437,7 @@ def code_version_dict():
     yield cv_dict
 
     with SmartSession() as session:
-        session.execute( sa.text( "DELETE FROM code_versions WHERE version='-1'" ) )
+        session.execute( sa.text( "DELETE FROM code_versions WHERE version_major='-1'" ) )
         # session.execute( sa.delete( CodeVersion ).where( CodeVersion.version==-1 ) )
         session.commit()
         # Verify that the code hashes got cleaned out too

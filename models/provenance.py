@@ -54,12 +54,22 @@ class CodeHash(Base):
 class CodeVersion(Base, UUIDMixin):
     __tablename__ = 'code_versions'
 
-    version = sa.Column(
+    version_major = sa.Column(
         sa.Integer,
-        primary_key=True,
         nullable=False,
-        doc='Version of the code. Uses semantic versioning. '
-        # TODO WHPR: Change this from integer to perhaps a tuple or multiple columns for semver
+        doc='As per Semantic Versioning, the MAJOR category of MAJOR.MINOR.PATCH'
+    )
+
+    version_minor = sa.Column(
+        sa.Integer,
+        nullable=False,
+        doc='As per Semantic Versioning, the MINOR category of MAJOR.MINOR.PATCH'
+    )
+
+    version_patch = sa.Column(
+        sa.Integer,
+        nullable=False,
+        doc='As per Semantic Versioning, the PATCH category of MAJOR.MINOR.PATCH'
     )
 
     process = sa.Column(
@@ -140,7 +150,7 @@ class CodeVersion(Base, UUIDMixin):
         self._code_hashes = None
 
     def __repr__( self ):
-        return f"<CodeVersion process: {self.process}, version: {self.version}, id: {self.id}>"
+        return f"<CodeVersion process: {self.process}, version: {self.version_major}.{self.version_minor}.{self.version_patch}, id: {self.id}>"
 
 
 provenance_self_association_table = sa.Table(
@@ -373,8 +383,7 @@ class Provenance(Base):
         if self.code_version_id is not None:
             with SmartSession() as sess:
                 cv = sess.query( CodeVersion ).filter( CodeVersion._id == self.code_version_id ).first()
-                cv_string = str(cv.version)
-
+                cv_string = f"{cv.version_major}.{cv.version_minor}.{cv.version_patch}"
 
         superdict = dict(
             process=self.process,
@@ -465,7 +474,9 @@ class Provenance(Base):
                 if code_version is None:
                     code_version = session.scalars(sa.select(CodeVersion)
                                                    .where( CodeVersion.process == process )
-                                                   .order_by(CodeVersion.version.desc())).first()
+                                                   .order_by(CodeVersion.version_major.desc())
+                                                   .order_by(CodeVersion.version_minor.desc())
+                                                   .order_by(CodeVersion.version_patch.desc())).first()
                     # breakpoint()
             if code_version is None:
                 raise RuntimeError( "There is no code_version in the database.  Put one there." )
