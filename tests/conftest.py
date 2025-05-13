@@ -29,7 +29,7 @@ from models.base import (
     get_archive_object
 )
 from models.knownexposure import KnownExposure, PipelineWorker
-from models.provenance import CodeVersion, CodeHash, Provenance
+from models.provenance import CodeVersion, Provenance
 from models.catalog_excerpt import CatalogExcerpt
 from models.exposure import Exposure
 from models.object import Object

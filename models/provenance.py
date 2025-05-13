@@ -10,7 +10,6 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.declarative import declared_attr
 from sqlalchemy.schema import UniqueConstraint
-from sqlalchemy.dialects.postgresql import UUID as sqlUUID
 import psycopg2.extras
 import psycopg2.errors
 
@@ -150,7 +149,8 @@ class CodeVersion(Base, UUIDMixin):
         self._code_hashes = None
 
     def __repr__( self ):
-        return f"<CodeVersion process: {self.process}, version: {self.version_major}.{self.version_minor}.{self.version_patch}, id: {self.id}>"
+        return (f"<CodeVersion process: {self.process}, version: {self.version_major}" +
+                f".{self.version_minor}.{self.version_patch}, id: {self.id}>")
 
 
 provenance_self_association_table = sa.Table(

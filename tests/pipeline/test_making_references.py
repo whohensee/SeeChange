@@ -488,7 +488,8 @@ def test_make_refset( code_version_dict ):
 
     try:
         # Make a fake zeropoint prov for refmaker to chew on
-        zpprov = Provenance( process='photocal', code_version_id=code_version_dict['photocal'].id, parameters={}, upstreams=[] )
+        zpprov = Provenance( process='photocal', code_version_id=code_version_dict['photocal'].id, parameters={},
+                             upstreams=[] )
         zpprov.insert_if_needed()
         provstodel.add( zpprov )
 
@@ -537,7 +538,8 @@ def test_make_refset( code_version_dict ):
 
 def test_making_refsets_in_run( code_version_dict ):
     # a zp prov for refmaker to chew on
-    zpprov = Provenance( process='photocal', code_version_id=code_version_dict['photocal'].id, parameters={}, upstreams=[] )
+    zpprov = Provenance( process='photocal', code_version_id=code_version_dict['photocal'].id, parameters={},
+                         upstreams=[] )
     zpprov.insert_if_needed()
 
     # make a new refset with a new name

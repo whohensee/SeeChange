@@ -2,23 +2,22 @@ import pytest
 import uuid
 
 import sqlalchemy as sa
-import psycopg2.errors
 
 from models.base import SmartSession
-from models.provenance import CodeHash, CodeVersion, Provenance, ProvenanceTag
+from models.provenance import CodeVersion, Provenance, ProvenanceTag
 
-from util.util import get_git_hash
 
 
 def test_diff_delete( code_version_dict ):
-    cvd = code_version_dict
+    # WHPR clean up this whole test and add more
+    # cvd = code_version_dict
     # breakpoint()
     with SmartSession() as sess:
         n1 = sess.query( CodeVersion ).count()
         # breakpoint()
-        # WHPR this should match the number present in `provenance._current_code_version_dict` 
+        # WHPR this should match the number present in `provenance._current_code_version_dict`
         assert n1 == 26
-    
+
 
 # WHPR this test is deactivated as git_hashes are removed atm
 # def test_code_versions( code_version ):
@@ -89,7 +88,7 @@ def test_provenances(code_version_dict):
     # cannot create a provenance with a code_version of wrong type  TODO WHPR Make this UUID (integer/tuple once semver)
     with pytest.raises( ValueError, match="Code version must be a uuid" ):
         Provenance(process='foo', code_version_id="testvalue")
-    # 
+    #
 
     p = Provenance(
                 process="extraction",
@@ -258,15 +257,24 @@ def test_provenance_tag( code_version_dict ):
         # These are not valid parameter lists for the various processes,
         # but ProvenanceTag doesn't know anyting about that, so this is
         # all good for the test.
-        allprovs = [ Provenance( code_version_id=code_version_dict["preprocessing"].id, process='preprocessing', parameters={'a': 1} ),
-                     Provenance( code_version_id=code_version_dict["extraction"].id, process='extraction', parameters={'a': 1} ),
-                     Provenance( code_version_id=code_version_dict["subtraction"].id, process='subtraction', parameters={'a': 1} ),
-                     Provenance( code_version_id=code_version_dict["detection"].id, process='detection', parameters={'a': 1} ),
-                     Provenance( code_version_id=code_version_dict["cutting"].id, process='cutting', parameters={'a': 1} ),
-                     Provenance( code_version_id=code_version_dict["measuring"].id, process='measuring', parameters={'a': 1} ),
-                     Provenance( code_version_id=code_version_dict["scoring"].id, process='scoring', parameters={'a': 1} ),
-                     Provenance( code_version_id=code_version_dict["referencing"].id, process='referencing', parameters={'a': 1} ),
-                     Provenance( code_version_id=code_version_dict["referencing"].id, process='referencing', parameters={'a': 2} )
+        allprovs = [ Provenance( code_version_id=code_version_dict["preprocessing"].id,
+                                 process='preprocessing', parameters={'a': 1} ),
+                     Provenance( code_version_id=code_version_dict["extraction"].id,
+                                 process='extraction', parameters={'a': 1} ),
+                     Provenance( code_version_id=code_version_dict["subtraction"].id,
+                                 process='subtraction', parameters={'a': 1} ),
+                     Provenance( code_version_id=code_version_dict["detection"].id,
+                                 process='detection', parameters={'a': 1} ),
+                     Provenance( code_version_id=code_version_dict["cutting"].id,
+                                 process='cutting', parameters={'a': 1} ),
+                     Provenance( code_version_id=code_version_dict["measuring"].id,
+                                 process='measuring', parameters={'a': 1} ),
+                     Provenance( code_version_id=code_version_dict["scoring"].id,
+                                 process='scoring', parameters={'a': 1} ),
+                     Provenance( code_version_id=code_version_dict["referencing"].id,
+                                 process='referencing', parameters={'a': 1} ),
+                     Provenance( code_version_id=code_version_dict["referencing"].id,
+                                 process='referencing', parameters={'a': 2} )
                     ]
 
         for p in allprovs:
@@ -275,7 +283,8 @@ def test_provenance_tag( code_version_dict ):
 
         # Make sure we get yelled at if there is a duplicate process
         tmpprovs = allprovs.copy()
-        tmpprovs.append( Provenance( code_version_id=code_version_dict["preprocessing"].id, process='preprocessing', parameters={'a': 2} ) )
+        tmpprovs.append( Provenance( code_version_id=code_version_dict["preprocessing"].id,
+                                     process='preprocessing', parameters={'a': 2} ) )
         tmpprovs[-1].insert_if_needed()
         delprovids.add( tmpprovs[-1].id )
         with pytest.raises( ValueError, match='Process preprocessing is in the list of provenances more than once!' ):
@@ -298,7 +307,8 @@ def test_provenance_tag( code_version_dict ):
 
         # Make sure that if we try to add something that's inconsistent, nothing gets added
         tmpprovs = allprovs.copy()
-        tmpprovs[0] = Provenance( code_version_id=code_version_dict["preprocessing"].id, process='preprocessing', parameters={'a': 2} )
+        tmpprovs[0] = Provenance( code_version_id=code_version_dict["preprocessing"].id,
+                                  process='preprocessing', parameters={'a': 2} )
         tmpprovs[0].insert_if_needed()
         delprovids.add( tmpprovs[0].id )
         with pytest.raises( RuntimeError,
