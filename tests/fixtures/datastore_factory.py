@@ -603,7 +603,7 @@ def datastore_factory(data_dir, pipeline_factory, request, code_version_dict):
                                                           ds.ref_image.provenance_id,
                                                           ds.ref_sources.provenance_id ] )
                 prov_aligned_ref = Provenance(
-                    code_version_id=code_version_dict['alignment'].id,
+                    # code_version_id=code_version_dict['alignment'].id,
                     parameters=ds.prov_tree['subtraction'].parameters['alignment'],
                     upstreams=alignupstrprovs,
                     process='alignment',
