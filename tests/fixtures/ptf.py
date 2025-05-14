@@ -372,7 +372,7 @@ def ptf_supernova_image_datastores(ptf_images_datastore_factory):
 
 
 @pytest.fixture(scope='session')
-def ptf_aligned_image_datastores(request, ptf_reference_image_datastores, ptf_cache_dir, data_dir, code_version_dict):
+def ptf_aligned_image_datastores(request, ptf_reference_image_datastores, ptf_cache_dir, data_dir):
     cache_dir = os.path.join(ptf_cache_dir, 'aligned_images')
 
     # try to load from cache
@@ -459,7 +459,6 @@ def ptf_ref(
         ptf_aligned_image_datastores,
         ptf_cache_dir,
         data_dir,
-        code_version_dict
 ):
     SCLogger.debug( f"Making ptf_ref from {[i.image.filepath for i in ptf_reference_image_datastores]}" )
     SCLogger.debug( f"zp ids are { [ i.zp.id for i in ptf_reference_image_datastores ] } " )
@@ -678,14 +677,13 @@ def ptf_refset(refmaker_factory, provenance_base):
 
 
 @pytest.fixture
-def ptf_subtraction1_datastore( ptf_ref, ptf_supernova_image_datastores, subtractor, ptf_cache_dir, code_version_dict ):
+def ptf_subtraction1_datastore( ptf_ref, ptf_supernova_image_datastores, subtractor, ptf_cache_dir):
     subtractor.pars.refset = 'test_refset_ptf'
     ds = ptf_supernova_image_datastores[0]
     ds.edit_prov_tree( 'referencing', prov=Provenance.get( ptf_ref.provenance_id ), new_step=True  )
     subprov = Provenance( process='subtraction',
                           parameters=subtractor.pars.get_critical_pars(),
                           upstreams=[ds.prov_tree[p] for p in ['referencing','photocal']],
-                          code_version_id=code_version_dict['subtraction'].id,
                           is_testing=True )
     subprov.insert_if_needed()
     ds.edit_prov_tree( 'subtraction', prov=subprov, new_step=True )

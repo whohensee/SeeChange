@@ -8,16 +8,16 @@ from models.provenance import CodeVersion, Provenance, ProvenanceTag
 
 
 
-def test_diff_delete( code_version_dict ):
-    # WHPR clean up this whole test and add more
-    # cvd = code_version_dict
-    # breakpoint()
-    with SmartSession() as sess:
-        n1 = sess.query( CodeVersion ).count()
-        # breakpoint()
-        # WHPR this should match the number present in `provenance._current_code_version_dict`
-        assert n1 == 26
-    # WHPR careful with this one - maybe just check the number of test code versions or remove test
+# def test_diff_delete( code_version_dict ):
+#     # WHPR clean up this whole test and add more
+#     # cvd = code_version_dict
+#     # breakpoint()
+#     with SmartSession() as sess:
+#         n1 = sess.query( CodeVersion ).count()
+#         # breakpoint()
+#         # WHPR this should match the number present in `provenance._current_code_version_dict`
+#         assert n1 == 26
+#     # WHPR careful with this one - maybe just check the number of test code versions or remove test
 
 
 # WHPR this test is deactivated as git_hashes are removed atm
@@ -80,7 +80,7 @@ def test_diff_delete( code_version_dict ):
 #             session.execute( sa.text( "DELETE FROM code_hashes WHERE _id=:hash" ), { 'hash': old_hash } )
 
 
-def test_provenances(code_version_dict):
+def test_provenances():
     # breakpoint()
     # cannot create a provenance without a process name
     with pytest.raises( ValueError, match="must have a process name" ):
@@ -93,7 +93,6 @@ def test_provenances(code_version_dict):
 
     p = Provenance(
                 process="extraction",
-                code_version_id=code_version_dict["extraction"].id,
                 parameters={"test_parameter": "test_value1"},
                 upstreams=[],
                 is_testing=True,
@@ -109,7 +108,6 @@ def test_provenances(code_version_dict):
         with SmartSession() as session:
             p = Provenance(
                 process="test_process",
-                code_version_id=code_version_dict["test_process"].id,
                 parameters={"test_parameter": "test_value1"},
                 upstreams=[],
                 is_testing=True,
@@ -122,7 +120,6 @@ def test_provenances(code_version_dict):
             assert len(pid1) == 20
 
             p2 = Provenance(
-                code_version_id=code_version_dict["test_process"].id,
                 parameters={"test_parameter": "test_value2"},
                 process="test_process",
                 upstreams=[],
@@ -135,31 +132,16 @@ def test_provenances(code_version_dict):
             assert len(p2.id) == 20
             assert pid2 != pid1
 
-            # Check automatic code version getting
-            p3 = Provenance(
-                parameters={ "test_parameter": "test_value2" },
-                process="test_process",
-                upstreams=[],
-                is_testing=True
-            )
-
-            # Will use current code version instead of testing version when passed with no cv
-            with pytest.raises( AssertionError ):
-                assert p3.id == p2.id
-            with pytest.raises( AssertionError ):
-                assert p3.code_version_id == code_version_dict["test_process"].id
-
     finally:
         with SmartSession() as session:
             session.execute(sa.delete(Provenance).where(Provenance._id.in_([pid1, pid2])))
             session.commit()
 
 
-def test_unique_provenance_hash(code_version_dict):
+def test_unique_provenance_hash():
     parameter = uuid.uuid4().hex
     p = Provenance(
         process='test_process',
-        code_version_id=code_version_dict["test_process"].id,
         parameters={'test_parameter': parameter},
         upstreams=[],
         is_testing=True,
@@ -174,7 +156,6 @@ def test_unique_provenance_hash(code_version_dict):
 
         p2 = Provenance(
             process='test_process',
-            code_version_id=code_version_dict["test_process"].id,
             parameters={'test_parameter': parameter},
             upstreams=[],
             is_testing=True,
@@ -255,31 +236,22 @@ def test_upstream_relationship( provenance_base, provenance_extra ):
             assert cv is not None
 
 
-def test_provenance_tag( code_version_dict ):
+def test_provenance_tag():
     delprovids = set()
 
     try:
         # These are not valid parameter lists for the various processes,
         # but ProvenanceTag doesn't know anyting about that, so this is
         # all good for the test.
-        allprovs = [ Provenance( code_version_id=code_version_dict["preprocessing"].id,
-                                 process='preprocessing', parameters={'a': 1} ),
-                     Provenance( code_version_id=code_version_dict["extraction"].id,
-                                 process='extraction', parameters={'a': 1} ),
-                     Provenance( code_version_id=code_version_dict["subtraction"].id,
-                                 process='subtraction', parameters={'a': 1} ),
-                     Provenance( code_version_id=code_version_dict["detection"].id,
-                                 process='detection', parameters={'a': 1} ),
-                     Provenance( code_version_id=code_version_dict["cutting"].id,
-                                 process='cutting', parameters={'a': 1} ),
-                     Provenance( code_version_id=code_version_dict["measuring"].id,
-                                 process='measuring', parameters={'a': 1} ),
-                     Provenance( code_version_id=code_version_dict["scoring"].id,
-                                 process='scoring', parameters={'a': 1} ),
-                     Provenance( code_version_id=code_version_dict["referencing"].id,
-                                 process='referencing', parameters={'a': 1} ),
-                     Provenance( code_version_id=code_version_dict["referencing"].id,
-                                 process='referencing', parameters={'a': 2} )
+        allprovs = [ Provenance( process='preprocessing', parameters={'a': 1} ),
+                     Provenance( process='extraction', parameters={'a': 1} ),
+                     Provenance( process='subtraction', parameters={'a': 1} ),
+                     Provenance( process='detection', parameters={'a': 1} ),
+                     Provenance( process='cutting', parameters={'a': 1} ),
+                     Provenance( process='measuring', parameters={'a': 1} ),
+                     Provenance( process='scoring', parameters={'a': 1} ),
+                     Provenance( process='referencing', parameters={'a': 1} ),
+                     Provenance( process='referencing', parameters={'a': 2} )
                     ]
 
         for p in allprovs:
@@ -288,8 +260,7 @@ def test_provenance_tag( code_version_dict ):
 
         # Make sure we get yelled at if there is a duplicate process
         tmpprovs = allprovs.copy()
-        tmpprovs.append( Provenance( code_version_id=code_version_dict["preprocessing"].id,
-                                     process='preprocessing', parameters={'a': 2} ) )
+        tmpprovs.append( Provenance( process='preprocessing', parameters={'a': 2} ) )
         tmpprovs[-1].insert_if_needed()
         delprovids.add( tmpprovs[-1].id )
         with pytest.raises( ValueError, match='Process preprocessing is in the list of provenances more than once!' ):
@@ -312,8 +283,7 @@ def test_provenance_tag( code_version_dict ):
 
         # Make sure that if we try to add something that's inconsistent, nothing gets added
         tmpprovs = allprovs.copy()
-        tmpprovs[0] = Provenance( code_version_id=code_version_dict["preprocessing"].id,
-                                  process='preprocessing', parameters={'a': 2} )
+        tmpprovs[0] = Provenance( process='preprocessing', parameters={'a': 2} )
         tmpprovs[0].insert_if_needed()
         delprovids.add( tmpprovs[0].id )
         with pytest.raises( RuntimeError,

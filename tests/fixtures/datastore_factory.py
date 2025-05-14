@@ -36,7 +36,7 @@ from improc.bitmask_tools import make_saturated_flag
 
 
 @pytest.fixture(scope='session')
-def datastore_factory(data_dir, pipeline_factory, request, code_version_dict):
+def datastore_factory(data_dir, pipeline_factory, request):
     """Provide a function that returns a datastore with all the products based on the given exposure and section ID.
 
     To use this data store in a test where new data is to be generated,
@@ -603,7 +603,6 @@ def datastore_factory(data_dir, pipeline_factory, request, code_version_dict):
                                                           ds.ref_image.provenance_id,
                                                           ds.ref_sources.provenance_id ] )
                 prov_aligned_ref = Provenance(
-                    # code_version_id=code_version_dict['alignment'].id,
                     parameters=ds.prov_tree['subtraction'].parameters['alignment'],
                     upstreams=alignupstrprovs,
                     process='alignment',

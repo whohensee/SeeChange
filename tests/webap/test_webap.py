@@ -66,12 +66,11 @@ def test_webap_provtaginfo( webap_rkauth_client, provenance_base, provenance_ext
     assert len( res['_id'] ) == 0
 
 
-def test_webap_provinfo( webap_rkauth_client, provenance_base, provenance_extra, code_version_dict ):
+def test_webap_provinfo( webap_rkauth_client, provenance_base, provenance_extra ):
     res = webap_rkauth_client.send( f"/provenanceinfo/{provenance_base.id}" )
     assert isinstance( res, dict )
     assert res['status'] == 'ok'
     assert res['_id'] == provenance_base.id
-    assert res['code_version_id'] == str(code_version_dict['test_process'].id)  #WHPR Rob is this a problem?
     assert res['process'] == 'test_process'
     assert res['parameters'] == provenance_base.parameters
     assert res['is_testing']
