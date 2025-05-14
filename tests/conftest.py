@@ -412,7 +412,7 @@ def code_version_dict():
     #     'alignment' : 'no_object',
     # }
     # PROCESS_NAMES = list(PROCESS_NAMES.keys())
-    PROCESS_NAMES = list(Provenance._current_code_version_dict.keys())
+    PROCESS_NAMES = list(CodeVersion._code_version_cache.keys())
     # processes = ["testing1, testing2"]
     cv_dict = {}
 

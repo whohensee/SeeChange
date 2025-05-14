@@ -17,6 +17,7 @@ def test_diff_delete( code_version_dict ):
         # breakpoint()
         # WHPR this should match the number present in `provenance._current_code_version_dict`
         assert n1 == 26
+    # WHPR careful with this one - maybe just check the number of test code versions or remove test
 
 
 # WHPR this test is deactivated as git_hashes are removed atm
@@ -142,8 +143,12 @@ def test_provenances(code_version_dict):
                 is_testing=True
             )
 
-            assert p3.id == p2.id
-            assert p3.code_version_id == code_version_dict["test_process"].id
+            # Will use current code version instead of testing version when passed with no cv
+            with pytest.raises( AssertionError ):
+                assert p3.id == p2.id
+            with pytest.raises( AssertionError ):
+                assert p3.code_version_id == code_version_dict["test_process"].id
+
     finally:
         with SmartSession() as session:
             session.execute(sa.delete(Provenance).where(Provenance._id.in_([pid1, pid2])))

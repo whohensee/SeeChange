@@ -77,25 +77,64 @@ class CodeVersion(Base, UUIDMixin):
         doc='Process for this CodeVersion'
     )
 
-    # @property
-    # def id( self ):
-    #     return self._id
-
-    # @id.setter
-    # def id( self, val ):
-    #     self._id = val
-
     # represents the versions of each process in the current repository
-    VERSION_DICT = {
-        'preprocessing': 1, # (0,1,1),
-        'extraction':    1, #(0,1,1),
-        'subtraction':   1, #(0,1,1),
-        'detection':     1, #(0,1,1),
-        'cutting':       1, #(0,1,1),
-        'measuring':     1, #(0,1,1),
-        'scoring':       1, #(0,1,1),
+    CODE_VERSION_DICT = {
+        'preprocessing': (0,1,0),
+        'extraction': (0,1,0),
+        'astrocal' : (0,1,0),
+        'photocal' : (0,1,0),
+        'subtraction': (0,1,0),
+        'detection': (0,1,0),
+        'cutting': (0,1,0),
+        'measuring': (0,1,0),
+        'scoring': (0,1,0),
+        'bg': (0,1,0),
+        'wcs': (0,1,0),
+        'zp': (0,1,0),
+        'test_process' : (0,1,0),
+        'referencing' : (0,1,0),
+        'download': (0,1,0),
+        'DECam Default Calibrator' : (0,1,0),
+        'import_external_reference' : (0,1,0),
+        'no_process' : (0,1,0),
+        'alignment' : (0,1,0),
+        'coaddition' : (0,1,0),
+        'manual_reference' : (0,1,0),
+        'gratuitous image' : (0,1,0),
+        'gratuitous sources' : (0,1,0),
+        "acquired" : (0,1,0),
+        'fakeinjection' : (0,1,0),
+        'exposure' : (0,1,0),
     }
 
+    _code_version_cache = {
+        'preprocessing': None,
+        'extraction': None,
+        'astrocal' : None,
+        'photocal' : None,
+        'subtraction': None,
+        'detection': None,
+        'cutting': None,
+        'measuring': None,
+        'scoring': None,
+        'bg': None,
+        'wcs': None,
+        'zp': None,
+        'test_process' : None,
+        'referencing' : None,
+        'download': None,
+        'DECam Default Calibrator' : None,
+        'import_external_reference' : None,
+        'no_process' : None,
+        'alignment' : None,
+        'coaddition' : None,
+        'manual_reference' : None,
+        'gratuitous image' : None,
+        'gratuitous sources' : None,
+        "acquired" : None,
+        'fakeinjection' : None,
+        'exposure' : None,
+    }
 
     # There is a kind of race condition in making this property the way we do, that in practice
     # is not going to matter.  Somebody else could add a new hash to this code version, and we
@@ -436,53 +475,6 @@ class Provenance(Base):
 
         self._id = base64.b32encode(hashlib.sha256(json_string.encode("utf-8")).digest()).decode()[:20]
 
-    @classmethod
-    def combined_upstream_hash( cls, upstreams ):
-        json_string = json.dumps( [ u.id for u in upstreams ], sort_keys=True, cls=NumpyAndUUIDJsonEncoder)
-        return base64.b32encode(hashlib.sha256(json_string.encode("utf-8")).digest()).decode()[:20]
-
-
-    def get_combined_upstream_hash(self):
-        """Make a single hash from the hashes of the upstreams.
-
-        This is useful for identifying RefSets.
-        """
-        return self.__class__.combined_upstream_hash( self.upsterams )
-
-
-    # This is a cache.  It won't change in one run, so we can save
-    #  querying the database repeatedly in get_code_version by saving
-    #  the result.
-    _current_code_version = None # WHPR remove this eventually
-
-    _current_code_version_dict = {
-        'preprocessing': None,
-        'extraction': None,
-        'astrocal' : None,
-        'photocal' : None,
-        'subtraction': None,
-        'detection': None,
-        'cutting': None,
-        'measuring': None,
-        'scoring': None,
-        'bg': None,
-        'wcs': None,
-        'zp': None,
-        'test_process' : None,
-        'referencing' : None,
-        'download': None,
-        'DECam Default Calibrator' : None,
-        'import_external_reference' : None,
-        'no_process' : None,
-        'alignment' : None,
-        'coaddition' : None,
-        'manual_reference' : None,
-        'gratuitous image' : None,
-        'gratuitous sources' : None,
-        "acquired" : None,
-        'fakeinjection' : None,
-        'exposure' : None,
-    }
 
     @classmethod
     def get_code_version(cls, process, session=None):
@@ -505,25 +497,38 @@ class Provenance(Base):
             CodeVersion object
         """
 
-        if Provenance._current_code_version_dict[process] is None:
-            code_version = None
-            with SmartSession( session ) as session:
-                # code_hash = session.scalars(sa.select(CodeHash).where(CodeHash._id == get_git_hash())).first()
-                # if code_hash is not None:
-                #     code_version = session.scalars( sa.select(CodeVersion)
-                #                                     .where( CodeVersion._id == code_hash.code_version_id ) ).first()
-                if code_version is None:
-                    code_version = session.scalars(sa.select(CodeVersion)
-                                                   .where( CodeVersion.process == process )
-                                                   .order_by(CodeVersion.version_major.desc())
-                                                   .order_by(CodeVersion.version_minor.desc())
-                                                   .order_by(CodeVersion.version_patch.desc())).first()
-                    # breakpoint()
-            if code_version is None:
-                raise RuntimeError( "There is no code_version in the database.  Put one there." )
-            Provenance._current_code_version_dict[process] = code_version
+        if CodeVersion._code_version_cache[process] is None:
 
-        return Provenance._current_code_version_dict[process]
+            # down the line may want to perform a comparison with the most recent using a search like this
+            # with SmartSession( session ) as session:
+            #     if code_version is None:
+            #         code_version = session.scalars(sa.select(CodeVersion)
+            #                                        .where( CodeVersion.process == process )
+            #                                        .order_by(CodeVersion.version_major.desc())
+            #                                        .order_by(CodeVersion.version_minor.desc())
+            #                                        .order_by(CodeVersion.version_patch.desc())).first()
+                    
+                # ISSUE consider raising exception if there exists a more up-to-date version than the hardcoded
+            
+            codebase_semver = CodeVersion.CODE_VERSION_DICT[process]
+            with SmartSession() as sess:
+                code_version = sess.scalars(sa.select(CodeVersion)
+                                               .where( CodeVersion.version_major == codebase_semver[0])
+                                               .where( CodeVersion.version_minor == codebase_semver[1])
+                                               .where( CodeVersion.version_patch == codebase_semver[2])).first()
+
+            if code_version is not None:
+                CodeVersion._code_version_cache[process] = code_version
+            else:
+                cv = CodeVersion( process=process,
+                                  version_major=codebase_semver[0],
+                                  version_minor=codebase_semver[1],
+                                  version_patch=codebase_semver[2]
+                )
+                cv.upsert()
+                CodeVersion._code_version_cache[process] = cv
+
+        return CodeVersion._code_version_cache[process]
 
 
     def insert( self, session=None, _exists_ok=False ):
