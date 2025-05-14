@@ -507,9 +507,9 @@ class Provenance(Base):
             #                                        .order_by(CodeVersion.version_major.desc())
             #                                        .order_by(CodeVersion.version_minor.desc())
             #                                        .order_by(CodeVersion.version_patch.desc())).first()
-                    
-                # ISSUE consider raising exception if there exists a more up-to-date version than the hardcoded
-            
+
+            # ISSUE consider raising exception if there exists a more up-to-date version than the hardcoded
+
             codebase_semver = CodeVersion.CODE_VERSION_DICT[process]
             with SmartSession() as sess:
                 code_version = sess.scalars(sa.select(CodeVersion)
