@@ -53,6 +53,16 @@ class CodeHash(Base):
 class CodeVersion(Base, UUIDMixin):
     __tablename__ = 'code_versions'
 
+    @declared_attr
+    def __table_args__( cls ):  # noqa: N805
+        return (
+            UniqueConstraint('process',
+                             'version_minor',
+                             'version_major',
+                             'version_patch',
+                             name='_codeversion_process_versions_uc'),
+        )
+
     version_major = sa.Column(
         sa.Integer,
         nullable=False,
@@ -200,29 +210,6 @@ class CodeVersion(Base, UUIDMixin):
 
         # check either all semvers are given or none are
 
-        if self.process is None:
-            raise TypeError("process must be given, not None")
-
-        # ensure that this CodeVersion object:
-        #   - does not already exist
-        #   - is the most recent if not flagged allowed to be out of date
-        with SmartSession() as sess:
-            current_cv = sess.scalars(sa.select( CodeVersion )
-                               .where( CodeVersion.process == self.process )
-                               .order_by( CodeVersion.version_major.desc() )
-                               .order_by( CodeVersion.version_minor.desc() )
-                               .order_by( CodeVersion.version_patch.desc() )).first()
-
-        if current_cv is not None:
-            # check if version is equal
-            if (current_cv.version_major == self.version_major and
-                current_cv.version_minor == self.version_minor and
-                current_cv.version_patch == self.version_patch):
-                raise ValueError("Cannot create a CodeVersion that already exists. Get from DB instead")
-
-            # WHPR need to activate this and compare to the actual current codebase version
-            # codebase_cv = Provenance._current_code_version_dict[self.process]
-            # if is_cv_newer(codebase_cv, current_cv):
 
     @orm.reconstructor
     def init_on_load( self ):

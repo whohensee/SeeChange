@@ -1,10 +1,41 @@
 import pytest
 import uuid
+import psycopg2
 
 import sqlalchemy as sa
 
 from models.base import SmartSession
 from models.provenance import CodeVersion, Provenance, ProvenanceTag
+
+
+def test_codeversion_uniqueness():
+
+    with SmartSession() as session:
+        cv_count_initial = len(session.scalars(sa.select( CodeVersion )).all())
+
+    try:
+        cv = CodeVersion( process='cv_test', version_major=-1, version_minor=-1, version_patch=-1)
+        cv.insert()
+        cv2 = CodeVersion( process='cv_test', version_major=-2, version_minor=-1, version_patch=-1)
+        cv2.insert()
+        cv3 = CodeVersion( process='cv_test', version_major=-1, version_minor=-2, version_patch=-1)
+        cv3.insert()
+        cv4 = CodeVersion( process='cv_test', version_major=-1, version_minor=-1, version_patch=-2)
+        cv4.insert()
+
+        with SmartSession() as session:
+            cv_count_final = len(session.scalars(sa.select( CodeVersion )).all())
+        assert cv_count_final - cv_count_initial == 4
+
+        with pytest.raises( psycopg2.errors.UniqueViolation,
+                           match='violates unique constraint "_codeversion_process_versions_uc"'):
+            cv5 = CodeVersion( process='cv_test', version_major=-1, version_minor=-1, version_patch=-1)
+            cv5.insert()
+
+    finally:
+        with SmartSession() as session:
+            session.execute( sa.text( "DELETE FROM code_versions WHERE process=:process" ), { 'process': 'cv_test' } )
+            session.commit()
 
 
 
