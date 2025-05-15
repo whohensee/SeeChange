@@ -117,7 +117,7 @@ def pytest_sessionstart(session):
 def any_objects_in_database( dbsession ):
     """Look in the database, print errors and return False if things are left behind.
 
-    The "allowed" tables (CodeVersion, CodeHash, SensorSection,
+    The "allowed" tables (CodeVersion, SensorSection,
     CatalogExcerpt, Provenance, Object, PasswordLink) will not cause
     False to be returned, but will just print a debug message.
 
@@ -140,7 +140,7 @@ def any_objects_in_database( dbsession ):
         #    think the pipeline will automatically add provenances if
         #    they don't exist.  As such, the tests may implicitly
         #    add provenances they don't explicitly track.
-        if Class.__name__ in ['CodeVersion', 'CodeHash', 'SensorSection', 'CatalogExcerpt',
+        if Class.__name__ in ['CodeVersion', 'SensorSection', 'CatalogExcerpt',
                               'Provenance', 'Object', 'PasswordLink']:
             SCLogger.debug(f'There are {len(ids)} {Class.__name__} objects in the database. These are OK to stay.')
             continue

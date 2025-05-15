@@ -13,40 +13,10 @@ from sqlalchemy.schema import UniqueConstraint
 import psycopg2.extras
 import psycopg2.errors
 
-from util.util import get_git_hash, NumpyAndUUIDJsonEncoder
+from util.util import NumpyAndUUIDJsonEncoder
 from util.logger import SCLogger
 
 from models.base import Base, UUIDMixin, SeeChangeBase, SmartSession, Psycopg2Connection
-
-
-class CodeHash(Base):
-    __tablename__ = "code_hashes"
-
-    _id = sa.Column(sa.String, primary_key=True)
-
-    @property
-    def id( self ):
-        return self._id
-
-    @id.setter
-    def id( self, val ):
-        self._id = val
-
-    # code_version_id = sa.Column(sa.String, sa.ForeignKey("code_versions._id",
-    #                                                      ondelete="CASCADE",
-    #                                                      name='code_hashes_code_version_id_fkey'),
-    #                             index=True )
-    code_version_id = sa.Column(sa.String,
-                                index=True )
-
-    @property
-    def code_version( self ):
-        raise RuntimeError( "CodeHash.code_version is deprecated, don't use it" )
-
-    @code_version.setter
-    def code_version( self, val ):
-        raise RuntimeError( "CodeHash.code_version is deprecated, don't use it" )
-
 
 
 
@@ -88,6 +58,8 @@ class CodeVersion(Base, UUIDMixin):
     )
 
     # represents the versions of each process in the current repository
+    #     sometimes when changing certain values here, hardcoded provenances in ptf and decam fixtures
+    # will need to be updated or tests will fail (Check warnings for base path not matching)
     CODE_VERSION_DICT = {
         'preprocessing': (0,1,0),
         'extraction': (0,1,0),
@@ -146,43 +118,6 @@ class CodeVersion(Base, UUIDMixin):
         'exposure' : None,
     }
 
-    # There is a kind of race condition in making this property the way we do, that in practice
-    # is not going to matter.  Somebody else could add a new hash to this code version, and we
-    # wouldn't get that new hash if we'd called code_hashes before on this code_version object.
-    # Not worth worrying about.
-    @property
-    def code_hashes( self ):
-        if self._code_hashes is None:
-            self._code_hashes = self.get_code_hashes()
-        return self._code_hashes
-
-    def update(self, session=None):
-        """Create a new CodeHash object associated with this CodeVersion using the current git hash.
-
-        Will do nothing if it already exists, or if the current git hash can't be determined.
-
-        """
-        git_hash = get_git_hash()
-
-        if git_hash is None:
-            return  # quietly fail if we can't get the git hash
-
-        hash_obj = CodeHash( _id=git_hash, code_version_id=self.id )
-        try:
-            hash_obj.insert( session=session )
-        except psycopg2.errors.UniqueViolation as ex:
-            if 'duplicate key value violates unique constraint "code_hashes_pkey"' in str(ex):
-                # It's already there, so we don't care.
-                pass
-            else:
-                raise
-
-    def get_code_hashes( self, session=None ):
-        """Return all CodeHash objects associated with this codeversion"""
-        with SmartSession( session ) as sess:
-            hashes = sess.query( CodeHash ).filter( CodeHash.code_version_id==self.id ).all()
-        return hashes
-
     @classmethod
     def get_by_id( cls, cvid, session=None ):
         with SmartSession( session ) as sess:
@@ -206,14 +141,6 @@ class CodeVersion(Base, UUIDMixin):
 
     def __init__( self, *args, **kwargs ):
         super().__init__( *args, **kwargs )
-        self._code_hashes = None
-
-        # check either all semvers are given or none are
-
-
-    @orm.reconstructor
-    def init_on_load( self ):
-        self._code_hashes = None
 
     def __repr__( self ):
         return (f"<CodeVersion process: {self.process}, version: {self.version_major}" +
@@ -467,10 +394,8 @@ class Provenance(Base):
     def get_code_version(cls, process, session=None):
         """Get the most relevant or latest code version.
 
-        Tries to match the current git hash with a CodeHash
-        instance, but if that doesn't work (e.g., if the
-        code is running on a machine without git) then
-        the latest CodeVersion is returned.
+        Searches the DB to check if the codeversion matching the current
+        codebase already exists, then returns or creates-and-returns it.
 
         Parameters
         ----------
@@ -512,7 +437,7 @@ class Provenance(Base):
                                   version_minor=codebase_semver[1],
                                   version_patch=codebase_semver[2]
                 )
-                cv.upsert()
+                cv.insert()  # should never collide here and need upsert due to above
                 CodeVersion._code_version_cache[process] = cv
 
         return CodeVersion._code_version_cache[process]
