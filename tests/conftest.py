@@ -212,11 +212,12 @@ def pytest_sessionfinish(session, exitstatus):
                 dbsession.delete(prov)
         dbsession.commit()
 
+        # ISSUE 479 this will find and DEBUG report the codeversions that are about to get killed in the next line.
         any_objects = any_objects_in_database( dbsession )
 
-        # delete the CodeVersion object (this should remove all provenances as well,
+        # delete the CodeVersion objects (this should remove all provenances as well,
         # and that should cascade to almost everything else)
-        # dbsession.execute(sa.delete(CodeVersion).where(CodeVersion._id == 'test_v1.0.0'))
+        dbsession.execute( sa.text( "TRUNCATE TABLE code_versions CASCADE" ) )
         #   ISSUE: This is no longer quite so simple with provenances grabbing the current
         # codeversion when making new objects and a process like 'testing' no longer making sense.
         # It would be some effort to make a good testing-codeversions fixture and force all tests

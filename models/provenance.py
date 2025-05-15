@@ -426,9 +426,10 @@ class Provenance(Base):
             codebase_semver = CodeVersion.CODE_VERSION_DICT[process]  # (major, minor, patch) eg. (2,0,1)
             with SmartSession() as sess:
                 code_version = sess.scalars(sa.select(CodeVersion)
-                                               .where( CodeVersion.version_major == codebase_semver[0])
-                                               .where( CodeVersion.version_minor == codebase_semver[1])
-                                               .where( CodeVersion.version_patch == codebase_semver[2])).first()
+                                               .where( CodeVersion.process == process )
+                                               .where( CodeVersion.version_major == codebase_semver[0] )
+                                               .where( CodeVersion.version_minor == codebase_semver[1] )
+                                               .where( CodeVersion.version_patch == codebase_semver[2] )).first()
 
             if code_version is not None:
                 CodeVersion._code_version_cache[process] = code_version
