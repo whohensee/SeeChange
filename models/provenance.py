@@ -60,6 +60,10 @@ class CodeVersion(Base, UUIDMixin):
     # represents the versions of each process in the current repository
     #     sometimes when changing certain values here, hardcoded provenances in ptf and decam fixtures
     # will need to be updated or tests will fail (Check warnings for base path not matching)
+    #
+    #     NOTE: PATCH changes should never result in a change in any data produced, and can be changed without
+    #     affecting provenances. MINOR changes will result in some change in the data products, and MAJOR will
+    #     represent a major change in how they interact with other parts of the pipeline.
     CODE_VERSION_DICT = {
         'preprocessing': (0,1,0),
         'extraction': (0,1,0),
@@ -373,7 +377,8 @@ class Provenance(Base):
         if self.code_version_id is not None:
             with SmartSession() as sess:
                 cv = sess.query( CodeVersion ).filter( CodeVersion._id == self.code_version_id ).first()
-                cv_string = f"{cv.version_major}.{cv.version_minor}.{cv.version_patch}"
+                # Don't use patch because patch shouldn't change data thus require a provenance change
+                cv_string = f"{cv.version_major}.{cv.version_minor}"
 
         superdict = dict(
             process=self.process,
