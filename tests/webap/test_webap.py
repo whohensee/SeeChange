@@ -51,9 +51,7 @@ def test_webap_provtaginfo( webap_rkauth_client, provenance_base, provenance_ext
     assert len( res['_id'] ) == 2
     for key in [ '_id', 'process', 'bad_comment' ]:
         assert set( res[key] ) == { getattr( provenance_base, key ), getattr( provenance_extra, key ) }
-
     key = 'code_version_id' # special case now that code_version_id is a UUID
-    # ROB will this cause any problems in the webap? getattr()... on code version now returns UUID, not string
     assert set( res[key] ) == { str(getattr( provenance_base, key )), str(getattr( provenance_extra, key )) }
     for key in [ 'is_outdated', 'replaced_by', 'is_testing' ]:
         assert set( bool(r) for r in res[key] ) == { bool( getattr( provenance_base, key ) ),

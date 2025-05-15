@@ -29,7 +29,7 @@ from models.base import (
     get_archive_object
 )
 from models.knownexposure import KnownExposure, PipelineWorker
-from models.provenance import CodeVersion, Provenance
+from models.provenance import Provenance
 from models.catalog_excerpt import CatalogExcerpt
 from models.exposure import Exposure
 from models.object import Object
@@ -55,8 +55,8 @@ from pipeline.data_store import DataStore, ProvenanceTree
 #   at the end of tests.  In general, we want this to be True, so we can make sure
 #   that our tests are properly cleaning up after themselves.  However, the errors
 #   from this can hide other errors and failures, so when debugging, set it to False.
-# verify_archive_database_empty = True
-verify_archive_database_empty = False
+verify_archive_database_empty = True
+# verify_archive_database_empty = False
 
 
 pytest_plugins = [
@@ -217,7 +217,13 @@ def pytest_sessionfinish(session, exitstatus):
         # delete the CodeVersion object (this should remove all provenances as well,
         # and that should cascade to almost everything else)
         # dbsession.execute(sa.delete(CodeVersion).where(CodeVersion._id == 'test_v1.0.0'))
-        dbsession.execute(sa.delete(CodeVersion).where(CodeVersion.process == 'testing'))
+        #   ISSUE: This is no longer quite so simple with provenances grabbing the current
+        # codeversion when making new objects and a process like 'testing' no longer making sense.
+        # It would be some effort to make a good testing-codeversions fixture and force all tests
+        # to only use those codeversions (potentially difficult as provenances are not coded totally
+        # consistently in the pipeline) however I am not sure I see great harm in using real codeversion
+        # objects given that the main information they contain is which version of the codebase the
+        # tests were run on.
 
         # remove any Object objects from tests, as these are not automatically cleaned up:
         dbsession.execute(sa.delete(Object).where(Object.is_test.is_(True)))

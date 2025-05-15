@@ -43,20 +43,9 @@ def test_provenances():
     with pytest.raises( ValueError, match="must have a process name" ):
         Provenance()
 
-    # cannot create a provenance with a code_version of wrong type  TODO WHPR Make this UUID (integer/tuple once semver)
+    # cannot create a provenance with a code_version of wrong type
     with pytest.raises( ValueError, match="Code version must be a uuid" ):
         Provenance(process='foo', code_version_id="testvalue")
-    #
-
-    p = Provenance(
-                process="extraction",
-                parameters={"test_parameter": "test_value1"},
-                upstreams=[],
-                is_testing=True,
-            )
-
-
-
 
     pid1 = pid2 = None
 

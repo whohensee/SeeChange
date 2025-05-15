@@ -307,11 +307,8 @@ class RefMaker:
         self.coadd_zp_prov = coadd_provs['photocal']
 
         pars = self.pars.get_critical_pars()
-        process=self.pars.get_process_name()
-        code_version = Provenance.get_code_version( process = process )
         self.ref_prov = Provenance(
-            process=process,
-            code_version_id=code_version.id,  # TODO: allow loading versions for each process
+            process=self.pars.get_process_name(),
             parameters=pars,
             upstreams=[ self.coadd_zp_prov ],
             is_testing='test_parameter' in pars,

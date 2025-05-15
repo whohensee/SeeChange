@@ -648,7 +648,6 @@ class ImageAligner:
                                  )
         tmp_extractor = Detector()
         tmp_extractor.pars.override( source_sources_prov.parameters, ignore_addons=True )
-
         code_version = Provenance.get_code_version( process='extraction' )
         warped_sources_prov = Provenance( code_version_id=code_version.id,
                                           process='extraction',
@@ -656,7 +655,6 @@ class ImageAligner:
                                           upstreams=[ warped_prov ]
                                          )
         tmp_astrometor = AstroCalibrator()
-
         code_version = Provenance.get_code_version( process='astrocal' )
         warped_wcs_prov = Provenance( code_version_id=code_version.id,
                                       process='astrocal',
@@ -664,7 +662,6 @@ class ImageAligner:
                                       upstreams=[ warped_sources_prov ]
                                      )
         tmp_photometor = PhotCalibrator()
-
         code_version = Provenance.get_code_version( process='photocal' )
         warped_zp_prov = Provenance( code_version_id=code_version.id,
                                      process='photocal',

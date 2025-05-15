@@ -192,7 +192,6 @@ class Provenance(Base):
         doc="Name of the process (pipe line step) that produced these results. "
     )
 
-    # WHPR this cannot be used in provenance hash, because code_version_id is a UUID
     code_version_id = sa.Column(
         sa.ForeignKey("code_versions._id", ondelete="CASCADE", name='provenances_code_version_id_fkey'),
         nullable=False,
@@ -369,10 +368,7 @@ class Provenance(Base):
         if self.process is None or self.parameters is None or self.code_version_id is None:
             raise ValueError('Provenance must have process, code_version_id, and parameters defined. ')
 
-        # use string version of uuid for json encoding
-        # if self.code_version_id is not None:
-        #     cvid = str( self.code_version_id)
-        # cvid = str( self.code_version_id ) if self.code_version_id is not None else None
+        # for hash get the static versions from codeversion rather than UUID which changes each run of tests
         cv_string = None
         if self.code_version_id is not None:
             with SmartSession() as sess:
@@ -422,7 +418,7 @@ class Provenance(Base):
 
             # ISSUE consider raising exception if there exists a more up-to-date version than the hardcoded
 
-            codebase_semver = CodeVersion.CODE_VERSION_DICT[process]
+            codebase_semver = CodeVersion.CODE_VERSION_DICT[process]  # (major, minor, patch) eg. (2,0,1)
             with SmartSession() as sess:
                 code_version = sess.scalars(sa.select(CodeVersion)
                                                .where( CodeVersion.version_major == codebase_semver[0])
