@@ -1,9 +1,7 @@
 import collections.abc
 
 import os
-import re
 import pathlib
-import git
 from datetime import datetime
 import dateutil.parser
 import uuid
