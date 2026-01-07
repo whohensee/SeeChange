@@ -238,7 +238,7 @@ class Provenance(Base):
         return self._upstreams
 
 
-    def __init__(self, **kwargs):
+    def __init__(self, dont_update_id=False, _id=None, **kwargs):
         """Create a provenance object.
 
         Parameters
@@ -278,8 +278,25 @@ class Provenance(Base):
         replaced_by: int
             ID of the Provenance object that replaces this one.
 
+        dont_update_id: bool, default False
+            Usually you want this to be False.  If this is False, at the
+            end of the constructor, the update_id() method is called to
+            make sure the id field is correct.  However, if you are
+            playing games like creating a Provenance but planning to
+            manually set the _upstreams field later (don't do that
+            unless you really know what you're doing!!!), then you may
+            need to set this to True.  In that case, you must either have
+            passed an _id argument to the constructor, or you must be sure
+            to call update_id() yourself.
+
+        _id: string, default None
+            You usually do NOT want to send this, you want to let
+            provenacne automatically set it.  Only use this if you
+            really know what you're doing.
+
         """
         SeeChangeBase.__init__(self)
+        self._id = _id
 
         if kwargs.get('process') is None:
             raise ValueError('Provenance must have a process name. ')
@@ -316,7 +333,8 @@ class Provenance(Base):
         self.bad_comment = kwargs.get('bad_comment', None)
         self.is_testing = kwargs.get('is_testing', False)
 
-        self.update_id()  # too many times I've forgotten to do this!
+        if not dont_update_id:
+            self.update_id()
 
     @orm.reconstructor
     def init_on_load( self ):
