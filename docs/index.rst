@@ -15,10 +15,10 @@ Welcome to SeeChange's documentation!
    data_storage
    usage
    pipeline
-   contribution
    testing
    miscellaneous
 
+   contribution
    configuration
    instruments
    versioning
