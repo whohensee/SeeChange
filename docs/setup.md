@@ -1,4 +1,78 @@
-## Setting up a SeeChange instance
+# Setting up a SeeChange instance
+
+While it is probably possible to set up an environment on any machine to run SeeChange, all of our development and testing, and the production running for LS4, is done in a Dockerized environment.  As such, that is all that is documented here.
+
+Most of these instructions assume you're setting up a SeeChange instance to hook into an existing installation.  If you're setting up a completely new enviroinment, you will also need to set up a database and a webap server.  (TODO: write instructions and add a reference.)
+
+## Acquiring or Building the Docker Image
+
+A "current" docker image for SeeChange can be pulled from the following locations (where YYYMMDD are used for different releases; sometimes there may be an "a", "b", etc. after YYYYMMDD if we uploaded multiple versions in one day).  It should usually be safe to use the "latest" version, but you might want to pull a specific dated version for reproducibility.  The `_nocode` docker images do _not_ actually include the SeeChange code, just the necessary environment.  To use this image, you will need to bind-mount an installation of SeeChange (see below).  This is what you want to use for development (and, right now, SeeChange is under heavy development).
+
+ - docker.io/rknop/seechange:YYYYMMDD
+ - docker.io/rknop/seechange:latest
+ - docker.io/rknop/seechange_nocode:YYYYMMDD
+ - docker.io/rknop/seechange_nocode:latest
+ - registry.nersc.gov/m4616/seechange:YYYYMMDD
+ - registry.nersc.gov/m4616/seechange:latest
+ - registry.nersc.gov/m4616/seechange_nocode:YYYYMMDD
+ - registry.nersc.gov/m4616/seechange_nocode:latest
+
+__NOTE__: Currently, these images are only for the `x86_64` architecture.  If you are on an ARM machine (which is the case for all recent Macs), you may be able to use these images, but they could be very inefficient.
+
+### Pulling the docker image on NERSC
+
+On NERSC, use `podman-hpc` instead of `docker`.  You pull the image with `podman-hpc pull <imagename>`.  (Do __not__ do `podman-hpc image pull ...`, as that will seem to work, but not pull the images in such a way that they will work on any node other than the one you pulled it on.  If you do `podman-hpc pull <imagename>`, the image will be available on all nodes.)
+
+### Building the Docker Image
+
+If you need to build the docker image yourself, you should be able to accomplish this by running the following in the top level of the SeeChange checkout:
+```
+   docker build --target included_code -t seechange:<tag> -f docker/application/Dockerfile .
+```
+
+This will build a docker image that has the version of the code in the checkout included in the image.  If you want to build an image that doesn't include the code, and plan to bind-mount the code yourself, then replace `included_code` with `bindmount_code`.  If you want to be able to run all of the tests, instead use `--target test_included` or `--target test_bindmount` in place of `--target included_code`.  (The reason to have a separate image for tests is that they require several additional things that bloats the docker image.  The non-test versions of the image are slightly smaller, though still distressingly large.)
+
+
+
+<a name="installing-code"></a>
+## Installing the code
+
+Get the latest "production" version of the code by cloning the `main` branch of this archive: https://github.com/c3-time-domain/SeeChange/
+
+This can (and should?) be done outside of the docker image.  Pick a location for the code to be installed, and run, at the top level of a SeeChange checkout,
+```
+   ./configure --with-installdir=<installdir>
+   make install
+```
+
+If that fails, try running
+```
+   autoreconf
+   ./configure --with-installdir=<installdir>
+   make install
+```
+
+You will then need to add `<installdir>` to your `PYTHONPATH`.  (Instructions for doing this in the Docker environment are included below.)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+OLD
+
+
 
 ### Installing using Docker
 
@@ -7,6 +81,10 @@ At the moment, some of the things below will not work if you install Docker Desk
 - Installing Docker Engine : https://docs.docker.com/engine/install/
 
 - Setting up rootless mode (so you don't have to sudo everything) : https://docs.docker.com/engine/security/rootless/ (There is some indication that this is difficult to get working; you may be happier just installing docker engine and adding yourself to the `docker` group in `/etc/group`.)
+
+In order to actually _use_ the installation, you need to have a configuration file that points to the database, file store, and webap server relevant for what you're doing.  (TODO: document for LS4.)
+
+
 
 .. _dev_shell_local_database:
 #### Development shell — local transient database

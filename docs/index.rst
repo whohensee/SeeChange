@@ -12,15 +12,17 @@ Welcome to SeeChange's documentation!
 
    overview
    setup
-   configuration
    data_storage
+   usage
    pipeline
+   contribution
+   testing
+   miscellaneous
+
+   configuration
    instruments
    versioning
    references
-   testing
-   contribution
-   miscellaneous
 
 
 Indices and tables
