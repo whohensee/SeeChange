@@ -30,7 +30,7 @@ If you need to build the docker image yourself, you should be able to accomplish
    docker build --target included_code -t seechange:<tag> -f docker/application/Dockerfile .
 ```
 
-This will build a docker image that has the version of the code in the checkout included in the image.  If you want to build an image that doesn't include the code, and plan to bind-mount the code yourself, then replace `included_code` with `bindmount_code`.  If you want to be able to run all of the tests, instead use `--target test_included` or `--target test_bindmount` in place of `--target included_code`.  (The reason to have a separate image for tests is that they require several additional things that bloats the docker image.  The non-test versions of the image are slightly smaller, though still distressingly large.)
+Replace `<tag>` with whatever you want (this is just part of the name of the docker image you are building); if you omit `:<tag>`, then the "latest" image will be build.  This command will build a docker image that has the version of the code in the checkout included in the image.  If you want to build an image that doesn't include the code, and plan to bind-mount the code yourself, then replace `included_code` with `bindmount_code`.  If you want to be able to run all of the tests, instead use `--target test_included` or `--target test_bindmount` in place of `--target included_code`.  (The reason to have a separate image for tests is that they require several additional things that bloats the docker image.  The non-test versions of the image are slightly smaller, though still distressingly large.)
 
 
 

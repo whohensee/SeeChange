@@ -63,11 +63,12 @@ class CodeVersion(Base, UUIDMixin):
     #     NOTE: PATCH changes should never result in a change in any data produced, and can be changed without
     #     affecting provenances. MINOR changes will result in some change in the data products, and MAJOR will
     #     represent a major change in how they interact with other parts of the pipeline.
+    #     (Technically, you're allowed to violate this as long as MAJOR is 0.)
     CODE_VERSION_DICT = {
         # The core processes of the pipeline
         'acquire_exposure': (0,1,0),
         'preprocessing': (0,1,1),
-        'extraction': (0,1,0),
+        'extraction': (0,2,0),
         'astrocal' : (0,1,0),
         'photocal' : (0,1,0),
         'subtraction': (0,1,0),
