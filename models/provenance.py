@@ -372,7 +372,61 @@ class Provenance(Base):
         with SmartSession( session ) as sess:
             return sess.query( Provenance ).filter( Provenance._id.in_( provids ) ).all()
 
+    @classmethod
+    def get_for_tag( cls, tag, process=None, conn=None ):
+        """Return either the provenance for a tag and process, or all provenances for a tag.
+
+        Parameters
+        ----------
+          tag : string
+            The provenance-tag you want provenances for.
+
+          process : string, default None
+             The process you want the provenance for.  If omitted, you
+             will get the provenances for all processes defined for the
+             tag.
+
+          conn : psycopg.connection or None
+             If given, use this connection to the database.  Otherwise,
+             a new connection will be created and closed in this
+             function.
+
+        Returns
+        -------
+          Provenance, None, or dict of Provenance
+
+          If process is not None, you will get back a single Provenance
+          object, or None if there isn't one that matches the given tag
+          and process.  If process is none, you will get a dictionary of
+          process(string): Provenance (which will be empty if the
+          provenance tag is not defined).
+
+        """
+        with PsycopgConnection( conn ) as conn:
+            cursor = conn.cursor( row_factory=psycopg.rows.dict_row )
+            q = ( "SELECT p.* FROM provenances "
+                  "INNER JOIN provenance_tags t ON p._id=t.provenance_id "
+                  "WHERE t.tag=%(tag)s" )
+            if process is not None:
+                q+= " AND p.process=%(process)s"
+            cursor.execute( q, { 'tag': tag, 'process': process } )
+            rows = cursor.fetchall()
+
+        if process is not None:
+            if len(rows) > 1:
+                raise ValueError( f"Database corruption!  There are multiple provenances for "
+                                  f"tag {tag} and process {process}." )
+            elif len(rows) == 0:
+                return None
+            else:
+                return Provenance( dont_update_id=True, **rows[0] )
+
+        else:
+            return { r['process']: Provenance( dont_update_ids=True, **r ) for r in rows }
+            
+        
     def update_id(self):
+
         """Update the id using the code_version, process, parameters and upstream_hashes."""
         if self.process is None or self.parameters is None or self.code_version_id is None:
             raise ValueError('Provenance must have process, code_version_id, and parameters defined. ')

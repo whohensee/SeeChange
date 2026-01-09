@@ -6,7 +6,7 @@ Setting up a SeeChange instance
 
 While it is probably possible to set up an environment on any machine to run SeeChange, all of our development and testing, and the production running for LS4, is done in a Dockerized environment.  As such, that is all that is documented here.
 
-Most of these instructions assume you're setting up a SeeChange instance to hook into an existing installation.  If you're setting up a completely new enviroinment, you will also need to set up a database and a webap server.  (TODO: write instructions and add a reference.)  If what you want to do is run a development/est instance, instead see :doc:`development`.
+Most of these instructions assume you're setting up a SeeChange instance to hook into an existing installation.  If you want to start a local isolated environment for development and testing, see :doc:`development`.  If, however, you're setting up an all new installation of SeeChange that's going to run on a survey that somebody hasn't already set up for you, see :ref:`full-server-setup` below.
 
 Checking out the code
 =====================
@@ -59,7 +59,7 @@ For an installation of SeeChange that is hooking into a pre-existing database, y
 - A "local file store" for data; below we'll call this ``data_root``.  This should be on a fast disk, and should have a lot of space.  E.g., in NERSC, this should be somewhere under your scratch space.
 - A temporary directory; below will call this ``data_temp``.  This is where temporary files are written (and, currently, not cleaned up often enough).  If no code is running and you find files here, it's safe to delete them.  To be safe, this directory should have at least a few hundred GB of space availble.
 
-Optionally, if you aren't using the docker image with the code included, you may also need to set up an install directory; see [Installing the code](#installing-code) below.
+Optionally, if you aren't using the docker image with the code included, you may also need to set up an install directory; see :ref:`installing-code` below.
 
 If you're setting up a whole new installation of SeeChange, there are additional directories and servers you will need; see (TODO reference).
 
@@ -67,6 +67,8 @@ If you're setting up a whole new installation of SeeChange, there are additional
 .. _installing-code:
 Installing the code
 ===================
+
+**Note**: This step is unnecessary if you're using a docker image with the SeeChange code included (see :ref:`docker-image`).
 
 Get the latest "production" version of the code by cloning the ``main`` branch of this archive: https://github.com/c3-time-domain/SeeChange/
 
@@ -119,10 +121,10 @@ Running the Docker Container
 Assuming you're using the included-code version, cd into your ``workdir`` and run the docker container with::
 
    docker run -it \
-      --mount type=bind,source=<workdir>,target=/workdir
+      --mount type=bind,source=<workdir>,target=/workdir \
       --mount type=bind,source=<data_root>,target=/data_root \
       --mount type=bind,source=<data_temp>,target=/data_temp \
-      --env SEECHANGE_CONFIG=/workdir/default_config.yaml
+      --env SEECHANGE_CONFIG=/workdir/default_config.yaml \
       <image> /bin/bash
 
 Replacing ``<workdir>``, ``<data_root>``, and ``<data_temp>`` with the directories you identified above in :ref:`dirs`.
@@ -148,16 +150,24 @@ Bind-mounting the code
 If you're developing, and you're going to be editing the code, you probably don't want to have to rebuild the docker image every time you change the code.  In this case, you should either bind mount the place where you [installed the code](#installing-code), or the top level of your SeeChange checkout.  Do this by two more arguments to the ``docker`` command::
 
    docker run -it \
-      --mount type=bind,source=<workdir>,target=/workdir
+      --mount type=bind,source=<workdir>,target=/workdir \
       --mount type=bind,source=<data_root>,target=/data_root \
       --mount type=bind,source=<data_temp>,target=/data_temp \
       --mount type=bind,source=<install_dir>,target=/seechange \
-      --env PYTHONPATH=/seechange
+      --env SEECHANGE_CONFIG=/workdir/default_config.yaml \
+      --env PYTHONPATH=/seechange \
       <image> /bin/bash
 
 where `<install_dir>` is where the seechange code is located-- either the place you installed it, or the top level of the SeeChange checkout.  (For development, the latter is probably more convenient.)  In this case, ``<image>`` should be one of the ``_nocode`` images from :ref:`docker-image`.
 
 
+.. _full-server-setup:
+Full Server Setup
+=================
+
+In addition to the running SeeChange code, there are a few servers that need to be set up and run.  This includes at the very least PostgreSQL database server.  You probably also want to set up a web application server, and an archive server.
+
+TODO DOCUMENT THIS
 
 
 
@@ -166,6 +176,7 @@ where `<install_dir>` is where the seechange code is located-- either the place 
 
 
 
+----
 
 OLD
 

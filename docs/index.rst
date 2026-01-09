@@ -16,13 +16,6 @@ Welcome to SeeChange's documentation!
    usage
    pipeline
    development
-   miscellaneous
-
-   contribution
-   configuration
-   instruments
-   versioning
-   references
 
 
 Indices and tables
