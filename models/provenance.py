@@ -423,8 +423,8 @@ class Provenance(Base):
 
         else:
             return { r['process']: Provenance( dont_update_id=True, **r ) for r in rows }
-            
-        
+
+
     def update_id(self):
 
         """Update the id using the code_version, process, parameters and upstream_hashes."""
