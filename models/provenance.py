@@ -422,7 +422,7 @@ class Provenance(Base):
                 return Provenance( dont_update_id=True, **rows[0] )
 
         else:
-            return { r['process']: Provenance( dont_update_ids=True, **r ) for r in rows }
+            return { r['process']: Provenance( dont_update_id=True, **r ) for r in rows }
             
         
     def update_id(self):
