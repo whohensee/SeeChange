@@ -15,7 +15,7 @@ Welcome to SeeChange's documentation!
    data_storage
    usage
    pipeline
-   testing
+   development
    miscellaneous
 
    contribution
